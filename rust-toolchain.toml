@@ -1,0 +1,16 @@
+# 单一事实来源：Cargo 与 Nix 共用同一个工具链。
+#
+# - 本地：rustup / cargo 自动读取本文件
+# - Nix：flake 用 rust-overlay 的 fromRustupToolchainFile 读取本文件
+#
+# 这样 rustc / rustfmt / clippy 永远同版本，
+# 不会再出现"本地 cargo fmt 过了、nix build 的 fmt 挂了"这种漂移。
+#
+# 注意：本文件锁定的是**开发工具链**；
+# Cargo.toml 的 rust-version 声明的是**最低支持版本(MSRV)**，两者含义不同。
+
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]
+profile = "minimal"
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]

@@ -1,0 +1,23 @@
+[package]
+name = "reles-content-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "content-pipeline"
+path = "src/main.rs"
+
+[dependencies]
+reles-math = { path = "../../crates/math" }
+reles-world = { path = "../../crates/world" }
+reles-map = { path = "../../crates/map" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bincode.workspace = true
+toml.workspace = true
+image.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,10 @@
+# Per-workspace Cargo configuration.
+#
+# `cargo r` is the quick way to launch the game — identical to bare
+# `cargo run` (default-members = ["crates/game"], see the workspace manifest),
+# but shorter to type. `nix run .` in the dev shell starts the very same binary.
+#
+# Do not set `build.target-dir` or `CARGO_BUILD_TARGET` here: the flake builds
+# share the checkout's `target/` and must not be redirected.
+[alias]
+r = "run"

@@ -1,0 +1,25 @@
+[package]
+name = "reles-game"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "releste"
+path = "src/main.rs"
+
+[dependencies]
+reles-math = { path = "../math" }
+reles-kernel = { path = "../kernel" }
+reles-map = { path = "../map" }
+reles-reload = { path = "../reload" }
+reles-render = { path = "../render" }
+reles-world = { path = "../world" }
+reles-plugin-host = { path = "../plugin-host" }
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+libloading.workspace = true

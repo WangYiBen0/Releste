@@ -1,0 +1,8 @@
+# `clock` — 样例 `.so` 插件，每秒往日志里报一声。
+# 源码在 plugins-src/clock/；构建方法见它的 README.md。
+name    = "clock"
+version = "0.1.0"
+abi     = 1
+entry   = "clock.so"
+load    = "eager"
+provide = ["clock"]
