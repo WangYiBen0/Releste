@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────
+# Building artifacts
+# ─────────────────────────────────────────────────────────────
+/target/
+/.cargo-workspace/
+/.nix-cache/
+result
+result-*
+
+# Nix-related temporary files
+.direnv/
+.pre-commit-config.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Restricted Contents
+# ─────────────────────────────────────────────────────────────
+
+/references/
+
+# Proprietary libs (like FMOD)
+*.so
+*.dylib
+*.dll
+libfmod*
+fmod*.so
+fmod*.dylib
+fmod*.dll
+
+# Derivated by original Celeste contents (art / audio / map)
+/assets/
+/assets-src/
+
+# Binaries and archives
+*.exe
+*.bin
+*.o
+*.a
+*.rlib
+*.rmeta
+*.wasm
+*.zip
+*.tar
+*.tar.gz
+*.tar.zst
+*.7z
+/maps/*.map
+
+# ─────────────────────────────────────────────────────────────
+# Editors / System
+# ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# FMOD experiment directory: dynamic proprietary libs copied from references/, compiled probes
+/.fmod
+/.fmod-probe

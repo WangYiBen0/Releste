@@ -1,0 +1,15 @@
+[package]
+name = "reles-world"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+reles-math = { path = "../math" }
+reles-kernel = { path = "../kernel" }
+tracing.workspace = true
+thiserror.workspace = true
+slotmap.workspace = true
+smallvec.workspace = true
+serde.workspace = true
+bincode.workspace = true
+blake3.workspace = true

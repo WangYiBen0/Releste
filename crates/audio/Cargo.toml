@@ -1,0 +1,22 @@
+[package]
+name = "reles-audio"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+# Real FMOD backend. Requires a user-provided libfmod (AGENTS.md §4.7).
+# When disabled, NullBackend (silent) is used; the mixing logic stays fully usable.
+fmod = ["dep:libloading"]
+
+[dependencies]
+reles-kernel = { path = "../kernel" }
+serde.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+# The FMOD shared library is provided by the user and is not vendored.
+libloading = { workspace = true, optional = true }
+
+[build-dependencies]
+# The build script uses only std + environment probing, with no extra dependencies.

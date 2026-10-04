@@ -1,0 +1,13 @@
+[package]
+name = "reles-kernel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+reles-math = { path = "../math" }
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+crossbeam.workspace = true
+flume.workspace = true
+slotmap.workspace = true

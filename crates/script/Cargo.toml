@@ -1,0 +1,22 @@
+[package]
+name = "reles-script"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+# Lua 过场脚本层（mlua + vendored LuaJIT）。
+#
+# 需要 `make` 与 C 工具链来编译 vendored LuaJIT。环境若缺少
+# `make`，保持此 feature 关闭：`CutsceneBridge` 与 `SimCommand`
+# 仍然可用，仿真层不依赖 Lua。
+lua = ["dep:mlua"]
+
+[dependencies]
+reles-math = { path = "../math" }
+reles-world = { path = "../world" }
+reles-kernel = { path = "../kernel" }
+serde.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+mlua = { workspace = true, optional = true }

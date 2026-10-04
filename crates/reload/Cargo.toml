@@ -1,0 +1,15 @@
+[package]
+name = "reles-reload"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+reles-math = { path = "../math" }
+reles-world = { path = "../world" }
+reles-map = { path = "../map" }
+reles-kernel = { path = "../kernel" }
+thiserror.workspace = true
+tracing.workspace = true
+notify.workspace = true
+flume.workspace = true
+blake3.workspace = true

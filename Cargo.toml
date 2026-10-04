@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kernel",
+    "crates/world",
+    "crates/map",
+    "crates/reload",
+    "crates/render",
+    "crates/audio",
+    "crates/input",
+    "crates/script",
+    "crates/net-client",
+    "crates/net-server",
+    "crates/editor",
+    "crates/math",
+    "tools/content-pipeline",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/releste/releste"
+authors = ["Releste contributors"]
+
+[workspace.dependencies]
+# Core
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+toml = "0.8"
+# Logging / errors
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Math / data structures
+slotmap = "1"
+blake3 = "1"
+# Concurrency
+crossbeam = "0.8"
+flume = "0.11"
+# Async / network
+tokio = { version = "1", features = ["full"] }
+laminar = "0.5"
+quinn = "0.11"
+# ECS / reflection-free schema
+smallvec = { version = "1", features = ["serde", "const_generics"] }
+# Input
+gilrs = "0.10"
+# Scripting
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize", "send"] }
+# Rendering
+wgpu = "24"
+winit = "0.30"
+# Editor UI（egui 0.31 ↔ wgpu 24，与 render crate 对齐）
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+# Assets
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# GPU buffer casts
+bytemuck = { version = "1", features = ["derive"] }
+# 运行期动态库加载（用户自备 FMOD）
+libloading = "0.8"
+# File watching
+notify = "7"
+# CLI
+clap = { version = "4", features = ["derive"] }
+# Testing
+proptest = "1"
+
+# Audio (fmod-oxide) is declared in the audio crate directly; FMOD is user-provided.
