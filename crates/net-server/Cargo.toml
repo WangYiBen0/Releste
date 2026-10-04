@@ -1,0 +1,32 @@
+[package]
+name = "reles-net-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "net-server"
+path = "src/main.rs"
+
+[features]
+default = []
+# 真实网络监听（laminar UDP）。
+udp = ["dep:laminar", "dep:tokio", "dep:quinn"]
+# 自检用的纯逻辑中继（无网络依赖）。
+relay = []
+
+[dependencies]
+reles-math = { path = "../math" }
+reles-world = { path = "../world" }
+reles-kernel = { path = "../kernel" }
+reles-net-client = { path = "../net-client" }
+serde.workspace = true
+bincode.workspace = true
+flume.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, optional = true }
+laminar = { workspace = true, optional = true }
+quinn = { workspace = true, optional = true }

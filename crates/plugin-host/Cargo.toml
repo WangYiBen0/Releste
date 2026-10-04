@@ -1,0 +1,13 @@
+[package]
+name = "reles-plugin-host"
+description = "Plugin loader, Fiber/scope lifecycle and capability registry"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blake3.workspace = true
+libloading.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true

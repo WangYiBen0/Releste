@@ -1,0 +1,18 @@
+[package]
+name = "reles-plugin-clock"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+description = "Sample Releste .so plugin: logs one line per second of game time"
+
+# 独立 workspace：不进主 workspace（AGENTS.md §15.1），也没有任何依赖，
+# 所以 `cargo build --release` 不需要网络。
+[workspace]
+
+[lib]
+name = "clock"
+crate-type = ["cdylib"]
+
+[lints.rust]
+warnings = "deny"

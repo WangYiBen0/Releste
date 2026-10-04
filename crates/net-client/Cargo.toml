@@ -1,0 +1,25 @@
+[package]
+name = "reles-net-client"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+# Semi-reliable UDP transport (laminar).
+udp = ["dep:laminar", "dep:tokio"]
+# QUIC transport (quinn).
+quic = ["dep:quinn", "dep:tokio"]
+
+[dependencies]
+reles-math = { path = "../math" }
+reles-world = { path = "../world" }
+reles-kernel = { path = "../kernel" }
+serde.workspace = true
+bincode.workspace = true
+flume.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, optional = true }
+laminar = { workspace = true, optional = true }
+quinn = { workspace = true, optional = true }
