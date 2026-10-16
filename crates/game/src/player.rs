@@ -4,10 +4,12 @@
 //! [`FIXED_DT`](reles_math::FIXED_DT)。
 //!
 //! 与原版的关系（`references/pureCeleste.cs`，行为参考）：
-//! - **已对齐**：跑动加速（1000/400/0.65）、coyote/跳跃缓冲/松键削减
-//!   （Phase 4.1 已落地）；房间选择与兜底（中心选房、缝隙由最近房间接住）。
-//! - **仍是初值**：重力/落速/跳跃（原版是 `MaxFall=160/240` 缓动、
-//!   顶点半重力、`JumpSpeed = -105` + varJump 钳制）—— 下一轮对齐；
+//! - **已对齐**：跑动加速（1000/400/0.65）、重力 900、落速上限
+//!   160/240 缓动（`maxFall` 状态）、顶点半重力（40 阈值）、
+//!   coyote/跳跃缓冲/松键削减（Phase 4.1 已落地）；房间选择与兜底
+//!   （中心选房、缝隙由最近房间接住）。
+//! - **仍是初值**：跳跃（原版是 `JumpSpeed = -105` + varJump 钳制 +
+//!   `JumpHBoost = 40`，本实现是 -240 单冲量）—— 下一轮对齐；
 //!   dash / 爬墙等尚未开始（ROADMAP Phase 4.1）。
 
 use reles_map::Room;
@@ -32,10 +34,22 @@ const RUN_ACCEL: Fx = Fx::from_ratio(5, 18);
 const RUN_REDUCE: Fx = Fx::from_ratio(1, 9);
 /// 空中操控系数 0.65 —— 空中加速是地面的一半多点。
 const AIR_MULT: Fx = Fx::from_ratio(13, 20);
-/// 重力 0.25 px/tick²（900 px/s²）。
+/// 重力 900 px/s²（0.25 px/tick²）。
 const GRAVITY: Fx = Fx::from_ratio(1, 4);
-/// 最大下落速度 360 px/s。
-const MAX_FALL: Fx = Fx::from_int(6);
+/// 顶点半重力：上升/下落都很慢且按住跳跃时重力减半（450 px/s²）。
+const HALF_GRAVITY: Fx = Fx::from_ratio(1, 8);
+/// 普通落速上限 160 px/s（8/3 px/tick）。
+///
+/// **参考值**：`pureCeleste.cs` Player 的 `MaxFall = 160f`。它是一个
+/// **缓动状态**（见 [`Player::max_fall`]），按住"下"时上限爬向
+/// [`FAST_MAX_FALL`]，松开再缓回来 —— 不是硬截断。
+const MAX_FALL: Fx = Fx::from_ratio(8, 3);
+/// 快落上限 240 px/s（4 px/tick）。参考 `FastMaxFall = 240f`。
+const FAST_MAX_FALL: Fx = Fx::from_int(4);
+/// 落速上限的缓动速率 300 px/s²（1/12 px/tick²）。参考 `FastMaxAccel = 300f`。
+const FAST_MAX_ACCEL: Fx = Fx::from_ratio(1, 12);
+/// 顶点半重力阈值 40 px/s（2/3 px/tick）。参考 `HalfGravThreshold = 40f`。
+const HALF_GRAV_THRESHOLD: Fx = Fx::from_ratio(2, 3);
 /// 起跳初速度 -240 px/s，冲量高度约 32px（4 格）。
 const JUMP: Fx = Fx::from_int(-4);
 /// 碰撞解算的推进步长：1/2 px。
@@ -85,6 +99,9 @@ pub struct Player {
     pub on_ground: bool,
     /// 朝向：1 右，-1 左。
     pub facing: i32,
+    /// 当前落速上限（px/tick）：在 [`MAX_FALL`] 与 [`FAST_MAX_FALL`] 之间
+    /// 按 [`FAST_MAX_ACCEL`] 缓动 —— 参考 pureCeleste 的 `maxFall` 局部状态。
+    max_fall: Fx,
     /// 上一 tick 的跳跃键（边沿检测：按下 / 松开）。
     prev_jump: bool,
     /// 起跳缓冲倒计时：0 = 无。按下跳跃时设满，起跳后清空。
@@ -102,6 +119,7 @@ impl Player {
             vel: Vec2::ZERO,
             on_ground: false,
             facing: 1,
+            max_fall: MAX_FALL,
             prev_jump: false,
             jump_buffer: 0,
             coyote: 0,
@@ -179,10 +197,23 @@ impl Player {
             self.vel.y *= JUMP_CUT;
         }
 
-        // 重力 + 限速
-        self.vel.y += GRAVITY;
-        if self.vel.y > MAX_FALL {
-            self.vel.y = MAX_FALL;
+        // 落速上限是**缓动状态**：按住"下"且已在加速下落 → 上限爬向
+        // 快落；否则回落到普通落速。速率 300 px/s²。
+        // 参考 pureCeleste：`maxFall = Approach(maxFall, 240, 300*dt)`。
+        if input.down && self.vel.y >= MAX_FALL {
+            approach(&mut self.max_fall, FAST_MAX_FALL, FAST_MAX_ACCEL);
+        } else {
+            approach(&mut self.max_fall, MAX_FALL, FAST_MAX_ACCEL);
+        }
+
+        // 重力：只在空中施加。靠近顶点（|vy| < 40 px/s）且按住跳跃 →
+        // 重力减半。参考 pureCeleste Player.Update：
+        //   float g = (Math.Abs(Speed.Y) < 40f && Input.Jump.Check) ? 0.5f : 1f;
+        //   Speed.Y = Calc.Approach(Speed.Y, maxFall, 900f * g * dt);
+        if !self.on_ground {
+            let half = input.jump && self.vel.y.abs() < HALF_GRAV_THRESHOLD;
+            let rate = if half { HALF_GRAVITY } else { GRAVITY };
+            approach(&mut self.vel.y, self.max_fall, rate);
         }
 
         self.slide_x(room);
@@ -883,5 +914,128 @@ mod tests {
         );
         // 绝不允许被拽去 B（x ≥ 120）。
         assert!(p.pos.x.to_f32() < 100.0, "must not teleport across the map");
+    }
+
+    /// 8×48 格的深竖井：地板远在底部，供落速测试在**不落地**的前提下
+    /// 观察收尾速度与缓动（384px，75 tick 内到不了底）。
+    fn shaft_room() -> Room {
+        let mut tiles = Tileset::new("Test", 8, 48);
+        for x in 0..8 {
+            tiles.set(x, 47, 1);
+        }
+        Room {
+            name: "t".into(),
+            bounds: RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: 64.0,
+                h: 384.0,
+            },
+            tiles,
+            bg: Tileset::new("Test", 8, 48),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+        }
+    }
+
+    /// 参考值：普通下落的收尾速度是 160 px/s（8/3 px/tick），不是旧
+    /// 实现的 360。
+    #[test]
+    fn fall_speed_caps_at_vanilla_max_fall() {
+        let room = tall_room();
+        let mut p = Player::new(Vec2::from_f32s(32.0, 8.0));
+        for _ in 0..40 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+            if p.vel.y == MAX_FALL {
+                return; // 到过收尾速度即通过（落地后 vel.y 归零，属正常）
+            }
+        }
+        panic!(
+            "terminal fall speed must be exactly 160 px/s (8/3 px/tick), last = {:?}",
+            p.vel.y
+        );
+    }
+
+    /// 按住"下"：落速上限从 160 缓动到 240 px/s（4 px/tick）；松开后
+    /// 再缓动回 160。参考 `maxFall = Approach(maxFall, 240, 300*dt)`。
+    #[test]
+    fn holding_down_ramps_the_fall_cap_to_fast_fall_and_back() {
+        let room = shaft_room();
+        let down = Input {
+            down: true,
+            ..Input::default()
+        };
+        let mut p = Player::new(Vec2::from_f32s(32.0, 8.0));
+
+        // 按住下 → 必须达到快落上限。
+        let mut reached_fast = false;
+        for _ in 0..45 {
+            p.step(&down, std::slice::from_ref(&room));
+            if p.vel.y == FAST_MAX_FALL {
+                reached_fast = true;
+                break;
+            }
+        }
+        assert!(
+            reached_fast,
+            "holding down must ramp the cap to 240 px/s (4 px/tick), last = {:?}",
+            p.vel.y
+        );
+
+        // 对照：不按下时落速永远不超过普通上限。
+        let mut q = Player::new(Vec2::from_f32s(32.0, 8.0));
+        for _ in 0..45 {
+            q.step(&Input::default(), std::slice::from_ref(&room));
+            assert!(
+                q.vel.y <= MAX_FALL,
+                "without down the cap must stay at 160 px/s, got {:?}",
+                q.vel.y
+            );
+        }
+
+        // 松开下 → 上限缓回普通落速，落速跟着回落。
+        let mut settled_back = false;
+        for _ in 0..30 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+            if p.vel.y == MAX_FALL {
+                settled_back = true;
+                break;
+            }
+        }
+        assert!(
+            settled_back,
+            "releasing down must settle the fall back at 160 px/s, last = {:?}",
+            p.vel.y
+        );
+    }
+
+    /// 顶点半重力：|vy| < 40 px/s 且按住跳跃时，重力减半 ——
+    /// 参考 `(|Speed.Y| < 40f && Jump.Check) ? 0.5f : 1f`。
+    #[test]
+    fn gravity_is_halved_near_the_apex_while_jump_is_held() {
+        let room = tall_room();
+        // 两个玩家都放在慢速上升段（|vy| < 2/3 px/tick），唯一差别是
+        // 跳跃键。注意两个都**没有**松键边沿，可变跳高的 cut 不参与。
+        let mut held = Player::new(Vec2::from_f32s(32.0, 60.0));
+        held.on_ground = false;
+        held.vel.y = -Fx::from_ratio(3, 5); // -0.6 px/tick，阈值内
+        let mut idle = Player::new(Vec2::from_f32s(32.0, 60.0));
+        idle.on_ground = false;
+        idle.vel.y = held.vel.y;
+
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        held.step(&jump, std::slice::from_ref(&room));
+        idle.step(&Input::default(), std::slice::from_ref(&room));
+
+        assert!(
+            held.vel.y < idle.vel.y,
+            "holding jump near the apex must halve gravity: held {:?} vs idle {:?}",
+            held.vel.y,
+            idle.vel.y
+        );
     }
 }

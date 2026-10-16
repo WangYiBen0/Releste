@@ -295,7 +295,8 @@ therefore in progress while the wasm half of Phase 3 waits on the AGENTS.md
 The whole feel lives here — this is what "接近原版" means.
 
 - ☑ **Run** (ramps to 1.5 px/tick at 1000 px/s² ground / 650 airborne; release & turn-around bleed off at 400 px/s²), **variable jump height** (release cuts rise ×0.4), **coyote time** (6 ticks), **jump buffering** (6 ticks). All in `crates/game/src/player.rs`, all `Fx`, each covered by a test that goes red when the feature is deleted. Constants are first-pass, not reference-matched.
-- ☐ Gravity / fall is still a single constant — Celeste ramps gravity and varies it by speed; that belongs in the same reference-matching pass as the constants above.
+- ☑ **Gravity / fall（2026-10-17，对照 `references/pureCeleste.cs` Player.Update）**：重力 900 px/s²；落速上限是**缓动状态** `maxFall`（160 ↔ 240 px/s，`FastMaxAccel = 300`，按住"下"且已在加速下落时爬升、松开回落）；顶点半重力（`|vy| < 40 px/s` 且按住跳跃 → 重力减半）。覆盖测试：`fall_speed_caps_at_vanilla_max_fall`、`holding_down_ramps_the_fall_cap_to_fast_fall_and_back`、`gravity_is_halved_near_the_apex_while_jump_is_held`。同一轮修掉了房间贴缝行走被夹取拽 ≈4px 的瞬移（兜底改为"中心不在任何房间才夹，回最近房间"）。
+- ☐ **Jump 仍是一段式冲量**（-240 px/s + 松键 ×0.4 削减）—— 原版是 `JumpSpeed = -105` + varJump 钳制（按住跳跃 0.2s 内上升速度钉在 -105）+ `JumpHBoost = 40` 水平助推；这是手感对齐的下一项。
 - ☐ Dash (8 directions, dash refresh on ground/wall, dash attacks)
 - ☐ Wall jump, wall slide, wall climb, stamina
 - ☐ Grab / hang, super dash, hyper dash
