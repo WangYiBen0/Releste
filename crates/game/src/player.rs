@@ -1,13 +1,19 @@
 //! 玩家仿真：8×8 AABB 对 tile grid 的轴分离解算。
 //!
 //! 所有状态都是 [`Fx`]（AGENTS.md §15.7），时间步恒为
-//! [`FIXED_DT`](reles_math::FIXED_DT)。常数是**手感初值**，逐帧打磨在
-//! ROADMAP Phase 4.1（coyote time、跳跃缓冲、可变跳高）。
+//! [`FIXED_DT`](reles_math::FIXED_DT)。
+//!
+//! 与原版的关系（`references/pureCeleste.cs`，行为参考）：
+//! - **已对齐**：跑动加速（1000/400/0.65）、coyote/跳跃缓冲/松键削减
+//!   （Phase 4.1 已落地）；房间选择与兜底（中心选房、缝隙由最近房间接住）。
+//! - **仍是初值**：重力/落速/跳跃（原版是 `MaxFall=160/240` 缓动、
+//!   顶点半重力、`JumpSpeed = -105` + varJump 钳制）—— 下一轮对齐；
+//!   dash / 爬墙等尚未开始（ROADMAP Phase 4.1）。
 
 use reles_map::Room;
 use reles_math::{Fx, Vec2};
 
-use crate::session::Session;
+use crate::session::{nearest_room, room_containing, Session};
 
 /// hitbox 宽（像素，整数，供房间碰撞使用）。
 pub const PLAYER_W_PX: i32 = 8;
@@ -104,12 +110,26 @@ impl Player {
 
     /// 推进一个固定 tick。房间由 [`Session::room_at`] 决定。
     pub fn update(&mut self, input: &Input, session: &Session) {
-        let room = session.room_at(self.pos);
-        self.update_in(input, room);
+        self.step(input, &session.doc.rooms);
     }
 
-    /// 推进一个固定 tick（指定房间，便于单测）。
-    fn update_in(&mut self, input: &Input, room: &Room) {
+    /// 单步仿真：按 hitbox 中心选房 → 物理 → 世界级兜底。
+    ///
+    /// `rooms` 显式传入，单测可以直接构造房间几何，不必起整个 Session。
+    pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
+        let centre = self.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let room = match room_containing(rooms, self.pos) {
+            Some(room) => room,
+            // 中心掉出所有房间：用**最近的**房间的几何做碰撞，
+            // 夹取也回最近房间 —— 绝不会被拽去出生房间。
+            None => nearest_room(rooms, centre),
+        };
+        self.physics_in(input, room);
+        self.clamp_to_world(rooms);
+    }
+
+    /// 物理推进（不含房间/世界夹取，夹取在 [`Player::step`] 尾部统一做）。
+    fn physics_in(&mut self, input: &Input, room: &Room) {
         self.prev_pos = self.pos;
 
         // 水平：朝目标速度做加速 / 减速，而不是瞬间赋值。
@@ -171,8 +191,6 @@ impl Player {
         if !self.on_ground {
             self.on_ground = self.hits(room, self.pos.x, self.pos.y + Fx::one());
         }
-        self.clamp_to_room(room);
-
         // 土狼时间 + 跳跃缓冲的过期：接地就刷新土狼；离地则两者一起递减。
         // 缓冲要到"着陆的下一帧"才可能触发（接地状态是本 tick 尾才更新），
         // 所以接地那一帧不递减，避免把落地的余量吃掉。
@@ -235,11 +253,18 @@ impl Player {
         }
     }
 
-    /// 兜底：把玩家留在房间矩形内。
+    /// 世界级兜底：只有当中心不在**任何**房间里才夹取。
     ///
-    /// 房间可以没有地板（出口、切镜位），但绝不能掉出世界。
-    fn clamp_to_room(&mut self, room: &Room) {
-        let b = &room.bounds;
+    /// 之前无条件把玩家夹进"中心所在房间"的矩形 —— 房间贴边处中心刚
+    /// 跨缝，夹取就把玩家拽进隔壁房间（≈4px 瞬移）。现在贴缝行走是
+    /// 连续的；只有真正掉出世界（房间之间的缝隙、热重载缩小房间）时，
+    /// 玩家才会被**最近的**房间接住，绝不会被拽去出生房间。
+    fn clamp_to_world(&mut self, rooms: &[Room]) {
+        if room_containing(rooms, self.pos).is_some() {
+            return;
+        }
+        let centre = self.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        let b = &nearest_room(rooms, centre).bounds;
         let min_x = Fx::from_f32(b.x);
         let max_x = Fx::from_f32(b.x + b.w - PLAYER_W);
         let min_y = Fx::from_f32(b.y);
@@ -363,7 +388,7 @@ mod tests {
         let room = floor_room();
         let mut p = Player::new(Vec2::from_f32s(8.0, 0.0));
         for _ in 0..120 {
-            p.update_in(&Input::default(), &room);
+            p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert!(p.on_ground, "player never landed; pos = {:?}", p.pos);
         // 地板是第 3 行（y = 24..32），hitbox 8 高 → 顶边正好停在 y = 16。
@@ -384,7 +409,7 @@ mod tests {
             ..Input::default()
         };
         for _ in 0..60 {
-            p.update_in(&i, &room);
+            p.step(&i, std::slice::from_ref(&room));
         }
         assert_eq!(p.pos.x.to_f32(), 8.0, "must stop with the hitbox flush");
         assert_eq!(p.vel.x, Fx::zero());
@@ -395,7 +420,7 @@ mod tests {
         let room = floor_room();
         let mut p = Player::new(Vec2::from_f32s(400.0, 400.0));
         for _ in 0..60 {
-            p.update_in(&Input::default(), &room);
+            p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert!(p.pos.x.to_f32() <= 32.0 - PLAYER_W);
         assert!(p.pos.y.to_f32() <= 32.0 - PLAYER_H);
@@ -412,7 +437,7 @@ mod tests {
             ..Input::default()
         };
         let start = p.pos.y;
-        p.update_in(&i, &room);
+        p.step(&i, std::slice::from_ref(&room));
         assert!(p.pos.y < start, "jump should move the player up");
         assert!(!p.on_ground);
     }
@@ -504,7 +529,7 @@ mod tests {
     fn settled(room: &Room, x: f32) -> Player {
         let mut p = Player::new(Vec2::from_f32s(x, 8.0));
         for _ in 0..60 {
-            p.update_in(&Input::default(), room);
+            p.step(&Input::default(), std::slice::from_ref(room));
         }
         assert!(p.on_ground, "fixture: player must settle on the floor");
         p
@@ -518,7 +543,7 @@ mod tests {
             ..Input::default()
         };
         for _ in 0..120 {
-            p.update_in(&walk, room);
+            p.step(&walk, std::slice::from_ref(room));
             if !p.on_ground {
                 return p;
             }
@@ -538,7 +563,7 @@ mod tests {
             ..Input::default()
         };
         let start_y = p.pos.y;
-        p.update_in(&jump, &room);
+        p.step(&jump, std::slice::from_ref(&room));
         assert!(
             p.pos.y < start_y,
             "coyote time must still allow a jump just after leaving the ground"
@@ -555,7 +580,7 @@ mod tests {
         };
         // 已经离地 1 帧，再等满整个窗口 —— 之后土狼时间必须归零。
         for _ in 0..COYOTE_FRAMES + 2 {
-            p.update_in(&walk, &room);
+            p.step(&walk, std::slice::from_ref(&room));
         }
         assert!(!p.on_ground);
         let jump = Input {
@@ -564,7 +589,7 @@ mod tests {
             ..Input::default()
         };
         let start_y = p.pos.y;
-        p.update_in(&jump, &room);
+        p.step(&jump, std::slice::from_ref(&room));
         assert!(
             p.pos.y >= start_y,
             "after coyote expires a mid-air jump must not fire"
@@ -592,7 +617,7 @@ mod tests {
                 pressed = true;
             }
             let input = if pressed { buffered } else { idle };
-            p.update_in(&input, &room);
+            p.step(&input, std::slice::from_ref(&room));
             if p.vel.y < Fx::zero() {
                 fired = true;
                 break;
@@ -616,14 +641,14 @@ mod tests {
         let mut released = settled(&room, 32.0);
 
         // 同一次起跳：held 全程按住，released 下一帧就松手。
-        held.update_in(&hold, &room);
-        released.update_in(&hold, &room);
+        held.step(&hold, std::slice::from_ref(&room));
+        released.step(&hold, std::slice::from_ref(&room));
 
         let mut held_peak = held.pos.y;
         let mut released_peak = released.pos.y;
         for _ in 0..90 {
-            held.update_in(&hold, &room);
-            released.update_in(&idle, &room);
+            held.step(&hold, std::slice::from_ref(&room));
+            released.step(&idle, std::slice::from_ref(&room));
             if held.pos.y < held_peak {
                 held_peak = held.pos.y;
             }
@@ -647,11 +672,11 @@ mod tests {
             jump: true,
             ..Input::default()
         };
-        p.update_in(&jump, &room);
+        p.step(&jump, std::slice::from_ref(&room));
         assert!(p.vel.y < Fx::zero(), "must be rising after the jump");
         // 若不松手，本帧速度只会被重力自然拉小：
         let undamped = p.vel.y + GRAVITY;
-        p.update_in(&Input::default(), &room);
+        p.step(&Input::default(), std::slice::from_ref(&room));
         assert!(p.vel.y < Fx::zero(), "the short hop must still rise");
         assert!(
             p.vel.y > undamped,
@@ -670,7 +695,7 @@ mod tests {
             ..Input::default()
         };
         // 第一帧不可能已是满速 —— 那正是"瞬间赋值"要禁止的。
-        p.update_in(&walk, &room);
+        p.step(&walk, std::slice::from_ref(&room));
         assert_eq!(
             p.vel.x, RUN_ACCEL,
             "starting from rest must use the acceleration rate, not the slower reduce rate"
@@ -682,7 +707,7 @@ mod tests {
         );
         // 若干帧后收敛到满速，且不再增长。
         for _ in 0..60 {
-            p.update_in(&walk, &room);
+            p.step(&walk, std::slice::from_ref(&room));
         }
         assert_eq!(p.vel.x, RUN, "must settle at exactly the run speed");
     }
@@ -696,18 +721,18 @@ mod tests {
             ..Input::default()
         };
         for _ in 0..60 {
-            p.update_in(&walk, &room);
+            p.step(&walk, std::slice::from_ref(&room));
         }
         assert_eq!(p.vel.x, RUN);
         let idle = Input::default();
-        p.update_in(&idle, &room);
+        p.step(&idle, std::slice::from_ref(&room));
         assert!(
             p.vel.x > Fx::zero() && p.vel.x < RUN,
             "letting go must bleed speed off, not zero it: {}",
             p.vel.x
         );
         for _ in 0..60 {
-            p.update_in(&idle, &room);
+            p.step(&idle, std::slice::from_ref(&room));
         }
         assert_eq!(p.vel.x, Fx::zero(), "must come to rest");
     }
@@ -726,8 +751,8 @@ mod tests {
         air.vel.x = Fx::zero();
         air.on_ground = false;
 
-        ground.update_in(&walk, &room);
-        air.update_in(&walk, &room);
+        ground.step(&walk, std::slice::from_ref(&room));
+        air.step(&walk, std::slice::from_ref(&room));
 
         assert!(ground.on_ground, "fixture: first player stays grounded");
         assert!(!air.on_ground, "fixture: second player is airborne");
@@ -757,12 +782,106 @@ mod tests {
             ..Input::default()
         };
         for _ in 0..5 {
-            p.update_in(&walk, &room);
+            p.step(&walk, std::slice::from_ref(&room));
         }
         assert!(!p.on_ground, "fixture: must still be falling");
         assert!(
             p.vel.x > Fx::zero(),
             "air control must be non-zero, not locked out"
         );
+    }
+
+    /// 8×8 格房间，`floor` 决定是否铺第 7 行地板；`x` 是房间原点。
+    ///
+    /// 与 `ledge_room` 同款，但原点可调 —— 拼接贴边/留缝的双房间用。
+    fn seam_room(x: f32, floor: bool) -> Room {
+        let mut tiles = Tileset::new("Test", 8, 8);
+        if floor {
+            for col in 0..8 {
+                tiles.set(col, 7, 1);
+            }
+        }
+        Room {
+            name: "t".into(),
+            bounds: RectDef {
+                x,
+                y: 0.0,
+                w: 64.0,
+                h: 64.0,
+            },
+            tiles,
+            bg: Tileset::new("Test", 8, 8),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+        }
+    }
+
+    /// 两间贴边房间（A x[0,64]、B x[64,128]，地板同高）：向右走跨缝，
+    /// 每 tick 的位移不得超过一个正常步长。
+    ///
+    /// 回归：旧实现每 tick 无条件把玩家夹进"中心所在房间"的矩形，
+    /// 中心刚跨过缝就把玩家拽进隔壁房间 —— 一次 ≈4px 的瞬移。
+    /// （tick 数以玩家停在 B 中部为准，不走到 B 的远缘。）
+    #[test]
+    fn walking_across_a_seam_does_not_teleport() {
+        let rooms = [seam_room(0.0, true), seam_room(64.0, true)];
+        // 站在 A 的地板上（第 7 行，顶 y=56 → hitbox 顶边 y=48）。
+        let mut p = Player::new(Vec2::from_f32s(40.0, 48.0));
+        let walk = Input {
+            right: true,
+            ..Input::default()
+        };
+        let mut max_delta = Fx::zero();
+        for _ in 0..30 {
+            let before = p.pos;
+            p.step(&walk, &rooms);
+            let d = (p.pos.x - before.x).abs();
+            if d > max_delta {
+                max_delta = d;
+            }
+        }
+        assert!(
+            max_delta <= RUN,
+            "walking across the seam must stay continuous, got a {max_delta:?} px jump in one tick"
+        );
+        // 而且玩家确实走进了 B（中心已过缝：pos.x > 60）。
+        assert!(
+            p.pos.x.to_f32() > 60.0,
+            "the player should end up past the seam, at {:?}",
+            p.pos.x
+        );
+    }
+
+    /// 两间房之间留一道缝（A x[0,64]、B x[128,192]）：掉出所有房间时
+    /// 被**最近的**房间接住，而不是被拽去出生房间（旧实现的回落目标）。
+    #[test]
+    fn falling_into_a_gap_is_caught_by_the_nearest_room() {
+        // 缝上没有房间；B 不参与（A 距离更近）。给 B 留地板但它不该被选中。
+        let rooms = [seam_room(0.0, true), seam_room(128.0, true)];
+        let mut p = Player::new(Vec2::from_f32s(40.0, 48.0));
+        let walk = Input {
+            right: true,
+            ..Input::default()
+        };
+        // 走进缝 → 中心离开所有房间 → 兜底把玩家夹回 A 的右缘。
+        // 夹回后若继续按方向会"走-夹"振荡，所以松键让玩家停稳再断言。
+        for _ in 0..90 {
+            p.step(&walk, &rooms);
+        }
+        for _ in 0..60 {
+            p.step(&Input::default(), &rooms);
+        }
+        assert_eq!(
+            p.pos.x.to_f32(),
+            56.0,
+            "the gap must be guarded by the nearest room's right edge"
+        );
+        assert!(
+            p.on_ground,
+            "the guard stands the player on the room's bottom edge"
+        );
+        // 绝不允许被拽去 B（x ≥ 120）。
+        assert!(p.pos.x.to_f32() < 100.0, "must not teleport across the map");
     }
 }

@@ -108,12 +108,7 @@ impl Session {
     /// 中心而不是角点：角点会提前半个身位跨进相邻房间，让碰撞、
     /// 标题栏房间名和重载检查都指向错误的房间。
     pub fn room_at(&self, pos: Vec2) -> &Room {
-        let centre =
-            pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H * 0.5);
-        self.doc
-            .rooms
-            .iter()
-            .find(|r| r.bounds.to_rect().contains(centre))
+        room_containing(&self.doc.rooms, pos)
             .or_else(|| self.doc.rooms.iter().find(|r| r.name == self.spawn_room))
             .unwrap_or(&self.doc.rooms[0])
     }
@@ -241,6 +236,45 @@ impl Session {
         let entities: usize = self.doc.rooms.iter().map(|r| r.entities.len()).sum();
         (self.doc.rooms.len(), entities, self.spawn_room.clone())
     }
+}
+
+/// 中心点落在哪个房间（不含任何回落）。
+///
+/// `pos` 是 hitbox 左上角，这里取几何中心判定。玩家仿真与
+/// [`Session::room_at`] 共用这一个事实来源，保证"标题栏说的房间"
+/// 和"碰撞用的房间"永远一致。
+pub(crate) fn room_containing(rooms: &[Room], pos: Vec2) -> Option<&Room> {
+    let centre =
+        pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H * 0.5);
+    rooms.iter().find(|r| r.bounds.to_rect().contains(centre))
+}
+
+/// 离 `point` 最近的房间（点到矩形的欧氏距离，落在矩形内记 0）。
+///
+/// 世界级兜底用：中心掉出所有房间时把玩家夹回**最近的**房间，
+/// 而不是出生房间 —— 否则地图另一头的坠落会被瞬移回出生点。
+pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
+    let mut best = 0;
+    let mut best_d: Option<reles_math::Fx> = None;
+    for (i, room) in rooms.iter().enumerate() {
+        let r = room.bounds.to_rect();
+        let dx = (r.min.x - point.x)
+            .max(point.x - r.max.x)
+            .max(reles_math::Fx::zero());
+        let dy = (r.min.y - point.y)
+            .max(point.y - r.max.y)
+            .max(reles_math::Fx::zero());
+        let d = dx * dx + dy * dy;
+        let closer = match best_d {
+            Some(bd) => d < bd,
+            None => true,
+        };
+        if closer {
+            best_d = Some(d);
+            best = i;
+        }
+    }
+    &rooms[best]
 }
 
 /// 画一层瓦片：每块瓦片按自己的 tile id 查 tileset 定义，
