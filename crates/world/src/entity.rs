@@ -61,8 +61,12 @@ pub struct EntityData {
     ///
     /// 原版 `EntityData.Nodes`（`pureCeleste.cs:113135-113198`），最常用的
     /// 三个消费者：`IntroCrusher` 的落点（`106324-106327`）、`Wire` 的折线
-    /// （`106674-106704`）、`Bridge` 的桥墩（`107679`）。坐标是**相对实体
-    /// 位置**的偏移，与 `x`/`y` 同一坐标系。
+    /// （`106674-106704`）、`Bridge` 的桥墩（`107679`）。
+    ///
+    /// 坐标与 `x`/`y` **同一坐标系**（房间局部、可越出房间边界）：原版
+    /// 消费者写的是 `data.Nodes[0] + offset`（offset = 房间偏移，只加
+    /// 一次），与 `data.Position + offset` 完全对称 —— 节点是绝对房间
+    /// 坐标，**不是**相对实体位置的偏移。
     #[serde(default)]
     pub nodes: Vec<(f32, f32)>,
 }
