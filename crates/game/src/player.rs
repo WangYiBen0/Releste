@@ -133,6 +133,9 @@ pub struct Player {
     /// varJump 倒计时（tick）：> 0 且按住跳跃时竖直速度被钳回起跳值
     /// （pureCeleste.cs:122130-122138 的 `varJumpTimer`）。
     var_jump: u32,
+    /// 强制 varJump 钳制的剩余 tick（原版 `AutoJump` + `AutoJumpTimer`，
+    /// 120590-120594：向上转场时自动跳一下，0.2s 内不管按键都钳住）。
+    auto_jump: u32,
 }
 
 impl Player {
@@ -149,6 +152,7 @@ impl Player {
             jump_buffer: 0,
             coyote: 0,
             var_jump: 0,
+            auto_jump: 0,
         }
     }
 
@@ -166,6 +170,24 @@ impl Player {
         self.clamp_to_world(rooms);
     }
 
+    /// 向上转场的前置调整（原版 `BeforeUpTransition`，
+    /// pureCeleste.cs:120578-120595）：水平清零、自动向上跳
+    /// （-105 + 0.2s 强制 varJump 钳制），落进上方的房间。
+    pub fn before_up_transition(&mut self) {
+        self.vel.x = Fx::zero();
+        self.vel.y = JUMP_SPEED;
+        self.var_jump = VAR_JUMP_TICKS;
+        self.auto_jump = VAR_JUMP_TICKS;
+    }
+
+    /// 向下转场的前置调整（原版 `BeforeDownTransition`，
+    /// pureCeleste.cs:120572-120583）：砍掉向上的速度、清 varJump。
+    pub fn before_down_transition(&mut self) {
+        self.vel.y = self.vel.y.max(Fx::zero());
+        self.var_jump = 0;
+        self.auto_jump = 0;
+    }
+
     /// 物理推进（不含世界夹取，夹取在 [`Player::step`] 尾部统一做）。
     ///
     /// tick 内顺序对照原版（`pureCeleste.cs`）：varJump 递减（Update
@@ -177,8 +199,12 @@ impl Player {
         self.prev_pos = self.pos;
 
         // varJump 计时：原版在 Update 头部递减（119864-119867）。
+        // AutoJump 同理（119868-119877）。
         if self.var_jump > 0 {
             self.var_jump -= 1;
+        }
+        if self.auto_jump > 0 {
+            self.auto_jump -= 1;
         }
 
         // 水平：原版两分支（122068-122074）—— 同向超速（|vx| > 90 且与
@@ -212,9 +238,9 @@ impl Player {
         }
 
         // 重力：只在空中施加（122123）。靠近顶点（|vy| < 40 px/s）且
-        // 按住跳跃 → 重力减半（122140-122142）。
+        // 按住跳跃（或 AutoJump，向上转场）→ 重力减半（122140-122142）。
         if !self.on_ground {
-            let half = input.jump && self.vel.y.abs() < HALF_GRAV_THRESHOLD;
+            let half = (input.jump || self.auto_jump > 0) && self.vel.y.abs() < HALF_GRAV_THRESHOLD;
             let rate = if half { HALF_GRAVITY } else { GRAVITY };
             approach(&mut self.vel.y, self.max_fall, rate);
         }
@@ -223,7 +249,7 @@ impl Player {
         // 钳回起跳值（重力被抵消）；松开 → 计时清零。这就是"可变跳高"，
         // 没有额外的松手砍速。
         if self.var_jump > 0 {
-            if input.jump {
+            if input.jump || self.auto_jump > 0 {
                 self.vel.y = self.vel.y.min(JUMP_SPEED);
             } else {
                 self.var_jump = 0;
@@ -307,7 +333,7 @@ impl Player {
     }
 
     /// 当前 hitbox 是否与固体相交（[`Player::hit_in`] 的布尔视图）。
-    fn hits(&self, rooms: &[Room], x: Fx, y: Fx) -> bool {
+    pub(crate) fn hits(&self, rooms: &[Room], x: Fx, y: Fx) -> bool {
         self.hit_in(rooms, x, y).is_some()
     }
 

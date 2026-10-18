@@ -470,6 +470,32 @@ impl Session {
         })
     }
 
+    /// 测试的构造：跳过磁盘 I/O，直接用文档组装（§9"测试必须自己造
+    /// 数据"）。图集是空壳，单测不会走到纹理上传。
+    #[cfg(test)]
+    pub(crate) fn from_doc(doc: MapDocument, atlas_name: &str) -> Self {
+        let (spawn, spawn_room) = vanilla_start(&doc);
+        Session {
+            doc,
+            atlas: SpriteAtlas::new(
+                releste_render::atlas::AtlasDescriptor {
+                    name: atlas_name.into(),
+                    version: 0,
+                    links: Vec::new(),
+                    textures: Vec::new(),
+                },
+                std::path::Path::new("/nonexistent"),
+            ),
+            atlas_name: atlas_name.to_string(),
+            tilesets: releste_map::TilesetsDoc::default(),
+            bg_tilesets: releste_map::TilesetsDoc::default(),
+            spawn,
+            spawn_room,
+            backdrop_visible: RefCell::default(),
+            warned: RefCell::default(),
+        }
+    }
+
     /// 世界坐标落在哪个房间（找不到就回落到出生房间）。
     ///
     /// `pos` 是 hitbox **左上角**；这里取它的几何中心去查房间。

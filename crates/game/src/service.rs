@@ -13,13 +13,33 @@ use releste_render::{Camera, GpuRenderer, SpriteBatch, SpriteDraw, BASE_HEIGHT, 
 use tracing::{debug, info, warn};
 
 use crate::paths::Paths;
-use crate::player::{Input, Player, PLAYER_H, PLAYER_W};
+use crate::player::{Input, Player, PLAYER_H, PLAYER_H_PX, PLAYER_W, PLAYER_W_PX};
 use crate::session::Session;
 
 /// `FileWatcher` 的防抖窗口，ROADMAP 第 10 步：100ms。
 const WATCH_DEBOUNCE_MS: u64 = 100;
 /// 相机跟随系数（每 tick 追目标的 1/4）。
-const CAMERA_LERP: Fx = Fx::from_ratio(1, 4);
+/// 原版相机跟随系数（`Player.Update` 120137-120145）：
+/// `pos += (target - pos) * (1 - 0.01^dt)`；dt = 1/60 时系数 ≈ 0.0739，
+/// 取 19/256 = 0.0742（Fx 1/256 步长内最接近的有理数）。
+const CAMERA_LERP: Fx = Fx::from_ratio(19, 256);
+
+/// 房间转场时长 0.65s = 39 tick（`Level.NextTransitionDuration`，
+/// pureCeleste.cs:113847，Reset 115428）。
+const TRANSITION_TICKS: u32 = 39;
+
+/// 进行中的房间转场（原版 `Level.transition` 协程的显式状态版）。
+#[derive(Debug, Clone, Copy)]
+struct RoomTransition {
+    /// 玩家 hitbox 左上角的滑动终点（原版 `playerTo`）。
+    player_to: Vec2,
+    /// 相机起点（视口中心，原版 `cameraFrom`）。
+    camera_from: Vec2,
+    /// 相机终点（新房间里钳制后的目标，原版 `cameraTo`）。
+    camera_to: Vec2,
+    /// 已进行的 tick（原版 `cameraAt`，按 dt/0.65 逼近 1）。
+    ticks: u32,
+}
 
 /// 插件启动：扫描并加载 `plugins/` 下的每个插件。
 ///
@@ -83,8 +103,12 @@ pub struct GameService {
     static_dirty: bool,
     /// 静态批次当前对应的房间（切房即重建 —— 原版一次只画一个房间）。
     built_room: String,
-    /// 相机当前锁定的房间（跨房间不平滑，直接落位）。
-    camera_room: String,
+    /// 当前房间（原版 `Session.Level` 语义：转场开始时即切到新房间，
+    /// 相机钳制、房间过滤、EnforceBounds 都以它为准）。
+    current_room: String,
+    /// 进行中的房间转场；`Some` 时实体冻结，只有玩家滑动与相机平移
+    /// （原版 `Level.Update` 的 Transitioning 分支，115659-115668）。
+    transition: Option<RoomTransition>,
     overflow_warned: bool,
     reloads: u64,
     /// 上次报告过的房间名（`-v` 下房间切换只在这变化时打一行）。
@@ -105,7 +129,7 @@ impl GameService {
         // 118856）。
         let player = Player::new(session.spawn - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H));
         let spawn_room = session.spawn_room.clone();
-        let camera_room = spawn_room.clone();
+        let current_room = spawn_room.clone();
         // 相机初始落位即按原版钳制（见 `update_camera`）。
         let anchor = player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
 
@@ -139,7 +163,8 @@ impl GameService {
             static_draws,
             static_dirty: gpu.is_none(),
             built_room,
-            camera_room,
+            current_room,
+            transition: None,
             overflow_warned: false,
             reloads: 0,
             reported_room: spawn_room,
@@ -147,25 +172,30 @@ impl GameService {
     }
 
     /// 原版相机中心：`Player.CameraTarget` 是 `Position + (-160,-90)` 的
-    /// 相机**左上角**钳进 `[Left, Top, Right-320, Bottom-180]`；等价的
-    /// 中心钳制是 `[Left+160, Top+90, Right-160, Bottom-90]`。窄/矮于
-    /// 视图的轴取房间中心。
+    /// 相机**中心**钳进 `[Left+160, Right-160] × [Top+90, Bottom-90]`
+    /// （等价于原版把相机左上角钳进 `[Left, Top, Right-320, Bottom-180]`
+    /// 再加回半屏，`pureCeleste.cs:119108-119111`）。
+    ///
+    /// 钳制取 XNA `MathHelper.Clamp(v, min, max)` 的逐值语义 —— max <
+    /// min（房间窄/矮于视图）时**不**取中心：值偏左给 min，偏右给 max。
     ///
     /// `anchor` 是玩家的**底中心**（原版 Position 语义），`room_name`
-    /// 是玩家当前所在房间 —— 相机只在这一间里打转。
+    /// 是目标房间。引擎 `Camera.position` 即视口中心。
     fn vanilla_camera_center(session: &Session, anchor: Vec2, room_name: &str) -> Vec2 {
         let Some(room) = session.doc.rooms.iter().find(|r| r.name == room_name) else {
             return anchor;
         };
         let b = &room.bounds;
+        // XNA `MathHelper.Clamp`：先查下界再查上界（max < min 时按值落边）。
         let clamp_axis = |v: Fx, lo: f32, size: f32, view: f32| -> Fx {
-            if size <= view {
-                Fx::from_f32(lo + size * 0.5)
+            let min = Fx::from_f32(lo + view * 0.5);
+            let max = Fx::from_f32(lo + size - view * 0.5);
+            if v < min {
+                min
+            } else if v > max {
+                max
             } else {
-                v.clamp(
-                    Fx::from_f32(lo + view * 0.5),
-                    Fx::from_f32(lo + size - view * 0.5),
-                )
+                v
             }
         };
         Vec2::new(
@@ -186,8 +216,7 @@ impl GameService {
 
     /// 当前房间名。
     pub fn room_name(&self) -> &str {
-        // `room_at` 接收 hitbox 左上角，自己取中心。
-        self.session.room_at(self.player.pos).name.as_str()
+        &self.current_room
     }
 
     /// 已加载的插件数。
@@ -203,8 +232,9 @@ impl GameService {
         // 清屏色来自地图样式（`<Style color=...>` → `MapStyle::background_color`）。
         gpu.set_clear_color(self.session.clear_color());
 
-        // 原版一次只画一个房间：切房（或热重载）就重建当前房间的静态批次。
-        let room_name = self.session.room_at(self.player.pos).name.clone();
+        // 原版一次只画一个房间：转场开始（`Session.Level` 已切到新房间）
+        // 或热重载时，以当前房间重建静态批次。
+        let room_name = self.current_room.clone();
         if self.static_dirty || self.built_room != room_name {
             let idx = self
                 .session
@@ -314,28 +344,260 @@ impl GameService {
         }
     }
 
+    /// 一个模拟 tick：转场中只推进协程；否则物理 → 相机 → 转场判定 →
+    /// backdrop 可见性刷新。
+    fn simulate_tick(&mut self) {
+        // 转场期间实体冻结（原版 `Level.Update` 的 Transitioning 分支，
+        // 115659-115668 只跑转场协程），只有玩家滑动与相机平移。
+        if self.transition.is_some() {
+            self.advance_transition();
+        } else {
+            self.player.update(&self.input, &self.session);
+            self.update_camera();
+            // EnforceBounds：转场触发/边界钳制，在物理之后（120168）。
+            self.check_room_transition();
+        }
+
+        // backdrop 可见性每 tick 刷新（原版 `Backdrop.Update` 的节奏，
+        // 109468-109489）；房间过滤用当前房间名（`Session.Level` 语义），
+        // 转场期间按 InstantIn/InstantOut 规则保留或点亮。
+        let transitioning = self.transition.is_some();
+        let room = self.current_room.clone();
+        self.session
+            .update_backdrop_visibility(&room, transitioning);
+
+        // 房间身份变化：`-v` 以上打一行，供排查"玩家到底站在哪个房间"。
+        if room != self.reported_room {
+            debug!(
+                from = %self.reported_room,
+                to = %room,
+                x = self.player.pos.x.to_f32(),
+                y = self.player.pos.y.to_f32(),
+                "room changed"
+            );
+            self.reported_room = room;
+        }
+    }
+
+    /// 常规 tick 的相机跟随（原版 `Player.Update` 120133-120146）：
+    /// 目标 = 玩家锚点在当前房间内钳制后的位置，指数逼近。
     fn update_camera(&mut self) {
         // 玩家锚点 = hitbox 底中心（原版 Position 语义）。
         let anchor = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
-        let room_name = self.session.room_at(self.player.pos).name.clone();
-
+        let target = Self::vanilla_camera_center(&self.session, anchor, &self.current_room);
         self.prev_camera = self.camera;
-        if self.camera_room != room_name {
-            // 原版跨房间是切屏：相机**直接落位**到新房间的钳制位置，
-            // 绝不做跨房间的平滑 —— 那会让镜头扫过房间之间的黑色虚空。
-            self.camera = Camera::at(Self::vanilla_camera_center(
-                &self.session,
-                anchor,
-                &room_name,
-            ));
-            self.prev_camera = self.camera;
-            self.camera_room = room_name;
+        let delta = target - self.camera.position;
+        self.camera.position += delta * CAMERA_LERP;
+    }
+
+    /// 原版 `Level.EnforceBounds`（pureCeleste.cs:116517-116607）的转场
+    /// 触发与边界钳制。玩家 hitbox 越过当前房间边界且探针点落在另一间
+    /// 房里 → 开转场；否则按原版钳位（左右硬夹、上 24px 余量）。
+    ///
+    /// 两侧同时越界时按原版 if/else 优先级只触发一个：左 → 右 → 上 → 下。
+    fn check_room_transition(&mut self) {
+        let Some(room) = self
+            .session
+            .doc
+            .rooms
+            .iter()
+            .find(|r| r.name == self.current_room)
+        else {
+            return;
+        };
+        let b = room.bounds;
+        let (left, top, right, bottom) = (b.x, b.y, b.x + b.w, b.y + b.h);
+        let pos = self.player.pos;
+        let p_left = pos.x.to_f32();
+        let p_top = pos.y.to_f32();
+        let p_right = (pos.x + Fx::from_int(PLAYER_W_PX)).to_f32();
+        let p_bottom = (pos.y + Fx::from_int(PLAYER_H_PX)).to_f32();
+        let center = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
+
+        if p_left < left && p_top >= top && p_bottom < bottom {
+            let probe = center + Vec2::from_f32s(-8.0, 0.0);
+            match self.room_at_point(probe) {
+                Some(next) => self.start_transition(next, (-1.0, 0.0)),
+                None => {
+                    // 原版钳位：player.Left = bounds.Left
+                    self.player.pos.x = Fx::from_f32(left);
+                    self.player.vel.x = Fx::zero();
+                }
+            }
+        } else if p_right > right && p_top >= top && p_bottom < bottom {
+            let probe = center + Vec2::from_f32s(8.0, 0.0);
+            match self.room_at_point(probe) {
+                Some(next) => self.start_transition(next, (1.0, 0.0)),
+                None => {
+                    self.player.pos.x = Fx::from_f32(right - PLAYER_W as f32);
+                    self.player.vel.x = Fx::zero();
+                }
+            }
+        }
+
+        // 上：中心越过房间顶边（119560-119577）；没有目标房间时钳到
+        // 顶上 24px（允许探头看上面）。
+        if center.y.to_f32() < top {
+            let probe = center + Vec2::from_f32s(0.0, -12.0);
+            match self.room_at_point(probe) {
+                Some(next) => {
+                    self.player.before_up_transition();
+                    self.start_transition(next, (0.0, -1.0));
+                }
+                None => {
+                    if p_top < top - 24.0 {
+                        self.player.pos.y = Fx::from_f32(top - 24.0);
+                    }
+                }
+            }
+        } else if p_bottom > bottom {
+            // 下：脚下 4px 无实体才转场（116589-116598）；原版底部越界
+            // 未转场即死亡（116599-116606），死亡尚未实现，沿用世界夹取。
+            let probe = center + Vec2::from_f32s(0.0, 12.0);
+            let grounded_below =
+                self.player
+                    .hits(&self.session.doc.rooms, pos.x, pos.y + Fx::from_int(4));
+            match self.room_at_point(probe) {
+                Some(next) if !grounded_below => {
+                    self.player.before_down_transition();
+                    self.start_transition(next, (0.0, 1.0));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 点所在的房间（原版 `MapData.GetAt`；无回落）。
+    fn room_at_point(&self, point: Vec2) -> Option<String> {
+        self.session
+            .doc
+            .rooms
+            .iter()
+            .find(|r| r.bounds.to_rect().contains(point))
+            .map(|r| r.name.clone())
+    }
+
+    /// 开转场（原版 `Level.TransitionRoutine` 115282-115423 的准备段）：
+    /// `Session.Level` 立即切到新房间（世界/静态批次随后以新房间重建），
+    /// 算出玩家滑动终点与相机起终点。
+    fn start_transition(&mut self, next_room: String, direction: (f32, f32)) {
+        let Some(next) = self
+            .session
+            .doc
+            .rooms
+            .iter()
+            .find(|r| r.name == next_room)
+            .cloned()
+        else {
+            return;
+        };
+        let nb = next.bounds;
+        let dir = Vec2::from_f32s(direction.0, direction.1);
+        // dirPad：direction * 4，竖直向下是 * 12（115345-115349）。
+        let dir_pad = if direction == (0.0, 1.0) {
+            dir * Fx::from_int(12)
         } else {
-            let target = Self::vanilla_camera_center(&self.session, anchor, &room_name);
-            // 平滑跟随。原版的具体缓动待对 pureCeleste 的 Level.Update
-            // 确认；每 tick 追 1/4（约 0.3s 收敛）先对齐"快而不抖"的手感。
-            let delta = target - self.camera.position;
-            self.camera.position += delta * CAMERA_LERP;
+            dir * Fx::from_int(4)
+        };
+
+        // playerTo：玩家**底中心**空间（原版 Position 语义）。
+        let (dir_x, _) = direction;
+        let mut player_to = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
+        if dir_x != 0.0 {
+            // 横向转场先把终点从地板里拔出来（115351-115355）。
+            let nb_bottom = nb.y + nb.h;
+            while player_to.y.to_f32() >= nb_bottom {
+                player_to.y = player_to.y - Fx::one();
+            }
+        }
+        // 一直沿方向滑动，直到落进新房间（带 dirPad 的内缩判定，
+        // `IsInBounds(Vector2, Vector2)` 116641-116657）。
+        let mut guard = 0u32;
+        while !Self::in_bounds_padded(player_to, dir_pad, &nb) {
+            player_to = player_to + dir;
+            guard += 1;
+            if guard > 4096 {
+                warn!(
+                    from = %self.current_room,
+                    to = %next_room,
+                    "transition target never entered the next room; clamping the glide"
+                );
+                break;
+            }
+        }
+
+        let camera_from = self.camera.position;
+        let camera_to = Self::vanilla_camera_center(&self.session, player_to, &next_room);
+        info!(
+            from = %self.current_room,
+            to = %next_room,
+            "room transition"
+        );
+        self.current_room = next_room;
+        // hitbox 左上角 = 底中心 − (W/2, H)。
+        let player_to = player_to - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
+        self.transition = Some(RoomTransition {
+            player_to,
+            camera_from,
+            camera_to,
+            ticks: 0,
+        });
+    }
+
+    /// 原版 `IsInBounds(Vector2, Vector2 dirPad)`（116641-116657）：
+    /// 房间矩形沿 `dirPad` 的正分量内缩后是否包含该点（右/下开区间）。
+    fn in_bounds_padded(p: Vec2, dir_pad: Vec2, b: &releste_map::RectDef) -> bool {
+        let zero = Fx::zero();
+        let pad_l = dir_pad.x.max(zero);
+        let pad_r = (-dir_pad.x).max(zero);
+        let pad_t = dir_pad.y.max(zero);
+        let pad_b = (-dir_pad.y).max(zero);
+        let f = Fx::from_f32;
+        let (l, t, r, bot) = (f(b.x), f(b.y), f(b.x + b.w), f(b.y + b.h));
+        p.x >= l + pad_l && p.y >= t + pad_t && p.x < r - pad_r && p.y < bot - pad_b
+    }
+
+    /// 推进转场（原版 `TransitionRoutine` 的逐帧段 + `Player.TransitionTo`
+    /// 120551-120566）：玩家以 60 px/s 滑向终点（无碰撞，X 先 Y 后），
+    /// 相机以 CubeOut 缓动滑 0.65s，> 0.9 时直接落位。
+    ///
+    /// 转场期间实体全部冻结（`Level.Update` 的 Transitioning 分支只跑
+    /// 转场协程），输入被忽略 —— 与原版一致。
+    fn advance_transition(&mut self) {
+        let Some(t) = self.transition.as_mut() else {
+            return;
+        };
+        self.player.prev_pos = self.player.pos;
+        // MoveTowardsX / MoveTowardsY：每轴最多 1 px/tick（60 px/s）。
+        let glide = |v: &mut Fx, to: Fx| {
+            if *v < to {
+                *v = (*v + Fx::one()).min(to);
+            } else {
+                *v = (*v - Fx::one()).max(to);
+            }
+        };
+        glide(&mut self.player.pos.x, t.player_to.x);
+        glide(&mut self.player.pos.y, t.player_to.y);
+        let reached = self.player.pos == t.player_to;
+
+        // cameraAt = Approach(cameraAt, 1, dt / 0.65)（115366）。
+        // 缓动是渲染侧表现（AGENTS.md 15.7 允许），用 f32 算完折回 Fx。
+        t.ticks += 1;
+        let at = (t.ticks as f32 / TRANSITION_TICKS as f32).min(1.0);
+        let eased = 1.0 - (1.0 - at).powi(3); // Ease.CubeOut
+        let eased_fx = Fx::from_f32(eased);
+        let snap = eased > 0.9;
+        self.prev_camera = self.camera;
+        self.camera.position = if snap {
+            t.camera_to
+        } else {
+            t.camera_from + (t.camera_to - t.camera_from) * eased_fx
+        };
+
+        if reached && t.ticks >= TRANSITION_TICKS {
+            self.player.prev_pos = self.player.pos;
+            self.prev_camera = self.camera;
+            self.transition = None;
         }
     }
 }
@@ -363,28 +625,7 @@ impl Service for GameService {
         if self.paused {
             return;
         }
-        self.player.update(&self.input, &self.session);
-        self.update_camera();
-
-        // backdrop 可见性每 tick 刷新（原版 `Backdrop.Update` 的节奏，
-        // 109468-109489）；房间过滤用当前房间名（`Session.Level` 语义）。
-        // 转场语义随后续房间转场一起接入。
-        self.session
-            .update_backdrop_visibility(self.room_name(), false);
-
-        // 房间身份变化（中心跨缝）：`-v` 以上打一行，供排查"玩家到底
-        // 站在哪个房间"。物理本身不选房间，这只影响标题栏/相机。
-        let room = self.session.room_at(self.player.pos).name.to_string();
-        if room != self.reported_room {
-            debug!(
-                from = %self.reported_room,
-                to = %room,
-                x = self.player.pos.x.to_f32(),
-                y = self.player.pos.y.to_f32(),
-                "room changed"
-            );
-            self.reported_room = room;
-        }
+        self.simulate_tick();
     }
 
     fn dispose(&mut self) {
@@ -504,5 +745,116 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(paths.root());
+    }
+
+    /// 两间贴边房间（A x[0,320)、B x[320,640)，地板同高）构成的最小
+    /// 转场地图：玩家从 A 朝右走出右缘，必须触发原版转场。
+    fn seam_map() -> releste_map::MapDocument {
+        let mut tiles = Tileset::new("Test", 40, 23);
+        for x in 0..40 {
+            tiles.set(x, 22, 1); // 地板一行（y 176..184）
+        }
+        let player = EntityData::new("player", releste_world::EntityId::new(1), 16.0, 176.0);
+        let room = |name: &str, x: f32| releste_map::Room {
+            name: name.into(),
+            bounds: RectDef {
+                x,
+                y: 0.0,
+                w: 320.0,
+                h: 184.0,
+            },
+            tiles: tiles.clone(),
+            bg: Tileset::new("Test", 40, 23),
+            entities: vec![player.clone()],
+            triggers: Vec::new(),
+            script: None,
+            ..Default::default()
+        };
+        releste_map::MapDocument {
+            area: "test".into(),
+            rooms: vec![room("lvl_a", 0.0), room("lvl_b", 320.0)],
+            sync_rules: Vec::new(),
+            ..Default::default()
+        }
+    }
+
+    /// 走出房间右缘 → 原版转场：玩家冻结滑进新房间，相机 CubeOut 平移
+    /// 0.65s，结束后玩家落在新房间的地板上、房间身份已切换。
+    #[test]
+    fn walking_off_the_seam_starts_a_vanilla_transition() {
+        let doc = seam_map();
+        let session = Session::from_doc(doc, "test");
+        let mut service = GameService::new(session, None, None, None);
+        assert_eq!(service.current_room, "lvl_a");
+        let start_x = service.player.pos.x;
+
+        service.input.right = true;
+        for _ in 0..240 {
+            service.simulate_tick();
+            if service.transition.is_some() {
+                break;
+            }
+        }
+        assert!(
+            service.transition.is_some(),
+            "the seam must start a transition"
+        );
+        assert_eq!(
+            service.current_room, "lvl_b",
+            "Session.Level switches at start"
+        );
+        let from = service.player.pos;
+
+        // 转场期间输入被忽略（实体冻结）：反着按也不影响滑动方向。
+        service.input.right = false;
+        service.input.left = true;
+        for _ in 0..64 {
+            service.simulate_tick();
+            if service.transition.is_none() {
+                break;
+            }
+        }
+        assert!(service.transition.is_none(), "the glide must finish");
+        assert!(
+            service.player.pos.x > from.x,
+            "the player keeps gliding toward the next room despite input"
+        );
+        assert!(
+            service.player.pos.x > start_x,
+            "the player crossed the seam"
+        );
+        let px = service.player.pos.x.to_f32();
+        assert!(
+            (320.0..=328.0).contains(&px),
+            "the player stops just inside lvl_b (padded by 4px), got {px}"
+        );
+        assert!(
+            service.player.on_ground,
+            "the player lands on lvl_b's floor"
+        );
+        assert_eq!(service.player.pos.y.to_f32(), 176.0 - PLAYER_H as f32);
+        // 相机落位在新房间的钳制目标上（对玩家在新房间里的位置）。
+        let anchor = service.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
+        assert_eq!(
+            service.camera.position,
+            GameService::vanilla_camera_center(&service.session, anchor, "lvl_b")
+        );
+    }
+
+    /// 相机跟随系数必须是原版的 `1 - 0.01^dt`（≈0.074/tick），不是旧的
+    /// 1/4 —— 追得太快会失去原版"相机拖拽"的手感。
+    #[test]
+    fn camera_follow_uses_the_vanilla_exponential_rate() {
+        let doc = seam_map();
+        let session = Session::from_doc(doc, "test");
+        let mut service = GameService::new(session, None, None, None);
+        let anchor = service.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
+        let target = GameService::vanilla_camera_center(&service.session, anchor, "lvl_a");
+        // 把相机拖到别处，走一 tick：位移必须是 (target - pos) * 19/256。
+        service.camera.position = Vec2::from_f32s(40.0, 90.0);
+        service.update_camera();
+        let expected =
+            Vec2::from_f32s(40.0, 90.0) + (target - Vec2::from_f32s(40.0, 90.0)) * CAMERA_LERP;
+        assert_eq!(service.camera.position, expected);
     }
 }
