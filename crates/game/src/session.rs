@@ -134,55 +134,93 @@ impl Session {
         room.tiles.get(tx, ty).unwrap_or(0) != 0
     }
 
-    /// 画瓦片 + 实体（不含玩家，玩家每帧单独画）。
+    /// 画**当前房间**的瓦片 + 实体（不含玩家，玩家每帧单独画）。
+    ///
+    /// 原版一次只画一个房间：跨房间连续世界里把邻室也画出来，会在
+    /// 接缝上出现两边边墙贴在一起的伪影（悬空门柱、垂雪檐）。
+    /// 调用方负责在房间切换时换 `room_index` 重建。
     ///
     /// 需要 GPU 是因为 `.atlas` 里没有写纹理尺寸，归一化 UV 只能问
     /// 已上传的纹理。
-    pub fn build_static(&mut self, gpu: &GpuRenderer) -> Vec<SpriteDraw> {
+    pub fn build_static(&mut self, gpu: &GpuRenderer, room_index: usize) -> Vec<SpriteDraw> {
         let mut out = Vec::new();
-
-        for room in &self.doc.rooms {
-            push_tiles(&mut out, room, &room.tiles, Layer::Tiles, WHITE, self, gpu);
-            push_tiles(&mut out, room, &room.bg, Layer::BgTiles, BG_TINT, self, gpu);
-            self.push_entities(&mut out, room, gpu);
-        }
+        let room = &self.doc.rooms[room_index];
+        push_tiles(&mut out, room, &room.tiles, Layer::Tiles, WHITE, self, gpu);
+        push_tiles(&mut out, room, &room.bg, Layer::BgTiles, BG_TINT, self, gpu);
+        self.push_entities(&mut out, room, gpu);
 
         debug!(
             draws = out.len(),
+            room = %room.name,
             atlas = %self.atlas_name,
             "static draw list rebuilt"
         );
         out
     }
 
-    /// 玩家当前帧的 draw（贴地的底边对齐 hitbox 底边）。
-    pub fn player_draw(&self, gpu: &GpuRenderer, pos: Vec2, flip_x: bool) -> Option<SpriteDraw> {
-        let (group, sprite) = self.atlas.sprite(sprites::PLAYER_SPRITE)?;
-        let id = sprites::group_id(&self.atlas, group);
-        let (tw, th) = gpu.texture_size(id)?;
-        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
-
-        let w = f32::from(sprite.w);
-        let h = f32::from(sprite.h);
-        let top_left = Vec2::from_f32s(
-            pos.x.to_f32() + (crate::player::PLAYER_W - w) * 0.5,
-            pos.y.to_f32() + crate::player::PLAYER_H - h,
-        );
-
-        Some(
-            SpriteDraw::new(id, top_left, Vec2::from_f32s(w, h), uv)
-                .with_layer(Layer::Player.value())
-                .with_color(WHITE)
-                .with_flip_x(flip_x),
-        )
+    /// 玩家本帧的 draw：头发在身体后面（原版 `PlayerHair` 画身体之前）。
+    ///
+    /// 原版玩家的 `Position` 是 hitbox **底中心**（即脚下的锚点），
+    /// sprite 以锚点为**底中心**摆放 —— 这样脚踩在 hitbox 底边（地面）
+    /// 上，头露在 hitbox 上方，不会陷进地里。头发挂在头部（身体顶
+    /// 部往上一点，朝向背后侧偏移），精确的逐帧发位置等 SpriteBank
+    /// 数据接入后再对齐。
+    pub fn player_draws(&self, gpu: &GpuRenderer, pos: Vec2, flip_x: bool) -> Vec<SpriteDraw> {
+        let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
+        let mut out = Vec::new();
+        for (name, layer) in [
+            (sprites::PLAYER_HAIR_SPRITE, Layer::PlayerHair),
+            (sprites::PLAYER_SPRITE, Layer::Player),
+        ] {
+            let Some((group, sprite)) = self.atlas.sprite(name) else {
+                continue;
+            };
+            let id = sprites::group_id(&self.atlas, group);
+            let Some((tw, th)) = gpu.texture_size(id) else {
+                continue;
+            };
+            let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+            let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+            let top_left = if name == sprites::PLAYER_SPRITE {
+                // 身体：底中心锚在脚下。
+                anchor - Vec2::from_f32s(w * 0.5, h)
+            } else {
+                // 头发：盖在头部（身体顶部），向背后侧偏 2px。
+                let body_h = self
+                    .atlas
+                    .sprite(sprites::PLAYER_SPRITE)
+                    .map(|(_, s)| f32::from(s.h))
+                    .unwrap_or(0.0);
+                let head = anchor - Vec2::from_f32s(0.0, body_h - 4.0);
+                let back = if flip_x { 2.0 } else { -2.0 };
+                head - Vec2::from_f32s(w * 0.5 - back, h * 0.5)
+            };
+            out.push(
+                SpriteDraw::new(id, top_left, Vec2::from_f32s(w, h), uv)
+                    .with_layer(layer.value())
+                    .with_color(if name == sprites::PLAYER_SPRITE {
+                        WHITE
+                    } else {
+                        sprites::PLAYER_HAIR_COLOR
+                    })
+                    .with_flip_x(flip_x),
+            );
+        }
+        out
     }
 
-    /// 实体批次。告警去重走 `warn_once`（`RefCell`），这样整批循环只需要
+    /// 实体批次。锚点按**原版语义**：
+    /// - 默认（贴花类）：内容**中心**贴在实体位置（`MTexture.Draw(position)`）；
+    /// - `introCar`：车身 + 轮子两张图，**底中心**贴在位置
+    ///   （`pureCeleste.cs` IntroCar：`Origin = (W/2, H)`，车轮画在车身下）；
+    /// - `lamp`：取左半 16×80 子图，**底中心**贴在位置（`Lamp` 同上）。
+    ///
+    /// 告警去重走 `warn_once`（`RefCell`），这样整批循环只需要
     /// 不可变借用 `self`，`&Room` 与 `&mut Vec` 都能并存。
     fn push_entities(&self, out: &mut Vec<SpriteDraw>, room: &Room, gpu: &GpuRenderer) {
         for e in &room.entities {
             if e.kind == "player" {
-                continue; // 玩家由仿真驱动，见 `Session::player_draw`
+                continue; // 玩家由仿真驱动，见 `Session::player_draws`
             }
             let Some(name) = sprites::entity_sprite(&e.kind) else {
                 if self.warn_once(&format!("no-sprite:{}", e.kind)) {
@@ -201,22 +239,60 @@ impl Session {
                 continue; // 纹理没上传（未转码的 .data），已经在 load_atlas 告警过
             };
             let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
-            // 实体的 `origin` 是 sprite 框架相对实体位置的偏移：
-            // 框架左上角 = 房间局部 (x - origin_x, y - origin_y)。
-            let pos = Vec2::from_f32s(
-                room.bounds.x + e.x - e.origin_x,
-                room.bounds.y + e.y - e.origin_y,
-            );
-            out.push(
-                SpriteDraw::new(
-                    id,
-                    pos,
-                    Vec2::from_f32s(f32::from(sprite.w), f32::from(sprite.h)),
-                    uv,
-                )
-                .with_layer(Layer::Entities.value())
-                .with_color(WHITE),
-            );
+            let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+            // 实体位置 = 锚点（世界坐标）。
+            let anchor = Vec2::from_f32s(room.bounds.x + e.x, room.bounds.y + e.y);
+            match e.kind.as_str() {
+                "introCar" => {
+                    // 原版是两张图：body（Depth 1）+ wheels（Depth 3），
+                    // 都是**底中心**锚在位置上。
+                    for (name, layer) in [
+                        ("scenery\\car\\wheels", Layer::Entities.value()),
+                        ("scenery\\car\\body", Layer::Entities.value() + 1),
+                    ] {
+                        let Some((group, part)) = self.atlas.sprite(name) else {
+                            if self.warn_once(&format!("missing:{name}")) {
+                                warn!(sprite = name, "sprite not found in atlas; skipping it");
+                            }
+                            continue;
+                        };
+                        let id = sprites::group_id(&self.atlas, group);
+                        let Some((tw, th)) = gpu.texture_size(id) else {
+                            continue;
+                        };
+                        let uv =
+                            GpuRenderer::uv_for_sprite(part, Vec2::from_f32s(tw as f32, th as f32));
+                        let (pw, ph) = (f32::from(part.w), f32::from(part.h));
+                        let top_left = anchor - Vec2::from_f32s(pw * 0.5, ph);
+                        out.push(
+                            SpriteDraw::new(id, top_left, Vec2::from_f32s(pw, ph), uv)
+                                .with_layer(layer)
+                                .with_color(WHITE),
+                        );
+                    }
+                }
+                "lamp" => {
+                    let lamp = sprites::lamp_sprite(sprite);
+                    let uv =
+                        GpuRenderer::uv_for_sprite(&lamp, Vec2::from_f32s(tw as f32, th as f32));
+                    let (lw, lh) = (f32::from(lamp.w), f32::from(lamp.h));
+                    let top_left = anchor - Vec2::from_f32s(lw * 0.5, lh);
+                    out.push(
+                        SpriteDraw::new(id, top_left, Vec2::from_f32s(lw, lh), uv)
+                            .with_layer(Layer::Entities.value())
+                            .with_color(WHITE),
+                    );
+                }
+                _ => {
+                    // 贴花类：内容中心贴位置。
+                    let top_left = anchor - Vec2::from_f32s(w * 0.5, h * 0.5);
+                    out.push(
+                        SpriteDraw::new(id, top_left, Vec2::from_f32s(w, h), uv)
+                            .with_layer(Layer::Entities.value())
+                            .with_color(WHITE),
+                    );
+                }
+            }
         }
     }
 

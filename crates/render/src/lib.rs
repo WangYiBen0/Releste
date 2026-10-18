@@ -32,6 +32,8 @@ pub enum Layer {
     Tiles = 0,
     /// Entities.
     Entities = 100,
+    /// Player hair（原版头发画在身体后面）。
+    PlayerHair = 150,
     /// Player.
     Player = 200,
     /// Particles / effects.

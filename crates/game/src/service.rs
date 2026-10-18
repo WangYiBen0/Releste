@@ -9,7 +9,7 @@ use releste_kernel::{Context, FrameId, Service, ServiceId};
 use releste_math::{Fx, Vec2};
 use releste_plugin_host::PluginHost;
 use releste_reload::FileWatcher;
-use releste_render::{Camera, GpuRenderer, SpriteBatch, SpriteDraw};
+use releste_render::{Camera, GpuRenderer, SpriteBatch, SpriteDraw, BASE_HEIGHT, BASE_WIDTH};
 use tracing::{debug, info, warn};
 
 use crate::paths::Paths;
@@ -81,6 +81,10 @@ pub struct GameService {
     watcher: Option<FileWatcher>,
     static_draws: Vec<SpriteDraw>,
     static_dirty: bool,
+    /// 静态批次当前对应的房间（切房即重建 —— 原版一次只画一个房间）。
+    built_room: String,
+    /// 相机当前锁定的房间（跨房间不平滑，直接落位）。
+    camera_room: String,
     overflow_warned: bool,
     reloads: u64,
     /// 上次报告过的房间名（`-v` 下房间切换只在这变化时打一行）。
@@ -96,19 +100,29 @@ impl GameService {
         gpu: Option<&GpuRenderer>,
     ) -> Self {
         let player = Player::new(session.spawn);
-        let centre = player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
-        let camera = Camera::at(centre);
+        let spawn_room = session.spawn_room.clone();
+        let camera_room = spawn_room.clone();
+        // 相机初始落位即按原版钳制（见 `update_camera`）。
+        let anchor = player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
 
-        let (session, static_draws) = match gpu {
+        let (session, static_draws, built_room) = match gpu {
             Some(gpu) => {
                 let mut session = session;
-                let draws = session.build_static(gpu);
-                (session, draws)
+                let idx = session
+                    .doc
+                    .rooms
+                    .iter()
+                    .position(|r| r.name == spawn_room)
+                    .unwrap_or(0);
+                let draws = session.build_static(gpu, idx);
+                let built = session.doc.rooms[idx].name.clone();
+                (session, draws, built)
             }
-            None => (session, Vec::new()),
+            None => (session, Vec::new(), spawn_room.clone()),
         };
+        // 相机钳进出生房间（原版：相机永远在房间界内）。
+        let camera = Camera::at(Self::vanilla_camera_center(&session, anchor, &spawn_room));
 
-        let spawn_room = session.spawn_room.clone();
         GameService {
             session,
             player,
@@ -120,10 +134,40 @@ impl GameService {
             watcher,
             static_draws,
             static_dirty: gpu.is_none(),
+            built_room,
+            camera_room,
             overflow_warned: false,
             reloads: 0,
             reported_room: spawn_room,
         }
+    }
+
+    /// 原版相机中心：`Player.CameraTarget` 是 `Position + (-160,-90)` 的
+    /// 相机**左上角**钳进 `[Left, Top, Right-320, Bottom-180]`；等价的
+    /// 中心钳制是 `[Left+160, Top+90, Right-160, Bottom-90]`。窄/矮于
+    /// 视图的轴取房间中心。
+    ///
+    /// `anchor` 是玩家的**底中心**（原版 Position 语义），`room_name`
+    /// 是玩家当前所在房间 —— 相机只在这一间里打转。
+    fn vanilla_camera_center(session: &Session, anchor: Vec2, room_name: &str) -> Vec2 {
+        let Some(room) = session.doc.rooms.iter().find(|r| r.name == room_name) else {
+            return anchor;
+        };
+        let b = &room.bounds;
+        let clamp_axis = |v: Fx, lo: f32, size: f32, view: f32| -> Fx {
+            if size <= view {
+                Fx::from_f32(lo + size * 0.5)
+            } else {
+                v.clamp(
+                    Fx::from_f32(lo + view * 0.5),
+                    Fx::from_f32(lo + size - view * 0.5),
+                )
+            }
+        };
+        Vec2::new(
+            clamp_axis(anchor.x, b.x, b.w, BASE_WIDTH),
+            clamp_axis(anchor.y, b.y, b.h, BASE_HEIGHT),
+        )
     }
 
     /// 热重载累计次数。
@@ -152,8 +196,18 @@ impl GameService {
     /// `alpha` ∈ [0, 1] 是上个 tick 到这个 tick 的插值进度，玩家位置按
     /// 它取 `prev_pos` → `pos` 的线性插值，避免 60Hz 模拟在 144Hz 屏幕上抖动。
     pub fn render(&mut self, gpu: &GpuRenderer, alpha: f32, batch: &mut SpriteBatch) {
-        if self.static_dirty {
-            self.static_draws = self.session.build_static(gpu);
+        // 原版一次只画一个房间：切房（或热重载）就重建当前房间的静态批次。
+        let room_name = self.session.room_at(self.player.pos).name.clone();
+        if self.static_dirty || self.built_room != room_name {
+            let idx = self
+                .session
+                .doc
+                .rooms
+                .iter()
+                .position(|r| r.name == room_name)
+                .unwrap_or(0);
+            self.static_draws = self.session.build_static(gpu, idx);
+            self.built_room = room_name;
             self.static_dirty = false;
         }
 
@@ -170,7 +224,7 @@ impl GameService {
                 break;
             }
         }
-        if let Some(draw) = self.player_draw(gpu, alpha) {
+        for draw in self.player_draws(gpu, alpha) {
             if batch.push(draw).is_err() && !self.overflow_warned {
                 self.overflow_warned = true;
                 warn!("sprite batch full; player draw dropped");
@@ -179,11 +233,11 @@ impl GameService {
         batch.sort();
     }
 
-    /// 玩家本帧的 draw：位置在 `prev_pos` → `pos` 之间插值。
-    fn player_draw(&self, gpu: &GpuRenderer, alpha: f32) -> Option<SpriteDraw> {
+    /// 玩家本帧的 draw（头发 + 身体，位置按 alpha 插值）。
+    fn player_draws(&self, gpu: &GpuRenderer, alpha: f32) -> Vec<SpriteDraw> {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
         let pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
-        self.session.player_draw(gpu, pos, self.player.facing < 0)
+        self.session.player_draws(gpu, pos, self.player.facing < 0)
     }
 
     /// 插值后的相机（供渲染使用）。
@@ -243,10 +297,28 @@ impl GameService {
     }
 
     fn update_camera(&mut self) {
-        let target = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
+        // 玩家锚点 = hitbox 底中心（原版 Position 语义）。
+        let anchor = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
+        let room_name = self.session.room_at(self.player.pos).name.clone();
+
         self.prev_camera = self.camera;
-        let delta = target - self.camera.position;
-        self.camera.position += delta * CAMERA_LERP;
+        if self.camera_room != room_name {
+            // 原版跨房间是切屏：相机**直接落位**到新房间的钳制位置，
+            // 绝不做跨房间的平滑 —— 那会让镜头扫过房间之间的黑色虚空。
+            self.camera = Camera::at(Self::vanilla_camera_center(
+                &self.session,
+                anchor,
+                &room_name,
+            ));
+            self.prev_camera = self.camera;
+            self.camera_room = room_name;
+        } else {
+            let target = Self::vanilla_camera_center(&self.session, anchor, &room_name);
+            // 平滑跟随。原版的具体缓动待对 pureCeleste 的 Level.Update
+            // 确认；每 tick 追 1/4（约 0.3s 收敛）先对齐"快而不抖"的手感。
+            let delta = target - self.camera.position;
+            self.camera.position += delta * CAMERA_LERP;
+        }
     }
 }
 

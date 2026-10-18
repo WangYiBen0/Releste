@@ -469,36 +469,26 @@ impl GpuRenderer {
     }
 
     /// 渲染一帧并把像素读回 CPU：紧凑 RGBA8（BGRA 表面格式已换回 RGBA）。
-    /// 返回 `(宽, 高, 像素)` —— 宽可能比视口窄（见下）。
+    /// 返回 `(宽, 高, 像素)` —— 高可能比视口矮（见下）。
     ///
     /// "画得对不对"不该只靠肉眼盯窗口 —— `--screenshot` 用它把真实
     /// 管线的输出落成 PNG，CI / 远程环境也能核对渲染结果。
     ///
-    /// `copy_texture_to_buffer` 的行距必须 256 对齐；当 `宽×4` 不是
-    /// 256 的倍数（平铺 WM 会把窗口挤成任意宽度）时，行距和
-    /// `宽×4` 之间有 padding，个别驱动（llvmpipe）映射回来的范围
-    /// 会把 padding 甩掉，行切分就对不上。解法：把拷贝范围**裁到
-    /// 64 的倍数** —— 行距恰好等于 `宽×4`，零 padding，歧义消失。
-    /// 960 宽的窗口（`960 % 64 == 0`）不受影响，整帧照拍。
+    /// `copy_texture_to_buffer` 的行距必须 256 对齐，所以行距 ≥ `宽×4`。
+    /// 个别驱动（llvmpipe）映射回来的范围会被削到无 padding 的尺寸，
+    /// 按行距只能读出**前面若干整行** —— 被裁掉的是底部（窗口里通常
+    /// 是 letterbox 黑边），游戏内容仍在；按实际行数取，宁缺不炸。
     pub fn capture_pixels(
         &mut self,
         batch: &SpriteBatch,
         camera: &Camera,
     ) -> Result<(u32, u32, Vec<u8>), RenderError> {
         let (width, height) = self.viewport;
-        let capture_width = width / 64 * 64;
-        if capture_width == 0 {
-            return Err(RenderError::Surface(format!(
-                "viewport too narrow for a capture: {width}px"
-            )));
-        }
-        let mut capture = FrameCapture::new(&self.device, capture_width, height);
+        let bytes_per_row = (width * 4).div_ceil(256) * 256;
+        let mut capture = FrameCapture::new(&self.device, width, height, bytes_per_row);
         self.render_inner(batch, camera, Some(&mut capture))?;
-        let stride = capture_width as usize * 4;
         let padded = capture.read(&self.device);
-        // 个别驱动映射回来的字节数可能少于整帧：按实际行数取，宁可
-        // 矮一行也不越界。
-        let rows = (padded.len() / stride) as u32;
+        let rows = (padded.len() / bytes_per_row as usize) as u32;
         if rows != height {
             warn!(rows, height, "frame capture got fewer rows than requested");
         }
@@ -506,8 +496,8 @@ impl GpuRenderer {
             self.config.format,
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
         );
-        let pixels = unpack_rows(&padded, capture_width, rows, capture_width * 4, swap_rb);
-        Ok((capture_width, rows, pixels))
+        let pixels = unpack_rows(&padded, width, rows, bytes_per_row, swap_rb);
+        Ok((width, rows, pixels))
     }
 
     /// 渲染一帧；`capture` 给出时把渲染目标额外拷进 CPU 可读缓冲。
@@ -701,13 +691,8 @@ struct FrameCapture {
 }
 
 impl FrameCapture {
-    /// 为 `width × height` 的帧建映射缓冲。
-    ///
-    /// `width` 必须是 64 的倍数（调用方保证）——这样 `宽×4` 天然
-    /// 256 对齐，行距无 padding。
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        debug_assert_eq!(width % 64, 0, "capture width must keep rows 256-aligned");
-        let bytes_per_row = width * 4;
+    /// 为 `width × height` 的帧建映射缓冲，行距 `bytes_per_row`（256 对齐）。
+    fn new(device: &wgpu::Device, width: u32, height: u32, bytes_per_row: u32) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame-capture"),
             size: bytes_per_row as u64 * height.max(1) as u64,

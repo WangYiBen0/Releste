@@ -30,6 +30,33 @@ pub fn entity_sprite(kind: &str) -> Option<&'static str> {
 /// 玩家的 sprite。
 pub const PLAYER_SPRITE: &str = "characters\\player\\idle00";
 
+/// 玩家的头发（原版画在身体后面：`PlayerHair`，发色/飘动独立于身体）。
+pub const PLAYER_HAIR_SPRITE: &str = "characters\\player\\hair00";
+
+/// 原版正常发色：`pureCeleste.cs` `Player.NormalHairColor = AC3232`。
+/// hair00 纹理本体是白色，运行时染这个色。
+pub const PLAYER_HAIR_COLOR: [f32; 4] = [172.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0];
+
+/// 路灯：原版只取**未损坏的左半** 16×80 子图
+/// （`pureCeleste.cs` Lamp：`GetSubtexture(broken ? 16 : 0, 0, 16, 80)`），
+/// 图集里 30×77 的内容是损坏/完好两盏拼在一起的。
+pub fn lamp_sprite(sprite: &Sprite) -> Sprite {
+    let w = 16.min(sprite.w);
+    let h = 80.min(sprite.h);
+    Sprite {
+        name: sprite.name.clone(),
+        x: sprite.x,
+        y: sprite.y,
+        w,
+        h,
+        origin_x: 0,
+        origin_y: 0,
+        frame_w: w,
+        frame_h: h,
+        source: sprite.source.clone(),
+    }
+}
+
 /// 取 tileset 图里 `(col, row)` 格的 8×8 子矩形。
 ///
 /// `col` / `row` 来自 autotiler 的邻接匹配（`releste_map::autotiler`）；
