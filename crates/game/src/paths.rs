@@ -131,6 +131,14 @@ impl Paths {
     pub fn tilesets(&self) -> PathBuf {
         self.atlas.join("tilesets.toml")
     }
+
+    /// **背景**瓦片定义（由 `Graphics/BackgroundTiles.xml` 转换）。
+    ///
+    /// 与 [`Paths::tilesets`] 是两张独立的表：同一个 id 在两边是不同
+    /// 贴图（原版两个独立的 `Autotiler`，`pureCeleste.cs:110116-110117`）。
+    pub fn bg_tilesets(&self) -> PathBuf {
+        self.atlas.join("bg_tilesets.toml")
+    }
 }
 
 fn looks_like_root(dir: &Path) -> bool {

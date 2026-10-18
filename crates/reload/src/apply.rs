@@ -587,7 +587,7 @@ mod tests {
 
     // ---------- 端到端：diff → apply ----------
 
-    fn room_with(tiles: u8, entity_positions: &[(u64, &str, f32, f32)]) -> Room {
+    fn room_with(tiles: u16, entity_positions: &[(u64, &str, f32, f32)]) -> Room {
         let mut t = Tileset::new("Gameplay", 4, 4);
         t.set(0, 0, tiles);
         Room {
@@ -606,6 +606,7 @@ mod tests {
                 .collect(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -614,6 +615,7 @@ mod tests {
             area: "Test".into(),
             rooms,
             sync_rules: Vec::new(),
+            ..Default::default()
         }
     }
 

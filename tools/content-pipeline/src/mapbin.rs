@@ -69,6 +69,25 @@ impl BinValue {
             _ => None,
         }
     }
+
+    /// 尽力取布尔值（`loopx` / `flipx` / `broken` 这类属性）。
+    ///
+    /// 数值按「非 0 即真」解释，字符串按 `bool::from_str` 的
+    /// `true` / `false` 解释。
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            BinValue::Bool(b) => Some(*b),
+            BinValue::Byte(v) => Some(*v != 0),
+            BinValue::Short(v) => Some(*v != 0),
+            BinValue::Int(v) => Some(*v != 0),
+            BinValue::Float(v) => Some(*v != 0.0),
+            BinValue::String(s) | BinValue::RleString(s) => match s.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+        }
+    }
 }
 
 /// 地图元素。

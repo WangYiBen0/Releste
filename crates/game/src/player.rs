@@ -21,9 +21,13 @@ use releste_math::{Fx, Vec2};
 use crate::session::{nearest_room, room_containing, Session};
 
 /// hitbox 宽（像素，整数，供房间碰撞使用）。
+///
+/// 原版：`pureCeleste.cs:118856`
+/// `normalHitbox = new Hitbox(8f, 11f, -4f, -11f)` —— 8 宽 11 高，
+/// `Position` 是 hitbox **底中心**（脚下锚点）。
 pub const PLAYER_W_PX: i32 = 8;
-/// hitbox 高（像素，整数）。
-pub const PLAYER_H_PX: i32 = 8;
+/// hitbox 高（像素，整数）。出处见 [`PLAYER_W_PX`]。
+pub const PLAYER_H_PX: i32 = 11;
 /// hitbox 宽（f32 视图，供渲染使用）。
 pub const PLAYER_W: f32 = PLAYER_W_PX as f32;
 /// hitbox 高（f32 视图，供渲染使用）。
@@ -424,6 +428,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -446,8 +451,8 @@ mod tests {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert!(p.on_ground, "player never landed; pos = {:?}", p.pos);
-        // 地板是第 3 行（y = 24..32），hitbox 8 高 → 顶边正好停在 y = 16。
-        assert_eq!(p.pos.y.to_f32(), 16.0, "hitbox must snap onto the floor");
+        // 地板是第 3 行（y = 24..32），hitbox 11 高（118856）→ 顶边停在 y = 13。
+        assert_eq!(p.pos.y.to_f32(), 13.0, "hitbox must snap onto the floor");
         assert_eq!(p.vel.y, Fx::zero());
     }
 
@@ -484,8 +489,8 @@ mod tests {
     #[test]
     fn jump_lifts_the_player() {
         let room = floor_room();
-        // 站在第 3 行地板上（top = 24）→ hitbox 顶边是 y = 16。
-        let mut p = Player::new(Vec2::from_f32s(8.0, 16.0));
+        // 站在第 3 行地板上（top = 24）→ hitbox 顶边是 y = 13（11 高，118856）。
+        let mut p = Player::new(Vec2::from_f32s(8.0, 13.0));
         p.on_ground = true;
         let i = Input {
             jump: true,
@@ -528,6 +533,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -553,6 +559,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -577,6 +584,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -869,6 +877,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -970,6 +979,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 
@@ -985,8 +995,8 @@ mod tests {
         assert!(p.on_ground, "fixture: must land on the offset floor");
         assert_eq!(
             p.pos.y.to_f32(),
-            -40.0,
-            "landing must snap to the world edge of the floor"
+            -43.0,
+            "landing must snap to the world edge of the floor (hitbox 11 tall, 118856)"
         );
 
         // 撞墙：墙的左沿 x = 96 → hitbox 停在 88（旧实现弹到 152）。
@@ -1004,7 +1014,8 @@ mod tests {
         );
 
         // 顶头：天花板底边 y = -64 → 头停在 -64（旧实现弹到 -152）。
-        let mut q = Player::new(Vec2::from_f32s(72.0, -40.0));
+        // 站在地板上：地板顶 -32，hitbox 11 高 → 顶边 -43。
+        let mut q = Player::new(Vec2::from_f32s(72.0, -43.0));
         q.on_ground = true;
         let jump = Input {
             jump: true,
@@ -1084,6 +1095,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 

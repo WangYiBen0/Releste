@@ -13,16 +13,21 @@ pub const TILE_PX: i32 = 8;
 
 /// 内置实体 sprite 表。
 ///
-/// 没有条目的实体不是错误：`wire`、`jumpThru` 这类只提供几何信息，
-/// 引擎侧本来就不画东西。
+/// 没有条目的实体不是错误：`wire` 是线段、`introCrusher` 是
+/// autotiler 生成的瓦片网格，它们由 `session` 单独成图。
 pub fn entity_sprite(kind: &str) -> Option<&'static str> {
     Some(match kind {
         // `player` 由仿真每帧单独绘制，不进静态批次。
+        // `introCrusher` 不在表里：它没有任何 crushblock 贴图，外观是
+        // `GFX.FGAutotiler.GenerateBox('3', w/8, h/8)`（106322）。
         "lamp" => "scenery\\lamp",
         "flutterbird" => "scenery\\flutterbird\\idle00",
-        "bird" => "characters\\bird\\Recover00",
+        // 原版 `GFX.SpriteBank.Create("bird")` 的 start 动画是 `idle`，
+        // 它的 path 是 `crow`（Sprites.xml:261-263）→ 静止帧 `crow00`，
+        // 不是 `Recover00`（那要挨打才播）。
+        "bird" => "characters\\bird\\crow00",
         "introCar" => "scenery\\car\\body",
-        "introCrusher" => "objects\\crushblock\\hit_down01",
+        "introCarWheels" => "scenery\\car\\wheels",
         _ => return None,
     })
 }
@@ -31,26 +36,38 @@ pub fn entity_sprite(kind: &str) -> Option<&'static str> {
 pub const PLAYER_SPRITE: &str = "characters\\player\\idle00";
 
 /// 玩家的头发（原版画在身体后面：`PlayerHair`，发色/飘动独立于身体）。
+/// 出处：`pureCeleste.cs:111066` `public const string Hair = "characters/player/hair00"`。
 pub const PLAYER_HAIR_SPRITE: &str = "characters\\player\\hair00";
+
+/// 刘海（发根那一片用的纹理）：`pureCeleste.cs:111071`
+/// `bangs = GFX.Game.GetAtlasSubtextures("characters/player/bangs")`。
+pub const PLAYER_BANGS_SPRITE: &str = "characters\\player\\bangs00";
 
 /// 原版正常发色：`pureCeleste.cs` `Player.NormalHairColor = AC3232`。
 /// hair00 纹理本体是白色，运行时染这个色。
 pub const PLAYER_HAIR_COLOR: [f32; 4] = [172.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0];
 
-/// 路灯：原版只取**未损坏的左半** 16×80 子图
-/// （`pureCeleste.cs` Lamp：`GetSubtexture(broken ? 16 : 0, 0, 16, 80)`），
-/// 图集里 30×77 的内容是损坏/完好两盏拼在一起的。
-pub fn lamp_sprite(sprite: &Sprite) -> Sprite {
+/// 路灯：原版按 `broken` 取左/右半 16×80 子图
+/// （`pureCeleste.cs:106451` `GetSubtexture(broken ? 16 : 0, 0, 16, 80)`），
+/// 图集里 30×77 的内容是完好/损坏两盏拼在一起的。
+///
+/// 原版设的绘制原点是 `(W/2, H)` = `(8, 80)`（106455），而 `MTexture.Draw`
+/// 真正用的是 `origin + 图集 offset`（`14478-14485`）；图集里
+/// `scenery\lamp` 的 offset 是 `(1, 3)`，所以整张图的有效原点是
+/// `(8 + 1, 80 + 3) = (9, 83)`。子图 16px 宽会比原图的半幅（15px）宽 1px，
+/// 这正是原版的行为，允许越界采样。
+pub fn lamp_sprite(sprite: &Sprite, broken: bool) -> Sprite {
     let w = 16.min(sprite.w);
     let h = 80.min(sprite.h);
+    let x = sprite.x + if broken { 16 } else { 0 };
     Sprite {
         name: sprite.name.clone(),
-        x: sprite.x,
+        x,
         y: sprite.y,
         w,
         h,
-        origin_x: 0,
-        origin_y: 0,
+        origin_x: 8 + sprite.origin_x,
+        origin_y: 80 + sprite.origin_y,
         frame_w: w,
         frame_h: h,
         source: sprite.source.clone(),

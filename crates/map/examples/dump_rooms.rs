@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for room in &doc.rooms {
         let b = &room.bounds;
         println!(
-            "{:<10} x[{:.0},{:.0}) y[{:.0},{:.0})  {}x{} tiles  {} entities",
+            "{:<10} x[{:.0},{:.0}) y[{:.0},{:.0})  {}x{} tiles  {} entities  decals bg/fg {}/{}  scenery fg {}x{} bg {}x{}",
             room.name,
             b.x,
             b.x + b.w,
@@ -38,6 +38,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             room.tiles.width,
             room.tiles.height,
             room.entities.len(),
+            room.bg_decals.len(),
+            room.fg_decals.len(),
+            room.fg_scenery.width,
+            room.fg_scenery.height,
+            room.bg_scenery.width,
+            room.bg_scenery.height,
         );
         for e in &room.entities {
             if e.kind == "player" {
@@ -49,6 +55,53 @@ fn main() -> Result<(), Box<dyn Error>> {
                     b.y + e.y
                 );
             }
+            if !e.nodes.is_empty() {
+                let nodes: Vec<String> = e
+                    .nodes
+                    .iter()
+                    .map(|(nx, ny)| format!("({nx:.0},{ny:.0})"))
+                    .collect();
+                println!(
+                    "           {} at ({:.0},{:.0}) -> {}",
+                    e.kind,
+                    e.x,
+                    e.y,
+                    nodes.join(" ")
+                );
+            }
+        }
+    }
+
+    println!("-- area style --");
+    println!(
+        "clear = #{:02x}{:02x}{:02x}  backgrounds = {}  foregrounds = {}",
+        doc.style.background_color[0],
+        doc.style.background_color[1],
+        doc.style.background_color[2],
+        doc.style.backgrounds.len(),
+        doc.style.foregrounds.len(),
+    );
+    for (group, list) in [
+        ("bg", &doc.style.backgrounds),
+        ("fg", &doc.style.foregrounds),
+    ] {
+        for bd in list {
+            println!(
+                "  {group} {:<12} tex={:<16} atlas={:<5} pos=({:.0},{:.0}) scroll=({:.2},{:.2}) speed=({:.0},{:.0}) loop=({},{}) color={:?} blend={}",
+                bd.kind,
+                bd.texture,
+                bd.atlas,
+                bd.x,
+                bd.y,
+                bd.scroll_x,
+                bd.scroll_y,
+                bd.speed_x,
+                bd.speed_y,
+                bd.loop_x,
+                bd.loop_y,
+                bd.effective_color(),
+                bd.blend,
+            );
         }
     }
 

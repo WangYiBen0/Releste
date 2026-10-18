@@ -11,6 +11,7 @@ use releste_map::{MapDocument, Room};
 use releste_math::Vec2;
 use releste_render::atlas::SpriteAtlas;
 use releste_render::{GpuRenderer, Layer, SpriteDraw};
+use releste_world::FieldValue;
 use tracing::{debug, warn};
 
 use crate::paths::Paths;
@@ -19,9 +20,10 @@ use crate::sprites;
 /// 一格瓦片的世界像素数（`lvl_-1` 宽 320 / 40 格 = 8px）。
 const TILE: f32 = sprites::TILE_PX as f32;
 
-/// 背景瓦片的色调（保持 alpha=1，纹理是预乘 alpha 的）。
-const BG_TINT: [f32; 4] = [0.55, 0.6, 0.7, 1.0];
-/// 前景瓦片 / 实体的色调。
+/// 前景瓦片 / 实体 / 背景瓦片的色调。
+///
+/// 原版所有 `TileGrid` 都用默认 `Color.White` + `Alpha = 1`
+/// （`pureCeleste.cs:11234`/`11242`，全原版无一处写它），所以这里只有白。
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// 已加载的地图会话。
@@ -34,7 +36,14 @@ pub struct Session {
     pub atlas_name: String,
     /// tileset 定义（content-pipeline 从 `ForegroundTiles.xml` 转换）。
     pub tilesets: releste_map::TilesetsDoc,
-    /// 玩家出生点（世界坐标，= hitbox 左上角）。
+    /// **背景** tileset 定义（content-pipeline 从 `BackgroundTiles.xml` 转换）。
+    ///
+    /// 房间的 `bg` 层必须查这张表而不是 [`Session::tilesets`]：同名 id 在
+    /// 两张表里是完全不同的贴图（`'3'` = snow / bgBrickRuined）。
+    pub bg_tilesets: releste_map::TilesetsDoc,
+    /// 玩家出生锚点（世界坐标）—— 原版语义：hitbox **底中心**（脚）。
+    /// service 用它减去 (W/2, H) 得到 hitbox 左上角，出处见
+    /// [`vanilla_start`] 与 `player::PLAYER_W_PX`。
     pub spawn: Vec2,
     /// 出生点所在房间。
     pub spawn_room: String,
@@ -78,7 +87,21 @@ impl Session {
             )
         })?;
 
-        let (spawn, spawn_room) = first_spawn(&doc);
+        // 背景砖是第二张表；缺表只告警、不拦加载（背景整层不画比进不去游戏好）。
+        let bg_path = paths.bg_tilesets();
+        let bg_tilesets = match releste_map::TilesetsDoc::from_file(&bg_path) {
+            Ok(doc) => doc,
+            Err(e) => {
+                warn!(
+                    path = %bg_path.display(),
+                    error = %e,
+                    "background tileset definitions missing; the `bg` layer will not draw"
+                );
+                releste_map::TilesetsDoc::default()
+            }
+        };
+
+        let (spawn, spawn_room) = vanilla_start(&doc);
         if spawn_room.is_empty() {
             warn!("map has no `player` entity; spawning at the first room origin");
         }
@@ -96,6 +119,7 @@ impl Session {
             atlas_name,
             atlas,
             tilesets,
+            bg_tilesets,
             spawn,
             spawn_room,
             warned: RefCell::default(),
@@ -145,8 +169,29 @@ impl Session {
     pub fn build_static(&mut self, gpu: &GpuRenderer, room_index: usize) -> Vec<SpriteDraw> {
         let mut out = Vec::new();
         let room = &self.doc.rooms[room_index];
-        push_tiles(&mut out, room, &room.tiles, Layer::Tiles, WHITE, self, gpu);
-        push_tiles(&mut out, room, &room.bg, Layer::BgTiles, BG_TINT, self, gpu);
+        push_tiles(
+            &mut out,
+            room,
+            &room.tiles,
+            &self.tilesets,
+            Layer::Tiles,
+            WHITE,
+            self,
+            gpu,
+        );
+        // 背景是**另一张**表（`BackgroundTiles.xml`），且原版不调色
+        // （`TileGrid.Color` 默认 `Color.White`、`Alpha = 1`，11234/11242，
+        // 全原版无一处写它）——之前那层蓝灰 tint 纯粹是自造的偏色。
+        push_tiles(
+            &mut out,
+            room,
+            &room.bg,
+            &self.bg_tilesets,
+            Layer::BgTiles,
+            WHITE,
+            self,
+            gpu,
+        );
         self.push_entities(&mut out, room, gpu);
 
         debug!(
@@ -158,55 +203,110 @@ impl Session {
         out
     }
 
-    /// 玩家本帧的 draw：头发在身体后面（原版 `PlayerHair` 画身体之前）。
+    /// 玩家本帧的 draw：头发（4 节链 + 刘海 + 黑描边）在身体后面。
     ///
-    /// 原版玩家的 `Position` 是 hitbox **底中心**（即脚下的锚点），
-    /// sprite 以锚点为**底中心**摆放 —— 这样脚踩在 hitbox 底边（地面）
-    /// 上，头露在 hitbox 上方，不会陷进地里。头发挂在头部（身体顶
-    /// 部往上一点，朝向背后侧偏移），精确的逐帧发位置等 SpriteBank
-    /// 数据接入后再对齐。
+    /// 每一处都对照 `pureCeleste.cs`：
+    /// - 锚点：`Player.Position` = hitbox 底中心（118856），即 `anchor`；
+    /// - 发根：`Nodes[0] = Sprite.RenderPosition + (0,-9) + HairOffset*Facing`
+    ///   （111116）。idle 动画未定义 HairOffset → 取默认 (0,0)
+    ///   （111477 只有 yaml 提供时才赋值）；RenderPosition 即玩家位置；
+    /// - 后续节：`HairCount = 4`（111321）；`AfterUpdate`（111118-111135）
+    ///   的静态摆位 node[i] = node[i-1] + ((0-Facing)*step, +2)，step 在
+    ///   i==1 时为 2*StepInFacingPerSegment = 1，其余 0.5（StepPerSegment
+    ///   = (0,2)，111074-111076）；节点间 ≤3px 的约束不触发（|(-1,2)|≈2.24）；
+    /// - 绘制（Render 111155+）：`origin = (5,5)`；node[0] 用 bangs[0]，
+    ///   其余用 hair00；每片先画 4 个 ±1px 的黑描边（`Border = Black`，
+    ///   111159），再按 HairCount-1..0 逆序画本色（`Color = AC3232`）。
+    /// - 身体最后画（Layer::Player 高于 PlayerHair，层排序保证）。
+    ///
+    /// 尚未移植：发丝的运动模拟（SimulateMotion/StepApproach，随动画
+    /// 系统一起）；身体四向描边（DrawPlayerSpriteOutline，idle 不开）。
     pub fn player_draws(&self, gpu: &GpuRenderer, pos: Vec2, flip_x: bool) -> Vec<SpriteDraw> {
+        let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
+
+        let mut nodes = Vec::with_capacity(4);
+        nodes.push(anchor + Vec2::from_f32s(0.0, -9.0));
+        for i in 1..4 {
+            let step_x = (0.0 - facing) * if i == 1 { 1.0 } else { 0.5 };
+            nodes.push(nodes[i - 1] + Vec2::from_f32s(step_x, 2.0));
+        }
+
+        let pieces: [(&str, &Vec2); 4] = [
+            (sprites::PLAYER_BANGS_SPRITE, &nodes[0]),
+            (sprites::PLAYER_HAIR_SPRITE, &nodes[1]),
+            (sprites::PLAYER_HAIR_SPRITE, &nodes[2]),
+            (sprites::PLAYER_HAIR_SPRITE, &nodes[3]),
+        ];
+        let origin = Vec2::from_f32s(5.0, 5.0);
+        let border = [0.0, 0.0, 0.0, 1.0];
+        let outline_offsets = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
+
         let mut out = Vec::new();
-        for (name, layer) in [
-            (sprites::PLAYER_HAIR_SPRITE, Layer::PlayerHair),
-            (sprites::PLAYER_SPRITE, Layer::Player),
-        ] {
-            let Some((group, sprite)) = self.atlas.sprite(name) else {
+        for (name, node) in &pieces {
+            let Some(base) = self.hair_piece(gpu, name, **node, origin, border) else {
                 continue;
             };
-            let id = sprites::group_id(&self.atlas, group);
-            let Some((tw, th)) = gpu.texture_size(id) else {
-                continue;
-            };
-            let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
-            let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
-            let top_left = if name == sprites::PLAYER_SPRITE {
-                // 身体：底中心锚在脚下。
-                anchor - Vec2::from_f32s(w * 0.5, h)
-            } else {
-                // 头发：盖在头部（身体顶部），向背后侧偏 2px。
-                let body_h = self
-                    .atlas
-                    .sprite(sprites::PLAYER_SPRITE)
-                    .map(|(_, s)| f32::from(s.h))
-                    .unwrap_or(0.0);
-                let head = anchor - Vec2::from_f32s(0.0, body_h - 4.0);
-                let back = if flip_x { 2.0 } else { -2.0 };
-                head - Vec2::from_f32s(w * 0.5 - back, h * 0.5)
-            };
-            out.push(
-                SpriteDraw::new(id, top_left, Vec2::from_f32s(w, h), uv)
-                    .with_layer(layer.value())
-                    .with_color(if name == sprites::PLAYER_SPRITE {
-                        WHITE
-                    } else {
-                        sprites::PLAYER_HAIR_COLOR
-                    })
-                    .with_flip_x(flip_x),
-            );
+            for (dx, dy) in outline_offsets {
+                let mut d = base;
+                d.position = d.position + Vec2::from_f32s(dx, dy);
+                out.push(d);
+            }
+        }
+        for (name, node) in pieces.iter().rev() {
+            if let Some(mut d) =
+                self.hair_piece(gpu, name, **node, origin, sprites::PLAYER_HAIR_COLOR)
+            {
+                d.layer = Layer::PlayerHair.value() + 1; // 本色压在描边之上
+                out.push(d);
+            }
+        }
+        if let Some(d) = self.body_draw(gpu, anchor, flip_x) {
+            out.push(d);
         }
         out
+    }
+
+    /// 一片头发：`node − origin(5,5)` 为左上角（Monocle
+    /// `MTexture.Draw(position, origin)` 语义）。
+    fn hair_piece(
+        &self,
+        gpu: &GpuRenderer,
+        name: &str,
+        node: Vec2,
+        origin: Vec2,
+        color: [f32; 4],
+    ) -> Option<SpriteDraw> {
+        let (group, sprite) = self.atlas.sprite(name)?;
+        let id = sprites::group_id(&self.atlas, group);
+        let (tw, th) = gpu.texture_size(id)?;
+        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+        let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+        Some(
+            SpriteDraw::new(id, node - origin, Vec2::from_f32s(w, h), uv)
+                .with_layer(Layer::PlayerHair.value())
+                .with_color(color),
+        )
+    }
+
+    /// 身体：底中心锚在脚下（脚 = hitbox 底边 = 地面）。
+    fn body_draw(&self, gpu: &GpuRenderer, anchor: Vec2, flip_x: bool) -> Option<SpriteDraw> {
+        let (group, sprite) = self.atlas.sprite(sprites::PLAYER_SPRITE)?;
+        let id = sprites::group_id(&self.atlas, group);
+        let (tw, th) = gpu.texture_size(id)?;
+        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+        let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+        Some(
+            SpriteDraw::new(
+                id,
+                anchor - Vec2::from_f32s(w * 0.5, h),
+                Vec2::from_f32s(w, h),
+                uv,
+            )
+            .with_layer(Layer::Player.value())
+            .with_color(WHITE)
+            .with_flip_x(flip_x),
+        )
     }
 
     /// 实体批次。锚点按**原版语义**：
@@ -272,7 +372,9 @@ impl Session {
                     }
                 }
                 "lamp" => {
-                    let lamp = sprites::lamp_sprite(sprite);
+                    // 灯被打碎后画的是另一套碎玻璃子图（同一张图的右半）。
+                    let broken = matches!(e.properties.get("broken"), Some(FieldValue::Bool(true)));
+                    let lamp = sprites::lamp_sprite(sprite, broken);
                     let uv =
                         GpuRenderer::uv_for_sprite(&lamp, Vec2::from_f32s(tw as f32, th as f32));
                     let (lw, lh) = (f32::from(lamp.w), f32::from(lamp.h));
@@ -332,7 +434,7 @@ pub(crate) fn room_containing(rooms: &[Room], pos: Vec2) -> Option<&Room> {
 /// 而不是出生房间 —— 否则地图另一头的坠落会被瞬移回出生点。
 pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
     let mut best = 0;
-    let mut best_d: Option<releste_math::Fx> = None;
+    let mut best_d: Option<i64> = None;
     for (i, room) in rooms.iter().enumerate() {
         let r = room.bounds.to_rect();
         let dx = (r.min.x - point.x)
@@ -341,7 +443,7 @@ pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
         let dy = (r.min.y - point.y)
             .max(point.y - r.max.y)
             .max(releste_math::Fx::zero());
-        let d = dx * dx + dy * dy;
+        let d = Vec2::new(dx, dy).distance_sq(Vec2::ZERO);
         let closer = match best_d {
             Some(bd) => d < bd,
             None => true,
@@ -363,13 +465,14 @@ fn push_tiles(
     out: &mut Vec<SpriteDraw>,
     room: &Room,
     tiles: &releste_map::Tileset,
+    defs: &releste_map::TilesetsDoc,
     layer: Layer,
     tint: [f32; 4],
     session: &Session,
     gpu: &GpuRenderer,
 ) {
     // 一次性算好每块瓦片的 (col, row)（位置哈希选变体，确定性）。
-    let coords = releste_map::autotiler::generate(tiles, &session.tilesets);
+    let coords = releste_map::autotiler::generate(tiles, defs);
 
     for ty in 0..tiles.height {
         for tx in 0..tiles.width {
@@ -378,7 +481,7 @@ fn push_tiles(
                 continue; // 0 = 空
             }
             let id = releste_map::tile_char(value);
-            let Some(def) = session.tilesets.def(id) else {
+            let Some(def) = defs.def(id) else {
                 if session.warn_once(&format!("no-tileset:{id}")) {
                     warn!(tile = %id, "no tileset definition; skipping this tile id");
                 }
@@ -415,20 +518,63 @@ fn push_tiles(
     }
 }
 
-/// 第一个 `player` 实体：(世界坐标, 房间名)。
-fn first_spawn(doc: &MapDocument) -> (Vec2, String) {
-    for room in &doc.rooms {
-        for e in &room.entities {
-            if e.kind == "player" {
-                return (
-                    Vec2::from_f32s(room.bounds.x + e.x, room.bounds.y + e.y),
-                    room.name.clone(),
-                );
-            }
+/// 原版的初始房间与出生点，三步都有出处：
+///
+/// 1. **初始房间**：`pureCeleste.cs:112564` `MapData.StartLevel() =>
+///    GetAt(Vector2.Zero)` —— 包含**世界原点 (0,0)** 的第一个房间
+///    （`GetAt` 112569 按序做 Bounds 包含判定，无命中返回 null；
+///    这里回落到第一个房间并告警，属引擎健壮性差异）。
+/// 2. **出生点**：`115101` `Session.RespawnPoint = DefaultSpawnPoint`，
+///    `114080` `DefaultSpawnPoint => Spawns.ClosestTo((Bounds.Left, Bounds.Bottom))`
+///    （`101280` `GetSpawnPoint`）—— 离房间**左下角**最近的出生点。
+/// 3. **锚点语义**：`115105` `new Player(Session.RespawnPoint.Value, ...)`
+///    —— 出生点是 hitbox **底中心**（脚，见 `player::PLAYER_H_PX`）。
+///
+/// 返回 `(锚点, 房间名)`；锚点供 service 换算成 hitbox 左上角。
+fn vanilla_start(doc: &MapDocument) -> (Vec2, String) {
+    let origin = Vec2::from_f32s(0.0, 0.0);
+    let room = doc
+        .rooms
+        .iter()
+        .find(|r| r.bounds.to_rect().contains(origin))
+        .or_else(|| {
+            warn!(
+                "no room contains the world origin (pureCeleste StartLevel); using the first room"
+            );
+            doc.rooms.first()
+        });
+    let Some(room) = room else {
+        // `Session::load` 已保证 rooms 非空；到这里必然有回落，仅保险。
+        return (Vec2::ZERO, String::new());
+    };
+
+    // Spawns.ClosestTo((Bounds.Left, Bounds.Bottom))：出生点 = player 实体
+    // 中离房间左下角最近的那个（转换器把 .bin 的 Spawns 落成 player 实体）。
+    let corner = Vec2::from_f32s(room.bounds.x, room.bounds.y + room.bounds.h);
+    let mut best: Option<(Vec2, i64)> = None;
+    for e in &room.entities {
+        if e.kind != "player" {
+            continue;
+        }
+        let p = Vec2::from_f32s(room.bounds.x + e.x, room.bounds.y + e.y);
+        let d = p.distance_sq(corner);
+        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((p, d));
         }
     }
-    let room = &doc.rooms[0];
-    (Vec2::from_f32s(room.bounds.x, room.bounds.y), String::new())
+    match best {
+        Some((p, _)) => (p, room.name.clone()),
+        None => {
+            warn!(
+                room = %room.name,
+                "starting room has no spawn points; using its origin"
+            );
+            (
+                Vec2::from_f32s(room.bounds.x, room.bounds.y),
+                room.name.clone(),
+            )
+        }
+    }
 }
 
 fn info_load(doc: &MapDocument, atlas: &str, tilesets: usize, spawn: Vec2, room: &str) {
@@ -469,11 +615,13 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         };
         let doc = MapDocument {
             area: "test".into(),
             rooms: vec![room("lvl_-1", -368.0, 320.0), room("lvl_0", -48.0, 448.0)],
             sync_rules: Vec::new(),
+            ..Default::default()
         };
         Session {
             doc,
@@ -488,6 +636,7 @@ mod tests {
             ),
             atlas_name: "Test".into(),
             tilesets: releste_map::TilesetsDoc::default(),
+            bg_tilesets: releste_map::TilesetsDoc::default(),
             spawn: Vec2::from_f32s(-56.0, 136.0),
             spawn_room: "lvl_-1".into(),
             warned: RefCell::default(),

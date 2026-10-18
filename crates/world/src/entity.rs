@@ -1,6 +1,6 @@
 //! 实体与组件数据。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ use crate::schema::FieldValue;
 pub struct Entity {
     pub id: EntityId,
     pub kind_id: EntityKindId,
-    pub properties: HashMap<String, FieldValue>,
+    pub properties: BTreeMap<String, FieldValue>,
 }
 
 impl Entity {
@@ -23,7 +23,7 @@ impl Entity {
         Entity {
             id,
             kind_id,
-            properties: HashMap::new(),
+            properties: BTreeMap::new(),
         }
     }
 
@@ -41,6 +41,9 @@ impl Entity {
 /// 地图中的实体数据（在构建为 [`Entity`] 之前）。
 ///
 /// 此结构可从 `.map` 文件反序列化。
+///
+/// **字段顺序就是磁盘布局**（bincode 不自描述，ROADMAP 附录 E.6）：
+/// 新字段只能追加到末尾，`legacy` 模块里为每个历史版本留冻结副本。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityData {
     pub id: EntityId,
@@ -51,7 +54,17 @@ pub struct EntityData {
     pub height: Option<i32>,
     pub origin_x: f32,
     pub origin_y: f32,
-    pub properties: HashMap<String, FieldValue>,
+    /// 属性表用 `BTreeMap`：`HashMap` 的遍历顺序随进程随机，
+    /// 会让同一张地图序列化出不同字节（ROADMAP E.8 / E.9 #3）。
+    pub properties: BTreeMap<String, FieldValue>,
+    /// 实体节点（v2 追加，`node` 子元素）。
+    ///
+    /// 原版 `EntityData.Nodes`（`pureCeleste.cs:113135-113198`），最常用的
+    /// 三个消费者：`IntroCrusher` 的落点（`106324-106327`）、`Wire` 的折线
+    /// （`106674-106704`）、`Bridge` 的桥墩（`107679`）。坐标是**相对实体
+    /// 位置**的偏移，与 `x`/`y` 同一坐标系。
+    #[serde(default)]
+    pub nodes: Vec<(f32, f32)>,
 }
 
 impl EntityData {
@@ -65,7 +78,8 @@ impl EntityData {
             height: None,
             origin_x: 0.0,
             origin_y: 0.0,
-            properties: HashMap::new(),
+            properties: BTreeMap::new(),
+            nodes: Vec::new(),
         }
     }
 }

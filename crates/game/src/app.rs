@@ -107,6 +107,11 @@ impl GameApp {
         if let Some(mut kernel) = self.kernel.take() {
             kernel.shutdown();
         }
+        // 销毁顺序：wgpu 的 Surface 持有 Window 的引用，必须**先于**
+        // Window 释放。结构体字段序是 window 在前 gpu 在后，默认 drop
+        // 会先放掉 Window —— 部分后端上退出即段错误（关窗 SegFault）。
+        self.gpu = None;
+        self.window = None;
         if let Some(e) = self.fatal.take() {
             return Err(e);
         }

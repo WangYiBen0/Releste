@@ -85,6 +85,7 @@ fn diff_room(old: &Room, new: &Room) -> Vec<Patch> {
             origin_x: e.origin_x,
             origin_y: e.origin_y,
             props: Props::from_entity(e),
+            nodes: e.nodes.clone(),
         })
         .collect();
     let new_refs: Vec<EntityRef> = new
@@ -100,6 +101,7 @@ fn diff_room(old: &Room, new: &Room) -> Vec<Patch> {
             origin_x: e.origin_x,
             origin_y: e.origin_y,
             props: Props::from_entity(e),
+            nodes: e.nodes.clone(),
         })
         .collect();
 
@@ -122,6 +124,8 @@ struct EntityRef {
     origin_x: f32,
     origin_y: f32,
     props: Props,
+    /// 节点也参与 diff：`introCrusher` 的落点、`wire` 的折线都靠它。
+    nodes: Vec<(f32, f32)>,
 }
 
 /// 实体 diff。
@@ -145,6 +149,7 @@ fn diff_entities(old: &[EntityRef], new: &[EntityRef]) -> Vec<Patch> {
                 origin_x: e.origin_x,
                 origin_y: e.origin_y,
                 properties: e.props.fields.clone(),
+                nodes: e.nodes.clone(),
             }));
         }
     }
@@ -187,6 +192,7 @@ mod tests {
             area: "Test".into(),
             rooms,
             sync_rules: vec![],
+            style: crate::format::MapStyle::default(),
         }
     }
 
@@ -204,6 +210,10 @@ mod tests {
             entities,
             triggers: vec![],
             script: None,
+            bg_decals: vec![],
+            fg_decals: vec![],
+            bg_scenery: crate::format::Tileset::default(),
+            fg_scenery: crate::format::Tileset::default(),
         }
     }
 
@@ -228,6 +238,7 @@ mod tests {
             area: "Test".into(),
             rooms: vec![],
             sync_rules: vec![],
+            style: crate::format::MapStyle::default(),
         };
         let b = a.clone();
         let patches = diff(&a, &b);

@@ -5,7 +5,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use releste_map::{MapDocument, RectDef, Room, SyncMode, SyncRule, Tileset, TriggerData};
+use releste_map::{
+    Backdrop, Decal, MapDocument, MapStyle, RectDef, Room, SyncMode, SyncRule, Tileset, TriggerData,
+};
 use releste_world::{EntityData, EntityId, FieldValue};
 use tracing::{info, warn};
 
@@ -13,7 +15,7 @@ use crate::atlas::{AtlasBuild, AtlasTexture, TextureSource};
 use crate::data::{self, DecodedTexture};
 use crate::dialog::DialogDocument;
 use crate::error::PipelineError;
-use crate::mapbin::{BinValue, MapBin};
+use crate::mapbin::{BinValue, MapBin, MapBinElement};
 
 /// 管线配置。
 #[derive(Debug, Clone)]
@@ -110,11 +112,22 @@ impl Pipeline {
 
     // ---------- Atlases ----------
 
-    /// `Graphics/ForegroundTiles.xml` → `atlas/tilesets.toml`。
+    /// `Graphics/{Foreground,Background}Tiles.xml` → `atlas/{tilesets,bg_tilesets}.toml`。
+    ///
+    /// 两张表**不能合并**：同名 id 在前景/背景表里是不同贴图
+    /// （`'1'` 前景是 dirt、背景是 bgDirt，`'3'` 是 snow / bgBrickRuined），
+    /// 而每个房间的 `solids` 与 `bg` 各自只应在自己那张表里查
+    /// （原版两个独立的 `Autotiler`，`110116-110117`）。
     ///
     /// XML 是原始格式，只在 build time 解析（AGENTS.md §4.6）。
     fn convert_tilesets(&mut self) -> Result<(), PipelineError> {
-        let xml_path = self.config.source.join("Graphics/ForegroundTiles.xml");
+        self.convert_tileset_xml("Graphics/ForegroundTiles.xml", "atlas/tilesets.toml")?;
+        self.convert_tileset_xml("Graphics/BackgroundTiles.xml", "atlas/bg_tilesets.toml")
+    }
+
+    /// 单个 `<Tileset>` 表：XML → TOML。
+    fn convert_tileset_xml(&mut self, rel_xml: &str, rel_toml: &str) -> Result<(), PipelineError> {
+        let xml_path = self.config.source.join(rel_xml);
         if !xml_path.is_file() {
             self.report
                 .warn(format!("tiles xml not found: {}", xml_path.display()));
@@ -123,7 +136,7 @@ impl Pipeline {
 
         let doc = crate::tilesets::from_file(&xml_path)
             .map_err(|e| PipelineError::io(xml_path.display(), std::io::Error::other(e)))?;
-        let out_path = self.safe_out(Path::new("atlas/tilesets.toml"))?;
+        let out_path = self.safe_out(Path::new(rel_toml))?;
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| PipelineError::io(parent.display(), e))?;
         }
@@ -131,7 +144,7 @@ impl Pipeline {
             .map_err(|e| PipelineError::io(out_path.display(), std::io::Error::other(e)))?;
         std::fs::write(&out_path, text).map_err(|e| PipelineError::io(out_path.display(), e))?;
 
-        self.report.tilesets = doc.tilesets.len();
+        self.report.tilesets += doc.tilesets.len();
         Ok(())
     }
 
@@ -441,6 +454,8 @@ impl Pipeline {
         let area = map.name.clone();
         let area_id = area_id_of(&area);
         let mut rooms = Vec::new();
+        // 区域级 `<Style>`：清屏色 + 视差背景（v2 追加）。
+        let style = convert_style(&map.root);
 
         for level in map.root.children_named("levels") {
             for lv in level.children_named("level") {
@@ -460,6 +475,22 @@ impl Pipeline {
                     .map(tileset_from_element)
                     .unwrap_or_default();
                 let bg = lv.child("bg").map(tileset_from_element).unwrap_or_default();
+
+                // 装饰层用房间的 tile 尺寸做网格（原版 `ReadCSVIntGrid`
+                // 也是按 `LevelData.TileBounds` 的宽高开表，77247-77253）。
+                let tile_w = ((width / TILE_PX).ceil().max(1.0)) as u32;
+                let tile_h = ((height / TILE_PX).ceil().max(1.0)) as u32;
+                let bg_scenery = lv
+                    .child("bgtiles")
+                    .map(|el| csv_tileset(el, tile_w, tile_h))
+                    .unwrap_or_default();
+                let fg_scenery = lv
+                    .child("fgtiles")
+                    .map(|el| csv_tileset(el, tile_w, tile_h))
+                    .unwrap_or_default();
+
+                let bg_decals = lv.child("bgdecals").map(convert_decals).unwrap_or_default();
+                let fg_decals = lv.child("fgdecals").map(convert_decals).unwrap_or_default();
 
                 let mut entities = Vec::new();
                 if let Some(group) = lv.child("entities") {
@@ -518,6 +549,10 @@ impl Pipeline {
                     entities,
                     triggers,
                     script: None,
+                    bg_decals,
+                    fg_decals,
+                    bg_scenery,
+                    fg_scenery,
                 });
             }
         }
@@ -532,6 +567,7 @@ impl Pipeline {
             rooms,
             // 默认不同步：地图若需要同步，由作者显式声明。
             sync_rules: Vec::new(),
+            style,
         }
     }
 
@@ -616,7 +652,7 @@ fn sprite_out_rel(stem: &str, group: &str, sprite: &str) -> String {
 const TILE_ALPHABET: &str = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 /// 从 `<solids>` / `<bg>` 元素的 `innerText` 构造 [`Tileset`]。
-fn tileset_from_element(el: &crate::mapbin::MapBinElement) -> Tileset {
+fn tileset_from_element(el: &MapBinElement) -> Tileset {
     let atlas = el
         .attr("tileset")
         .and_then(BinValue::as_str)
@@ -640,7 +676,7 @@ fn tileset_from_element(el: &crate::mapbin::MapBinElement) -> Tileset {
 
     let height = rows.len() as u32;
     let width = rows.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
-    let mut tiles = vec![0u8; (width as usize) * (height as usize)];
+    let mut tiles = vec![0u16; (width as usize) * (height as usize)];
 
     for (y, row) in rows.iter().enumerate() {
         for (x, ch) in row.chars().enumerate() {
@@ -648,7 +684,7 @@ fn tileset_from_element(el: &crate::mapbin::MapBinElement) -> Tileset {
                 continue;
             };
             // 源格式里 '0' 是空；'1' 表示第 1 号 tile。
-            tiles[y * width as usize + x] = pos as u8;
+            tiles[y * width as usize + x] = pos as u16;
         }
     }
 
@@ -660,13 +696,303 @@ fn tileset_from_element(el: &crate::mapbin::MapBinElement) -> Tileset {
     }
 }
 
+/// 一格瓦片的像素边长（原版所有 `TileGrid` 都是 8×8）。
+const TILE_PX: f32 = 8.0;
+
+/// 从 `bgtiles` / `fgtiles` 元素构造装饰层 [`Tileset`]（CSV 整数网格）。
+///
+/// 原版 `Calc.ReadCSVIntGrid(csv, level.TileBounds.W, TileBounds.H)`
+/// （`pureCeleste.cs:20842-20862`）先把整张 `width × height` 表填成 `-1`，
+/// 再按行 `Split('\n')`、行内 `Split(',')`（丢弃空项）覆写；缺行、缺列、
+/// 空行一律保持 `-1`。随后 `TileGrid.Overlay` 只在 `tiles[i,j] >= 0` 时
+/// 才画（`11274-11285`），取值是 `Tileset` 的**扁平下标**
+/// `tiles[index % 列数, index / 列数]`（`15215-15226`）。
+///
+/// 引擎约定 `0` = 空（见 `format::Tileset`），所以这里把 `-1` 压成 `0`、
+/// 把原值 `v` 存成 `v + 1`；渲染侧用 `存值 - 1` 还原下标。
+///
+/// `atlas` 取元素自己的 `tileset` 属性：装饰层用的是 `tilesets/scenery`
+/// （`110118` `new Tileset(Game["tilesets/scenery"], 8, 8)`），
+/// 和 `solids`/`bg` 的 `Gameplay` 不是同一张表。
+fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
+    let atlas = el
+        .attr("tileset")
+        .and_then(BinValue::as_str)
+        .unwrap_or("Scenery")
+        .to_string();
+    let text = el
+        .attr("innerText")
+        .and_then(BinValue::as_str)
+        .unwrap_or("");
+    let mut tiles = vec![0u16; (width as usize) * (height as usize)];
+    let mut overflow = 0usize;
+
+    for (y, row) in text.split('\n').enumerate() {
+        if y >= height as usize {
+            break; // 原版：k < height && k < array2.Length
+        }
+        // `RemoveEmptyEntries`：空串被吃掉，后面的值左移（与原版一致）。
+        for (x, cell) in row.split(',').filter(|c| !c.is_empty()).enumerate() {
+            if x >= width as usize {
+                break; // 原版：l < width && l < array3.Length
+            }
+            let Ok(value) = cell.parse::<i32>() else {
+                warn!(
+                    row = y,
+                    col = x,
+                    cell,
+                    "non-integer cell in overlay CSV; treating as empty"
+                );
+                continue;
+            };
+            if value < 0 {
+                continue; // -1 = "这一格不覆盖"
+            }
+            // u16 存得下整张 scenery（360 格，最大下标 352）；还是溢出
+            // 就丢弃并告警 —— 绝不能让 `v + 1` 环绕成另一张贴图。
+            let Some(encoded) = value.checked_add(1).filter(|e| *e <= i32::from(u16::MAX)) else {
+                overflow += 1;
+                continue;
+            };
+            tiles[y * width as usize + x] = encoded as u16;
+        }
+    }
+
+    if overflow > 0 {
+        warn!(
+            atlas = %atlas,
+            cells = overflow,
+            "overlay tile index does not fit in u16; those cells were dropped"
+        );
+    }
+
+    Tileset {
+        atlas,
+        width,
+        height,
+        tiles,
+    }
+}
+
+/// 把 `<fgdecals>` / `<bgdecals>` 组转换成 [`Decal`] 列表。
+///
+/// 原版每条 `DecalData` 只有 `texture` / `x` / `y` / `scaleX` / `scaleY`
+/// （`pureCeleste.cs:113199-113206`），深度由所在组决定
+/// （fg `-10500` / bg `9000`，`115079-115086`）。
+fn convert_decals(group: &MapBinElement) -> Vec<Decal> {
+    group
+        .children
+        .iter()
+        .filter_map(|el| {
+            let Some(texture) = el.attr("texture").and_then(BinValue::as_str) else {
+                warn!("decal without a `texture` attribute; skipping it");
+                return None;
+            };
+            Some(Decal {
+                texture: decal_texture(texture),
+                x: el.attr("x").and_then(BinValue::as_f32).unwrap_or(0.0),
+                y: el.attr("y").and_then(BinValue::as_f32).unwrap_or(0.0),
+                scale_x: el.attr("scaleX").and_then(BinValue::as_f32).unwrap_or(1.0),
+                scale_y: el.attr("scaleY").and_then(BinValue::as_f32).unwrap_or(1.0),
+            })
+        })
+        .collect()
+}
+
+/// 贴花纹理名 → 图集键（`decals/` + 相对路径）。
+///
+/// 跟着原版 `Decal` 构造器走（`pureCeleste.cs:88573-88582`）：
+/// `Path.Combine("decals", 去掉扩展名).Replace('\\', '/')`。
+///
+/// 原版最后还有一道 `Regex.Replace(name, "\\d+$", "")`，把尾部数字剥掉再
+/// `GetAtlasSubtextures` 拿整组帧做动画。本引擎的图集是**逐帧精确键**，
+/// 没有子图集组，所以尾部数字保留（`flag00` 存成 `decals/…/flag00`）；
+/// 剥数字 + 组动画留到有多帧贴花时再做。
+fn decal_texture(raw: &str) -> String {
+    let stem = match raw.rsplit_once('.') {
+        // 后缀必须是个真扩展名（不含路径分隔符），否则 `.` 属于路径。
+        Some((stem, ext)) if !ext.is_empty() && !ext.contains(['/', '\\']) => stem,
+        _ => raw,
+    };
+    format!("decals/{}", stem.replace('\\', "/"))
+}
+
+/// `<Style>` → [`MapStyle`]。
+///
+/// 原版只认三个东西：`color` 属性 → 清屏色（默认 `Color.Black`，
+/// `pureCeleste.cs:112310` / `112432-112435`），`<Backgrounds>` →
+/// `MapData.Background`，`<Foregrounds>` → `MapData.Foreground`
+/// （`112428-112449`）。`<Style>` 缺失时整段取原版默认（黑底、无背景）。
+fn convert_style(root: &MapBinElement) -> MapStyle {
+    let Some(style) = root.child("Style") else {
+        return MapStyle::default();
+    };
+
+    let mut out = MapStyle::default();
+    if let Some(hex) = style.attr("color").and_then(BinValue::as_str) {
+        out.background_color = match hex_rgb(hex) {
+            Some(rgb) => rgb,
+            None => {
+                warn!(
+                    color = hex,
+                    "unparsable `<Style color>`; falling back to black"
+                );
+                [0, 0, 0]
+            }
+        };
+    }
+    if let Some(group) = style.child("Backgrounds") {
+        out.backgrounds = convert_backdrops(group);
+    }
+    if let Some(group) = style.child("Foregrounds") {
+        out.foregrounds = convert_backdrops(group);
+    }
+    out
+}
+
+/// `<Backgrounds>` / `<Foregrounds>` → [`Backdrop`] 列表。
+///
+/// 原版 `CreateBackdrops`（`pureCeleste.cs:112593-112618`）：子元素叫
+/// `apply` 时，它的**子**元素继承 `apply` 的属性（`ParseBackdrop(child2, child)`），
+/// 否则按 `(child, null)` 解析。
+fn convert_backdrops(group: &MapBinElement) -> Vec<Backdrop> {
+    let mut out = Vec::new();
+    for child in &group.children {
+        if child.name.eq_ignore_ascii_case("apply") {
+            for nested in &child.children {
+                out.push(parse_backdrop(nested, Some(child)));
+            }
+        } else {
+            out.push(parse_backdrop(child, None));
+        }
+    }
+    out
+}
+
+/// 单条背景元素 → [`Backdrop`]。
+///
+/// 逐属性对齐原版 `ParseBackdrop`（`pureCeleste.cs:112648-112900`）：
+/// 每个属性都是「先看自己，自己没有再看 `above`（`<apply>` 父）」，
+/// 都没有才用 `Backdrop` 字段默认值（`109341-109430`）。
+///
+/// 颜色走 `backdrop.Color = HexToColor(color)` 然后 `Color *= alpha`
+/// （`112788-112803`）——XNA 的 `Color * f32` 连**四个通道一起乘**，
+/// 所以存下来的 RGBA 是 `[r·a, g·a, b·a, 255·a]`，正好是本引擎
+/// `SpriteDraw` 需要的直通（未预乘）RGBA，渲染时再乘一次 alpha
+/// 才能复现原版 `SpriteBatch` 的 `SourceAlpha` 混合。
+fn parse_backdrop(child: &MapBinElement, above: Option<&MapBinElement>) -> Backdrop {
+    let kind = child.name.to_ascii_lowercase();
+    let mut backdrop = Backdrop::new(&kind);
+
+    if let Some(v) = attr_or(child, above, "texture").and_then(BinValue::as_str) {
+        backdrop.texture = v.to_string();
+    }
+    if let Some(v) = attr_or(child, above, "atlas").and_then(BinValue::as_str) {
+        // 原版 `Attr("atlas", "game")`，小写参与比较（112628-112631）。
+        backdrop.atlas = v.to_ascii_lowercase();
+    }
+
+    backdrop.x = attr_or(child, above, "x")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(0.0);
+    backdrop.y = attr_or(child, above, "y")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(0.0);
+    backdrop.scroll_x = attr_or(child, above, "scrollx")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(1.0);
+    backdrop.scroll_y = attr_or(child, above, "scrolly")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(1.0);
+    backdrop.speed_x = attr_or(child, above, "speedx")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(0.0);
+    backdrop.speed_y = attr_or(child, above, "speedy")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(0.0);
+    backdrop.loop_x = attr_or(child, above, "loopx")
+        .and_then(BinValue::as_bool)
+        .unwrap_or(true);
+    backdrop.loop_y = attr_or(child, above, "loopy")
+        .and_then(BinValue::as_bool)
+        .unwrap_or(true);
+    backdrop.flip_x = attr_or(child, above, "flipx")
+        .and_then(BinValue::as_bool)
+        .unwrap_or(false);
+    backdrop.flip_y = attr_or(child, above, "flipy")
+        .and_then(BinValue::as_bool)
+        .unwrap_or(false);
+    backdrop.wind = attr_or(child, above, "wind")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(0.0);
+    backdrop.blend = attr_or(child, above, "blendmode")
+        .and_then(BinValue::as_str)
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "alphablend".to_string());
+
+    // `Color = White` 起手，有 `color` 就覆盖，再 `Color *= alpha`。
+    let (r, g, b) = match attr_or(child, above, "color").and_then(BinValue::as_str) {
+        Some(hex) => match hex_rgb(hex) {
+            Some(rgb) => (rgb[0], rgb[1], rgb[2]),
+            None => {
+                warn!(
+                    color = hex,
+                    "unparsable backdrop `color`; falling back to white"
+                );
+                (255, 255, 255)
+            }
+        },
+        None => (255, 255, 255),
+    };
+    let alpha = attr_or(child, above, "alpha")
+        .and_then(BinValue::as_f32)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    backdrop.color = [
+        (f32::from(r) * alpha).round() as u8,
+        (f32::from(g) * alpha).round() as u8,
+        (f32::from(b) * alpha).round() as u8,
+        (255.0 * alpha).round() as u8,
+    ];
+    if backdrop.color == [0, 0, 0, 0] {
+        // `Backdrop::effective_color()` 把全零当「没设过」→ 原版默认白。
+        // `alpha = 0` 是真·全透明（原版 `color.A <= 1` 直接不画），
+        // 用 1/255 顶掉哨兵，渲染侧仍然画不出东西。
+        backdrop.color = [0, 0, 0, 1];
+    }
+
+    backdrop
+}
+
+/// 属性：先看自己，再看 `<apply>` 父元素（原版每个属性都这么回落）。
+fn attr_or<'a>(
+    child: &'a MapBinElement,
+    above: Option<&'a MapBinElement>,
+    key: &str,
+) -> Option<&'a BinValue> {
+    child.attr(key).or_else(|| above.and_then(|a| a.attr(key)))
+}
+
+/// `"rgb"` / `"rrggbb"` → RGB。对应原版 `Calc.HexToColor`。
+fn hex_rgb(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.trim().trim_start_matches('#');
+    if hex.len() == 3 {
+        let bytes = hex.as_bytes();
+        let half = |c: u8| {
+            let d = (c as char).to_digit(16)? as u8;
+            Some(d * 16 + d)
+        };
+        return Some([half(bytes[0])?, half(bytes[1])?, half(bytes[2])?]);
+    }
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
 /// 把地图实体元素转换成本引擎的 [`EntityData`]。
-fn convert_entity(
-    area: &str,
-    area_id: u32,
-    room: &str,
-    el: &crate::mapbin::MapBinElement,
-) -> Option<EntityData> {
+fn convert_entity(area: &str, area_id: u32, room: &str, el: &MapBinElement) -> Option<EntityData> {
     let kind = el.name.clone();
     // 排除明显非实体的分组元素。
     if matches!(kind.as_str(), "entities" | "triggers" | "level") {
@@ -701,6 +1027,27 @@ fn convert_entity(
         properties.insert(key.clone(), value_to_field(value));
     }
 
+    // 节点：原版把每个 `<node x= y= />` 子元素挂成实体的路径点
+    // （`wire` 的终点、`introCrusher` 的落点、`bridge` 的桥墩…）。
+    let mut nodes = Vec::new();
+    for child in &el.children {
+        if !child.name.eq_ignore_ascii_case("node") {
+            continue;
+        }
+        let (Some(nx), Some(ny)) = (
+            child.attr("x").and_then(BinValue::as_f32),
+            child.attr("y").and_then(BinValue::as_f32),
+        ) else {
+            warn!(
+                room = %room,
+                kind = %kind,
+                "`node` child without x/y; skipping this node"
+            );
+            continue;
+        };
+        nodes.push((nx, ny));
+    }
+
     let _ = area; // area 仅用于 area_id 计算
 
     Some(EntityData {
@@ -713,6 +1060,7 @@ fn convert_entity(
         origin_x,
         origin_y,
         properties: properties.into_iter().collect(),
+        nodes,
     })
 }
 

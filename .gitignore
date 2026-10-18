@@ -62,3 +62,4 @@ Thumbs.db
 # Sample plugin sources build outputs
 plugins-src/*/target/
 .pre-commit-cache/
+.devtmp/

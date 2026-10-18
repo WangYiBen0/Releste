@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 pub const TILE_ALPHABET: &str = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 /// 地图瓦片值（字母表索引）→ tileset id 字符。`0`（空）→ `'0'`。
-pub fn tile_char(value: u8) -> char {
+pub fn tile_char(value: u16) -> char {
     TILE_ALPHABET.chars().nth(value as usize).unwrap_or('0')
 }
 

@@ -99,7 +99,11 @@ impl GameService {
         watcher: Option<FileWatcher>,
         gpu: Option<&GpuRenderer>,
     ) -> Self {
-        let player = Player::new(session.spawn);
+        // 原版：`new Player(Session.RespawnPoint.Value, ...)`（115105），
+        // Position = 出生锚点 = hitbox 底中心；我们的 Player 存 hitbox
+        // 左上角 → 左上角 = 锚点 − (W/2, H)（hitbox 8×11，offset (-4,-11)，
+        // 118856）。
+        let player = Player::new(session.spawn - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H));
         let spawn_room = session.spawn_room.clone();
         let camera_room = spawn_room.clone();
         // 相机初始落位即按原版钳制（见 `update_camera`）。
@@ -404,8 +408,10 @@ mod tests {
                 entities: vec![player],
                 triggers: Vec::new(),
                 script: None,
+                ..Default::default()
             }],
             sync_rules: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -471,8 +477,10 @@ mod tests {
             "room {room} picked up the new tile"
         );
         assert_eq!(
-            service.player.pos, spawn_before,
-            "the player was left untouched by the reload (AGENTS.md 4.3)"
+            service.player.pos,
+            spawn_before - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H),
+            "the player was left untouched by the reload (AGENTS.md 4.3); \
+             the spawn anchor converts to a hitbox top-left per pureCeleste 115105/118856"
         );
 
         let _ = std::fs::remove_dir_all(paths.root());

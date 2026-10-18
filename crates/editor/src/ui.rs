@@ -14,7 +14,11 @@ pub const TILE_PX: f32 = 16.0;
 /// UI 状态（不属于文档，因此不进撤销栈）。
 pub struct EditorUi {
     /// 当前画笔的 tile 值。
-    pub brush: u8,
+    /// 画笔的 tile 值。
+    ///
+    /// `u16`：装饰层下标能到 352（整张 `tilesets/scenery` 的扁平下标），
+    /// `u8` 装不下。
+    pub brush: u16,
     /// 当前放置的实体种类。
     pub entity_kind: String,
     /// 画布缩放。
@@ -150,6 +154,10 @@ impl EditorUi {
                             entities: Vec::new(),
                             triggers: Vec::new(),
                             script: None,
+                            bg_decals: Vec::new(),
+                            fg_decals: Vec::new(),
+                            bg_scenery: releste_map::Tileset::default(),
+                            fg_scenery: releste_map::Tileset::default(),
                         };
                         match editor.add_room(room) {
                             Ok(i) => {
@@ -292,7 +300,7 @@ impl EditorUi {
         let Some((tiles_w, tiles_h, filled, entities, selected_id)) = editor.room().map(|room| {
             let w = room.tiles.width.max(1) as usize;
             let h = room.tiles.height.max(1) as usize;
-            let filled: Vec<(usize, u8)> = (0..h)
+            let filled: Vec<(usize, u16)> = (0..h)
                 .flat_map(|y| (0..w).map(move |x| (y * w + x, (x, y))))
                 .filter_map(|(idx, (x, y))| {
                     room.tiles

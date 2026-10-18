@@ -92,6 +92,7 @@ impl Editor {
                 area: "NewArea".into(),
                 rooms: Vec::new(),
                 sync_rules: Vec::new(),
+                style: releste_map::MapStyle::default(),
             },
             path: None,
             dirty: false,
@@ -367,7 +368,7 @@ impl Editor {
     }
 
     /// 画笔：设置一个 tile。
-    pub fn paint_tile(&mut self, x: u32, y: u32, value: u8) -> Result<(), EditorError> {
+    pub fn paint_tile(&mut self, x: u32, y: u32, value: u16) -> Result<(), EditorError> {
         let idx = self.current_room;
         let room = self
             .document
@@ -402,7 +403,7 @@ impl Editor {
         y0: u32,
         x1: u32,
         y1: u32,
-        value: u8,
+        value: u16,
     ) -> Result<usize, EditorError> {
         let idx = self.current_room;
         let room = self
@@ -556,6 +557,7 @@ mod tests {
             entities: Vec::new(),
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }
     }
 

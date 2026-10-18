@@ -73,8 +73,10 @@ fn make_map(wall_x: f32) -> MapDocument {
             entities,
             triggers: Vec::new(),
             script: None,
+            ..Default::default()
         }],
         sync_rules: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -83,7 +85,7 @@ fn write_map(path: &Path, doc: &MapDocument) {
     releste_map::save_map(doc, path).expect("write map");
 }
 
-fn player_props(w: &World) -> std::collections::HashMap<String, FieldValue> {
+fn player_props(w: &World) -> std::collections::BTreeMap<String, FieldValue> {
     w.get(PLAYER_ID).expect("player exists").properties.clone()
 }
 
