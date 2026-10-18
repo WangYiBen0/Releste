@@ -23,3 +23,5 @@ anyhow.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 libloading.workspace = true
+# `--screenshot` 把渲染帧落成 PNG。
+image.workspace = true

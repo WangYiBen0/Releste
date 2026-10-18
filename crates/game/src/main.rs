@@ -56,9 +56,17 @@ struct Args {
     #[arg(long)]
     headless: bool,
 
-    /// How many ticks `--headless` simulates.
-    #[arg(long, default_value_t = 600, value_name = "N")]
-    frames: u64,
+    /// How many ticks `--headless` simulates; with `--screenshot`, how
+    /// many rendered frames to wait before capturing.
+    #[arg(long, value_name = "N")]
+    frames: Option<u64>,
+
+    /// Render a real frame and save it to this PNG, then exit.
+    ///
+    /// Needs a window (the headless loop never draws). Useful to inspect
+    /// the actual renderer output from scripts and CI.
+    #[arg(long, value_name = "PATH")]
+    screenshot: Option<PathBuf>,
 
     /// Raise verbosity: `-v` = debug, `-vv` = trace. Ignored when `--log`/`RUST_LOG` is set.
     #[arg(short, long, action = ArgAction::Count, global = true)]
@@ -89,6 +97,13 @@ impl Args {
             1 => "debug,releste=debug,releste_=debug".to_string(),
             _ => "trace,releste=trace,releste_=trace".to_string(),
         }
+    }
+
+    /// 生效的 tick 数：headless 默认 600；`--screenshot` 默认 30
+    /// （相机每 tick 追 1/4，30 tick 后已收敛，插件也已启动）。
+    fn frame_count(&self) -> u64 {
+        self.frames
+            .unwrap_or(if self.screenshot.is_some() { 30 } else { 600 })
     }
 
     /// 默认档：本项目 INFO、其余一律 WARN。
@@ -128,6 +143,12 @@ fn main() -> ExitCode {
 
 /// 唯一的 `run`：加载地图后分流到 headless 或窗口。
 fn run(args: &Args) -> anyhow::Result<()> {
+    if args.headless && args.screenshot.is_some() {
+        anyhow::bail!(
+            "--screenshot needs a rendered window; the headless loop never draws. \
+             Drop --headless (and optionally set --frames N to choose the capture moment)."
+        );
+    }
     let paths = Paths::resolve(args.root.as_deref());
     info_paths(&paths);
 
@@ -138,7 +159,13 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     let plugins = !args.no_plugins;
-    let app = GameApp::new(paths, session, plugins);
+    let app = GameApp::new(
+        paths,
+        session,
+        plugins,
+        args.screenshot.clone(),
+        args.frame_count(),
+    );
     app.run()
 }
 
@@ -154,7 +181,8 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
 
     let mut kernel = Kernel::new().with(service);
     let started = Instant::now();
-    for _ in 0..args.frames {
+    let frames = args.frame_count();
+    for _ in 0..frames {
         kernel.tick();
     }
     let elapsed = started.elapsed();
@@ -169,15 +197,15 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
         .unwrap_or((0, 0, "<gone>".into(), 0, 0));
     kernel.shutdown();
 
-    let us_per_tick = if args.frames == 0 {
+    let us_per_tick = if frames == 0 {
         0
     } else {
-        elapsed.as_micros() / args.frames as u128
+        elapsed.as_micros() / frames as u128
     };
     println!(
         "ok: {} ticks in {:.2?} ({us_per_tick} us/tick); {rooms} rooms, {entities} entities; \
          spawn room {room}; {plugins} plugins; {reloads} hot reloads",
-        args.frames, elapsed,
+        frames, elapsed,
     );
     Ok(())
 }

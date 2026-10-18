@@ -3,9 +3,11 @@
 //! 宿主只做「喂输入、按固定步长 tick、把 service 的快照画出来」，
 //! 所有游戏状态都在 [`GameService`] 里（ROADMAP Phase 2.2）。
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
 use releste_kernel::Kernel;
 use releste_math::FIXED_DT;
 use releste_render::{GpuRenderer, GpuRendererConfig, SpriteBatch};
@@ -49,11 +51,24 @@ pub struct GameApp {
     fps_last: Instant,
     fps: u32,
     ticks: u64,
+    /// `--screenshot`：第 `screenshot_after` 个渲染帧存成 PNG 后退出。
+    screenshot: Option<PathBuf>,
+    screenshot_after: u64,
+    screenshot_saved: bool,
+    rendered: u64,
+    /// 截图等异步阶段攒下的致命错误；事件循环结束后由 `run` 上抛。
+    fatal: Option<anyhow::Error>,
 }
 
 impl GameApp {
     /// 建应用。此时只准备好数据，GPU 与窗口要等 `resumed`。
-    pub fn new(paths: Paths, session: Session, load_plugins: bool) -> Self {
+    pub fn new(
+        paths: Paths,
+        session: Session,
+        load_plugins: bool,
+        screenshot: Option<PathBuf>,
+        screenshot_after: u64,
+    ) -> Self {
         let watcher = watch_maps(&paths);
         let now = Instant::now();
         GameApp {
@@ -73,6 +88,11 @@ impl GameApp {
             fps_last: now,
             fps: 0,
             ticks: 0,
+            screenshot,
+            screenshot_after,
+            screenshot_saved: false,
+            rendered: 0,
+            fatal: None,
         }
     }
 
@@ -86,6 +106,9 @@ impl GameApp {
 
         if let Some(mut kernel) = self.kernel.take() {
             kernel.shutdown();
+        }
+        if let Some(e) = self.fatal.take() {
+            return Err(e);
         }
         info!(ticks = self.ticks, "game exited");
         Ok(())
@@ -261,8 +284,8 @@ impl GameApp {
         window.set_title(&title);
     }
 
-    /// 画一帧。
-    fn draw(&mut self) {
+    /// 画一帧；`--screenshot` 到点时抓帧落盘并退出。
+    fn draw(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(kernel), Some(gpu)) = (self.kernel.as_mut(), self.gpu.as_mut()) else {
             return;
         };
@@ -274,7 +297,62 @@ impl GameApp {
         if let Err(e) = gpu.render(&self.batch, &camera) {
             error!(error = %e, "render failed");
         }
+        self.rendered += 1;
+
+        if self.screenshot.is_some()
+            && !self.screenshot_saved
+            && self.rendered >= self.screenshot_after
+        {
+            if let Err(e) = self.save_screenshot() {
+                self.fatal = Some(e);
+            }
+            event_loop.exit();
+        }
     }
+
+    /// 渲染当前快照并写 PNG（真实管线输出，含截屏那次独立渲染）。
+    fn save_screenshot(&mut self) -> anyhow::Result<()> {
+        let Some(path) = self.screenshot.clone() else {
+            return Ok(());
+        };
+        let (Some(kernel), Some(gpu)) = (self.kernel.as_mut(), self.gpu.as_mut()) else {
+            anyhow::bail!("renderer is not ready");
+        };
+        let Some(service) = kernel.resolve_mut::<GameService>() else {
+            anyhow::bail!("game service is gone");
+        };
+        service.render(gpu, self.alpha, &mut self.batch);
+        let camera = service.render_camera(self.alpha);
+        let (width, height, pixels) = gpu
+            .capture_pixels(&self.batch, &camera)
+            .map_err(|e| anyhow::anyhow!("frame capture: {e}"))?;
+
+        save_png(&path, &pixels, width, height)?;
+        info!(
+            path = %path.display(),
+            width,
+            height,
+            frame = self.rendered,
+            "screenshot saved"
+        );
+        self.screenshot_saved = true;
+        Ok(())
+    }
+}
+
+/// 把紧凑 RGBA8 像素写成 PNG；父目录不存在时顺手创建。
+fn save_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let img = image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        .ok_or_else(|| anyhow::anyhow!("pixel buffer does not match {width}x{height}x4"))?;
+    img.save(path)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
 }
 
 impl ApplicationHandler for GameApp {
@@ -298,7 +376,7 @@ impl ApplicationHandler for GameApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => self.on_key(&event),
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::RedrawRequested => self.draw(event_loop),
             _ => {}
         }
     }

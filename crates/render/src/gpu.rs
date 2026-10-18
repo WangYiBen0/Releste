@@ -175,7 +175,8 @@ impl GpuRenderer {
         };
 
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // COPY_SRC：`--screenshot` 要把渲染目标拷回 CPU 读像素。
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format,
             width: config.width.max(1),
             height: config.height.max(1),
@@ -464,6 +465,58 @@ impl GpuRenderer {
     ///
     /// 调用前应 `batch.sort()`。
     pub fn render(&mut self, batch: &SpriteBatch, camera: &Camera) -> Result<(), RenderError> {
+        self.render_inner(batch, camera, None)
+    }
+
+    /// 渲染一帧并把像素读回 CPU：紧凑 RGBA8（BGRA 表面格式已换回 RGBA）。
+    /// 返回 `(宽, 高, 像素)` —— 宽可能比视口窄（见下）。
+    ///
+    /// "画得对不对"不该只靠肉眼盯窗口 —— `--screenshot` 用它把真实
+    /// 管线的输出落成 PNG，CI / 远程环境也能核对渲染结果。
+    ///
+    /// `copy_texture_to_buffer` 的行距必须 256 对齐；当 `宽×4` 不是
+    /// 256 的倍数（平铺 WM 会把窗口挤成任意宽度）时，行距和
+    /// `宽×4` 之间有 padding，个别驱动（llvmpipe）映射回来的范围
+    /// 会把 padding 甩掉，行切分就对不上。解法：把拷贝范围**裁到
+    /// 64 的倍数** —— 行距恰好等于 `宽×4`，零 padding，歧义消失。
+    /// 960 宽的窗口（`960 % 64 == 0`）不受影响，整帧照拍。
+    pub fn capture_pixels(
+        &mut self,
+        batch: &SpriteBatch,
+        camera: &Camera,
+    ) -> Result<(u32, u32, Vec<u8>), RenderError> {
+        let (width, height) = self.viewport;
+        let capture_width = width / 64 * 64;
+        if capture_width == 0 {
+            return Err(RenderError::Surface(format!(
+                "viewport too narrow for a capture: {width}px"
+            )));
+        }
+        let mut capture = FrameCapture::new(&self.device, capture_width, height);
+        self.render_inner(batch, camera, Some(&mut capture))?;
+        let stride = capture_width as usize * 4;
+        let padded = capture.read(&self.device);
+        // 个别驱动映射回来的字节数可能少于整帧：按实际行数取，宁可
+        // 矮一行也不越界。
+        let rows = (padded.len() / stride) as u32;
+        if rows != height {
+            warn!(rows, height, "frame capture got fewer rows than requested");
+        }
+        let swap_rb = matches!(
+            self.config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let pixels = unpack_rows(&padded, capture_width, rows, capture_width * 4, swap_rb);
+        Ok((capture_width, rows, pixels))
+    }
+
+    /// 渲染一帧；`capture` 给出时把渲染目标额外拷进 CPU 可读缓冲。
+    fn render_inner(
+        &mut self,
+        batch: &SpriteBatch,
+        camera: &Camera,
+        capture: Option<&mut FrameCapture>,
+    ) -> Result<(), RenderError> {
         let vertices = batch.vertices(camera, self.viewport);
         if vertices.len() > self.vertex_capacity {
             return Err(RenderError::BufferCast);
@@ -535,6 +588,27 @@ impl GpuRenderer {
                 let count = (range.len * 6) as u32;
                 pass.draw(start..start + count, 0..1);
             }
+        }
+
+        // 截屏：在 submit 前把渲染目标整块拷进暂存缓冲（GPU 时间线上
+        // 与 present 无关，present 照常做，不改变交换链节奏）。
+        if let Some(cap) = capture {
+            encoder.copy_texture_to_buffer(
+                frame.texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &cap.buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(cap.bytes_per_row),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d {
+                    width: cap.width,
+                    height: cap.height,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -614,10 +688,106 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// 一帧的 CPU 回读暂存。
+///
+/// `copy_texture_to_buffer` 要求每行 256 字节对齐，所以行距可能大于
+/// `宽×4`；[`FrameCapture::read`] 返回**带 padding 的原始行**，交给
+/// [`unpack_rows`] 去边角料并按需交换 R/B。
+struct FrameCapture {
+    buffer: wgpu::Buffer,
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+}
+
+impl FrameCapture {
+    /// 为 `width × height` 的帧建映射缓冲。
+    ///
+    /// `width` 必须是 64 的倍数（调用方保证）——这样 `宽×4` 天然
+    /// 256 对齐，行距无 padding。
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        debug_assert_eq!(width % 64, 0, "capture width must keep rows 256-aligned");
+        let bytes_per_row = width * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame-capture"),
+            size: bytes_per_row as u64 * height.max(1) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        Self {
+            buffer,
+            width,
+            height,
+            bytes_per_row,
+        }
+    }
+
+    /// 提交完成后把整帧读回（阻塞到映射完成为止）。
+    ///
+    /// 返回映射范围内**原样**的字节；行距见 [`FrameCapture::bytes_per_row`]。
+    fn read(self, device: &wgpu::Device) -> Vec<u8> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let slice = self.buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result.is_ok());
+        });
+        device.poll(wgpu::Maintain::Wait);
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+        let data = slice.get_mapped_range();
+        let out = data.to_vec();
+        drop(data);
+        self.buffer.unmap();
+        out
+    }
+}
+
+/// 把带行距的帧缓冲行转成紧凑 RGBA8；`swap_rb` 处理 BGRA 表面格式。
+fn unpack_rows(
+    padded: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+    swap_rb: bool,
+) -> Vec<u8> {
+    let stride = (width * 4) as usize;
+    let row = bytes_per_row as usize;
+    let mut out = Vec::with_capacity(stride * height as usize);
+    for r in 0..height as usize {
+        let src = &padded[r * row..r * row + stride];
+        if swap_rb {
+            for px in src.chunks_exact(4) {
+                out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+            }
+        } else {
+            out.extend_from_slice(src);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::atlas::Sprite;
+
+    /// 帧行去 padding + 按需交换 R/B：2×2 帧、行距 16（代替 256 对齐的
+    /// 极简替身），BGRA 像素必须还原成 RGBA 紧凑排列。
+    #[test]
+    fn unpack_rows_strips_padding_and_swaps_rb() {
+        let padded: Vec<u8> = vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, //
+            9, 10, 11, 12, 13, 14, 15, 16, 0, 0, 0, 0, 0, 0, 0, 0, //
+        ];
+        assert_eq!(
+            unpack_rows(&padded, 2, 2, 16, true),
+            vec![3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16]
+        );
+        // 非 swap：原样紧凑化（两行各取前 8 字节，padding 丢弃）。
+        assert_eq!(
+            unpack_rows(&padded, 2, 2, 16, false),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
+    }
 
     #[test]
     fn uv_is_computed_from_sprite_rect() {
