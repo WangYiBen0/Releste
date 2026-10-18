@@ -93,14 +93,24 @@
       };
 
       # 第三方依赖（缓存友好）。
+      #
+      # crane 的 buildDepsOnly 会**自动**给 pname 追加 `-deps` 后缀
+      # （lib/buildDepsOnly.nix: pnameSuffix = "-deps"），所以这里只写
+      # "releste" —— 显式写 "releste-deps" 会得到滑稽的
+      # `releste-deps-deps-0.1.0`。
       cargoArtifacts = craneLib.buildDepsOnly (
         commonArgs
         // {
-          pname = "releste-deps";
+          pname = "releste";
         }
       );
 
       # 完整 workspace 构建（含所有二进制）。
+      #
+      # `nix run` 直接运行的就是这个包：二进制在 store 里，窗口模式的
+      # wayland / X11 / vulkan-loader 全是**运行期 dlopen**（NixOS 没有
+      # /usr/lib），所以用 makeWrapper 把库路径包进每个二进制 ——
+      # headless / editor / 管线同样受益，不加分辨。
       releste = craneLib.buildPackage (
         commonArgs
         // {
@@ -110,6 +120,14 @@
           # 让 `nix run` 在这个包上也能工作（apps.default 已显式指向
           # 同一个 `releste` bin，ROADMAP Phase 1.4）。
           meta.mainProgram = "releste";
+
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper ];
+          postInstall = ''
+            for bin in "$out"/bin/*; do
+              wrapProgram "$bin" \
+                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath commonArgs.buildInputs}"
+            done
+          '';
         }
       );
 
@@ -123,10 +141,11 @@
 
       # full 变体有自己的依赖缓存：与默认变体的依赖图不同，
       # 复用同一份 artifacts 会让这些依赖在构建阶段重编。
+      # （crane 会追加 `-deps` 后缀 → `releste-full-deps`。）
       cargoArtifactsFull = craneLib.buildDepsOnly (
         commonArgs
         // {
-          pname = "releste-deps-full";
+          pname = "releste-full";
           cargoExtraArgs = fullFeatures;
         }
       );
