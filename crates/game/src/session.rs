@@ -11,7 +11,7 @@ use releste_map::{Backdrop, MapDocument, Room};
 use releste_math::Vec2;
 use releste_render::atlas::SpriteAtlas;
 use releste_render::{GpuRenderer, Layer, SpriteDraw};
-use releste_world::FieldValue;
+use releste_world::{EntityData, FieldValue};
 use tracing::{debug, warn};
 
 use crate::paths::Paths;
@@ -19,6 +19,126 @@ use crate::sprites;
 
 /// 一格瓦片的世界像素数（`lvl_-1` 宽 320 / 40 格 = 8px）。
 const TILE: f32 = sprites::TILE_PX as f32;
+
+/// `introCrusher` 的画层：原版 `Depth = -10501`（`pureCeleste.cs:106316`），
+/// 数值越小越靠前 —— 排在 SolidTiles 的 −10000（`124913`）之前，玩家
+/// （`0`）更在其后，但仍在最后绘制的前景视差层之前。引擎层序（值越小
+/// 越先画）取 `Effects(300) < 本层 < Foreground(500)`。
+const LAYER_INTRO_CRUSHER: i32 = Layer::Foreground.value() - 100;
+
+/// `wire`（`above=false`）的画层：原版 `Depth = 2000`
+/// （`pureCeleste.cs:106692`）—— 画在背景层之后、地形与玩家之前
+/// （原版数值越小越靠前）。引擎层序（值越小越先画）落在
+/// `BgTiles(-500)` 与 `Tiles(0)` 之间。
+const LAYER_WIRE: i32 = Layer::BgTiles.value() + 100;
+
+/// `wire above=true` 的画层：原版 `Depth = -8500`（`106692`）—— 在玩家
+/// 之前、地形之后。引擎的地形在玩家之后才画，两个原版顺序无法同时
+/// 保持；取"玩家之前、压路机与前景之前"：`Player(200)` 之后、
+/// `LAYER_INTRO_CRUSHER(400)` / `Foreground(500)` 之前。0-Intro 没有
+/// `above` 的线（属性表里无该键）。
+const LAYER_WIRE_ABOVE: i32 = Layer::Player.value() + 150;
+
+/// `BridgeTile` 的画层：原版不设 Depth → `Entity.Depth` 默认 `0`
+/// （属性见 `pureCeleste.cs:12997`），与玩家同深；引擎取 `Entities(100)`
+/// —— 在地形之后、玩家之前（木板铺在地形前方，Madeline 从上面走过）。
+const LAYER_BRIDGE: i32 = Layer::Entities.value();
+
+/// 一条 `Wire` 的 16 段折线：返回每段的 `(起点, 长度, 旋转弧度)`。
+///
+/// 对照 `Wire.Render`（`pureCeleste.cs:106699-106710`）：控制点 = 两端中点
+/// 下垂 24px（`106702`），点取二次贝塞尔 `GetPoint(i/16)`
+/// （Everest `Patches/Monocle/SimpleCurve.cs:22-28`），逐段 `Draw.Line`
+/// 把上一段终点当起点。风摆取 0（见 [`Session::push_wire`] 文档）。
+fn wire_segments(from: (f32, f32), to: (f32, f32)) -> Vec<((f32, f32), f32, f32)> {
+    let (fx, fy) = from;
+    let (tx, ty) = to;
+    let (cx, cy) = ((fx + tx) / 2.0, (fy + ty) / 2.0 + 24.0);
+    let point = |t: f32| -> (f32, f32) {
+        let u = 1.0 - t;
+        (
+            u * u * fx + 2.0 * u * t * cx + t * t * tx,
+            u * u * fy + 2.0 * u * t * cy + t * t * ty,
+        )
+    };
+
+    let mut out = Vec::with_capacity(16);
+    let (mut sx, mut sy) = (fx, fy);
+    for i in 1..=16 {
+        let (px, py) = point(i as f32 / 16.0);
+        let (dx, dy) = (px - sx, py - sy);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len > 0.0 {
+            out.push(((sx, sy), len, dy.atan2(dx)));
+        }
+        sx = px;
+        sy = py;
+    }
+    out
+}
+
+/// 原版 `Bridge` 的 `tileSizes` 表（`pureCeleste.cs:107719-107729`）：
+/// `(图内 x, 宽, 高)`；`y` 恒为 0。
+const BRIDGE_TILE_SIZES: [(i16, i16, i16); 11] = [
+    (0, 16, 52),
+    (16, 8, 52),
+    (24, 8, 52),
+    (32, 8, 52),
+    (40, 8, 52),
+    (48, 8, 52),
+    (56, 8, 52),
+    (64, 8, 52),
+    (72, 8, 52),
+    (80, 16, 52),
+    (96, 8, 52),
+];
+
+/// 一块 `BridgeTile` 该画的竖条：`(图内 x, 图内 y, 宽, 高, 相对桥面的 y)`。
+///
+/// 对照 `BridgeTile` 的构造（`pureCeleste.cs:107836-107890`）：宽度 16 的
+/// 端头沿高度切 24 + 12 + 12 + …（`107854-107863`），其余整块一条
+/// （`107866-107873`）；两者都把图内 y 抹平到 `-8`（`107874-107878`）。
+fn bridge_tile_strips(cell_x: i16, cell_w: i16, cell_h: i16) -> Vec<(i16, i16, i16, i16, f32)> {
+    let mut out = Vec::new();
+    if cell_w == 16 {
+        let mut offset = 0i16;
+        let mut strip = 24i16;
+        while offset < cell_h {
+            let h = strip.min(cell_h - offset);
+            out.push((cell_x, offset, cell_w, h, offset as f32 - 8.0));
+            offset += strip;
+            strip = 12;
+        }
+    } else {
+        out.push((cell_x, 0, cell_w, cell_h, -8.0));
+    }
+    out
+}
+
+/// 一座 `Bridge` 的逐格布局：`(桥面 x, 图内 x, 宽, 高, 是否可见)`。
+///
+/// 对照 `Bridge.Added`（`pureCeleste.cs:107704-107731`）：从 `Position` 起
+/// 沿 `width` 逐格推进，`tileSizes` 循环取用；`num` 落在 `2..=7` 时原版
+/// 用 `Calc.Random.Next(6)` 抽木纹段（`PushRandom(1)` 定种，`107721`），
+/// 这 6 个候选**全是 8px 宽**，所以引擎直接按序号取 —— 步进与原版逐格
+/// 一致，只有 8px 段的图内花色成了固定序列。
+///
+/// 返回**全部**格子、用 `bool` 标记是否落在缺口里，因为原版是"先推进
+/// 游标、再决定要不要 `level.Add`"（`107722-107726`）：缺口宽度照样计入
+/// 步进，若把缺口格子直接丢掉，缺口之后的木板会整体错位。
+fn bridge_cells(start_x: f32, width: i32, gap: (f32, f32)) -> Vec<(f32, i16, i16, i16, bool)> {
+    let (gap_start, gap_end) = gap;
+    let mut out = Vec::new();
+    let mut x = start_x;
+    let mut num = 0usize;
+    while x < start_x + width as f32 {
+        let (cell_x, cell_w, cell_h) = BRIDGE_TILE_SIZES[num];
+        out.push((x, cell_x, cell_w, cell_h, x < gap_start || x >= gap_end));
+        x += cell_w as f32;
+        num = (num + 1) % BRIDGE_TILE_SIZES.len();
+    }
+    out
+}
 
 /// 单个 `Backdrop` 的有效颜色：全零视为"未设置"，取原版默认白
 /// （`112789` `backdrop.Color = Color.White` 起点，`112790-112796`
@@ -546,6 +666,27 @@ impl Session {
             if e.kind == "player" {
                 continue; // 玩家由仿真驱动，见 `Session::player_draws`
             }
+            match e.kind.as_str() {
+                // 没有贴图的实体：外观由几何/autotiler 拼出，单独成图。
+                "introCrusher" => {
+                    self.push_intro_crusher(out, room, e, gpu);
+                    continue;
+                }
+                "wire" => {
+                    self.push_wire(out, room, e, gpu);
+                    continue;
+                }
+                "bridge" => {
+                    self.push_bridge(out, room, e, gpu);
+                    continue;
+                }
+                // 原版 Hahaha 只画 Update 定时生成的 `Ha` 笑声气泡，而
+                // `has` 列表出生时是空的（`pureCeleste.cs:110944`、
+                // `111012-111035`）：场景 t=0 它什么都不画 —— 引擎无该
+                // 模拟，静态渲染同样不画（无"缺图"可言，不告警）。
+                "hahaha" => continue,
+                _ => {}
+            }
             let Some(name) = sprites::entity_sprite(&e.kind) else {
                 if self.warn_once(&format!("no-sprite:{}", e.kind)) {
                     warn!(kind = %e.kind, "no built-in sprite for entity kind; skipping it");
@@ -618,6 +759,215 @@ impl Session {
                             .with_color(WHITE),
                     );
                 }
+            }
+        }
+    }
+
+    /// `IntroCrusher`：原版**没有任何 crushblock/Kevin 贴图**，外观是
+    /// autotiler 生成的一整块盒子 —— `GFX.FGAutotiler.GenerateBox('3',
+    /// width/8, height/8)` 塞进实体自己的 TileGrid（`pureCeleste.cs:106322`；
+    /// GenerateBox 本身在 `87832`：整盒填 id，盒外按默认 `Behaviour`
+    /// 当空 —— `CheckTile` 的 `mapData == null` 分支返回 `EdgesExtend`
+    /// = false，`87985-87989`）。
+    ///
+    /// 实体位置 = 盒子左上角（`Solid` 的 `base(position, width, height)`）；
+    /// `Nodes[0]` 是落点，只参与落体动画，静态渲染画起始位。
+    fn push_intro_crusher(
+        &self,
+        out: &mut Vec<SpriteDraw>,
+        room: &Room,
+        e: &EntityData,
+        gpu: &GpuRenderer,
+    ) {
+        // '3' 的格值 = 它在字母表里的下标（"0123…" → 3）。
+        let value = releste_map::TILE_ALPHABET.find('3').unwrap_or(0) as u16;
+        let (cols, rows) = (
+            (e.width.unwrap_or(0).max(0) / sprites::TILE_PX) as u32,
+            (e.height.unwrap_or(0).max(0) / sprites::TILE_PX) as u32,
+        );
+        if cols == 0 || rows == 0 {
+            return; // 0 格盒子：原版同样什么都不画
+        }
+
+        // 整盒填 '3'，越界当空（`Oob::Empty`）才会有边缘块。
+        let mut grid = releste_map::Tileset::new(room.tiles.atlas.clone(), cols, rows);
+        for y in 0..rows {
+            for x in 0..cols {
+                grid.set(x, y, value);
+            }
+        }
+        let coords = releste_map::autotiler::generate_with(
+            &grid,
+            &self.tilesets,
+            releste_map::autotiler::Oob::Empty,
+        );
+
+        let id = releste_map::tile_char(value);
+        let Some(def) = self.tilesets.def(id) else {
+            if self.warn_once(&format!("no-tileset:{id}")) {
+                warn!(tile = %id, "no tileset definition for introCrusher box");
+            }
+            return;
+        };
+        let Some((group, sprite)) = self.atlas.sprite(&def.path) else {
+            if self.warn_once(&format!("missing-tileset:{}", def.path)) {
+                warn!(tile = %id, path = %def.path, "tileset texture not in atlas; skipping introCrusher");
+            }
+            return;
+        };
+        let atlas_id = sprites::group_id(&self.atlas, group);
+        let Some((tw, th)) = gpu.texture_size(atlas_id) else {
+            return; // 纹理没上传（未转码的 .data），load_atlas 已告警
+        };
+        let tex = Vec2::from_f32s(tw as f32, th as f32);
+
+        // 位置 = 盒子左上角：房间坐标 → 世界坐标（与瓦片层同一换算）。
+        let anchor = Vec2::from_f32s(room.bounds.x + e.x, room.bounds.y + e.y);
+        for ty in 0..rows {
+            for tx in 0..cols {
+                let (col, row) = coords[(ty as usize) * (cols as usize) + (tx as usize)];
+                let cell = sprites::tile_cell(sprite, col, row);
+                let uv = GpuRenderer::uv_for_sprite(&cell, tex);
+                let pos = anchor + Vec2::from_f32s(tx as f32 * TILE, ty as f32 * TILE);
+                out.push(
+                    SpriteDraw::new(atlas_id, pos, Vec2::from_f32s(TILE, TILE), uv)
+                        .with_layer(LAYER_INTRO_CRUSHER)
+                        .with_color(WHITE),
+                );
+            }
+        }
+    }
+
+    /// `Wire`：原版没有专用贴图 —— `Render` 沿一条 `SimpleCurve`（二次
+    /// 贝塞尔）画 16 段 `Draw.Line`，每段是 1px 高、按角度旋转的横条
+    /// （`pureCeleste.cs:106699-106710`）。控制点 = 两端中点下垂 24px
+    /// （`106702`）；`GetPoint(t) = (1-t)²·Begin + 2(1-t)t·Control +
+    /// t²·End`（Everest `Patches/Monocle/SimpleCurve.cs:22-28`）。线色
+    /// `595866`（`106676`）；from/to = 实体与节点坐标 + 房间偏移
+    /// （`106698`）。
+    ///
+    /// 静态偏差：原版控制点还叠风摆 `sin(sine + WindSineTimer·ω) · 8 ·
+    /// VisualWind`（`106701`）—— 相位来自 `new Random((int)min.X)` 的
+    /// 逐线随机流、幅度随 `WindSineTimer` 动画（`115689-115690`，t=0
+    /// 时 `VisualWind=0.5`）。引擎静态批次没有该时间与随机流，取摆动
+    /// 为 0（单线最大偏差 ±4px）。
+    fn push_wire(&self, out: &mut Vec<SpriteDraw>, room: &Room, e: &EntityData, gpu: &GpuRenderer) {
+        let Some((node_x, node_y)) = e.nodes.first().copied() else {
+            if self.warn_once(&format!("wire-node:{}:{}", e.x, e.y)) {
+                warn!(x = e.x, y = e.y, "wire without a node; skipping");
+            }
+            return;
+        };
+        let (fx, fy) = (room.bounds.x + e.x, room.bounds.y + e.y);
+        let (tx, ty) = (room.bounds.x + node_x, room.bounds.y + node_y);
+
+        // 1px 白 texel：Monocle `Draw.Line` 采样的是纯白 Pixel.Texture，
+        // 图集里 `util/pixel` 是 3×3 的纯白 (255,255,255,255)。
+        let Some((group, sprite)) = self.atlas.sprite("util/pixel") else {
+            if self.warn_once("wire-white-pixel") {
+                warn!("`util/pixel` not in atlas; skipping wires");
+            }
+            return;
+        };
+        let atlas_id = sprites::group_id(&self.atlas, group);
+        let Some((tw, th)) = gpu.texture_size(atlas_id) else {
+            return; // 纹理还没上传，load_atlas 已经告警过
+        };
+        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+
+        // Calc.HexToColor("595866")（106676）。
+        let color = [89.0 / 255.0, 88.0 / 255.0, 102.0 / 255.0, 1.0];
+        let layer = if matches!(e.properties.get("above"), Some(FieldValue::Bool(true))) {
+            LAYER_WIRE_ABOVE
+        } else {
+            LAYER_WIRE
+        };
+
+        // 16 段（106703-106709）：段 = 绕起点旋到终点的 1px 高横条。
+        for ((sx, sy), len, angle) in wire_segments((fx, fy), (tx, ty)) {
+            out.push(
+                SpriteDraw::new(
+                    atlas_id,
+                    Vec2::from_f32s(sx, sy),
+                    Vec2::from_f32s(len, 1.0),
+                    uv,
+                )
+                .with_layer(layer)
+                .with_color(color)
+                .with_rotation(angle),
+            );
+        }
+    }
+
+    /// `Bridge`：桥实体本身什么都不画 —— 它在 `Added` 里沿宽度逐格生成
+    /// `BridgeTile`（`pureCeleste.cs:107704-107731`），每格是
+    /// `scenery/bridge` 贴图的一个竖条（`107846-107878`）。
+    ///
+    /// - 缺口 = 两个节点的房间 x 加房间左缘（原版 `gapStartX +=
+    ///   level.Bounds.Left`，`107713-107714`；节点与实体同房间坐标系）。
+    /// - 版材循环 11 个尺寸（`107719-107729`）：索引 2..=7 原版取
+    ///   `Calc.Random.Next(6)` 的随机木纹段（`PushRandom(1)` 定种），
+    ///   引擎直接用序号 `num` —— 这 6 个候选全是 8px 宽，步进与原版逐
+    ///   格一致，只有 8px 段的花色成为固定序列（该随机流不复刻）。
+    /// - 16px 端头按 24+12+12+… 竖切，各条 Y 偏移 `num2 - 8`
+    ///   （`107854-107872`），余量裁到 52px 高。
+    /// - 原版 `Update` 在玩家过桥后播放坍塌（`107733+`）；静态渲染画
+    ///   完整的桥。
+    fn push_bridge(
+        &self,
+        out: &mut Vec<SpriteDraw>,
+        room: &Room,
+        e: &EntityData,
+        gpu: &GpuRenderer,
+    ) {
+        let Some(width) = e.width.filter(|&w| w > 0) else {
+            return;
+        };
+        if e.nodes.len() < 2 {
+            if self.warn_once(&format!("bridge-nodes:{}:{}", e.x, e.y)) {
+                warn!(x = e.x, y = e.y, "bridge without two gap nodes; skipping");
+            }
+            return;
+        }
+        let gap_start = room.bounds.x + e.nodes[0].0;
+        let gap_end = room.bounds.x + e.nodes[1].0;
+
+        let Some((group, sprite)) = self.atlas.sprite("scenery/bridge") else {
+            if self.warn_once("bridge-texture") {
+                warn!("`scenery/bridge` not in atlas; skipping bridge");
+            }
+            return;
+        };
+        let atlas_id = sprites::group_id(&self.atlas, group);
+        let Some((tw, th)) = gpu.texture_size(atlas_id) else {
+            return;
+        };
+        let tex = Vec2::from_f32s(tw as f32, th as f32);
+
+        let mut push_strip = |cell_x: i16, cell_y: i16, w: i16, h: i16, px: f32, py: f32| {
+            let cell = sprites::sub_rect(sprite, cell_x, cell_y, w, h);
+            let cell_uv = GpuRenderer::uv_for_sprite(&cell, tex);
+            out.push(
+                SpriteDraw::new(
+                    atlas_id,
+                    Vec2::from_f32s(px, py),
+                    Vec2::from_f32s(w as f32, h as f32),
+                    cell_uv,
+                )
+                .with_layer(LAYER_BRIDGE)
+                .with_color(WHITE),
+            );
+        };
+
+        let tile_y = room.bounds.y + e.y;
+        for (x, cell_x, cell_w, cell_h, visible) in
+            bridge_cells(room.bounds.x + e.x, width, (gap_start, gap_end))
+        {
+            if !visible {
+                continue; // 缺口：原版不 level.Add 这一格
+            }
+            for (sx, sy, sw, sh, dy) in bridge_tile_strips(cell_x, cell_w, cell_h) {
+                push_strip(sx, sy, sw, sh, x, tile_y + dy);
             }
         }
     }
@@ -990,5 +1340,134 @@ mod tests {
         for c in tint {
             assert!((c - 140.0 / 255.0).abs() < 1e-6, "tint channel {c}");
         }
+    }
+
+    /// 垂线：`Wire.Render` 逐段画，段首尾相连、总长 ≥ 两端直线距离；
+    /// 两端点必须落在曲线两端（`GetPoint(0)=Begin`、`GetPoint(1)=End`，
+    /// `SimpleCurve.cs:22-28`），且中点向下偏 12px（下垂 24 的贝塞尔在
+    /// t=0.5 处恰好一半：`((24+24+0)/4)`）。
+    #[test]
+    fn wire_segments_walk_the_bezier_end_to_end() {
+        let from = (100.0f32, 50.0f32);
+        let to = (200.0f32, 50.0f32);
+        let segs = wire_segments(from, to);
+        assert_eq!(segs.len(), 16, "vanilla draws 16 Draw.Line calls");
+
+        let first = segs.first().unwrap();
+        assert_eq!(
+            (first.0 .0, first.0 .1),
+            from,
+            "the first segment starts at Begin"
+        );
+
+        // 逐段拼接：上一段起点 + 长度/角度 = 下一段起点。
+        let mut cursor = from;
+        for (start, len, angle) in &segs {
+            assert!(
+                (start.0 - cursor.0).abs() < 1e-3 && (start.1 - cursor.1).abs() < 1e-3,
+                "segments must be contiguous: {start:?} vs {cursor:?}"
+            );
+            cursor = (start.0 + len * angle.cos(), start.1 + len * angle.sin());
+        }
+        assert!(
+            (cursor.0 - to.0).abs() < 1e-3 && (cursor.1 - to.1).abs() < 1e-3,
+            "the chain must land on End: {cursor:?}"
+        );
+
+        // 下垂：曲线最低点（t=0.5）比两端低 12px。
+        let mid = (from.0 + to.0) / 2.0;
+        let sag = segs
+            .iter()
+            .map(|(s, _, _)| (s.0 - mid).abs())
+            .fold(f32::INFINITY, f32::min);
+        let low = segs
+            .iter()
+            .filter(|(s, _, _)| (s.0 - mid).abs() <= sag)
+            .map(|(s, _, _)| s.1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (low - 62.0).abs() < 1.0,
+            "mid-sag should be 12px below the 50px ends, got {low}"
+        );
+    }
+
+    /// 桥面逐格推进的步进必须和原版一致（`107719-107729`）：每格 8px 或
+    /// 16px，总和 = `width`；缺口内的格子被跳过，但游标照走。
+    #[test]
+    fn bridge_cells_step_like_vanilla_and_skip_the_gap() {
+        // 0-Intro `lvl_3` 的真实数据（`dump_rooms`）：局部队位 (64,128)、
+        // `width` 840、节点 (496,112) / (528,120) → 缺口 room x 496..528。
+        let start = 64.0f32;
+        let width = 840i32;
+        let gap = (496.0, 528.0);
+        let cells = bridge_cells(start, width, gap);
+
+        let mut x = start;
+        for (cx, _, w, _, _) in &cells {
+            assert!((cx - x).abs() < 1e-4, "cursor drift: {cx} vs {x}");
+            x += *w as f32;
+        }
+        // 游标走满整宽 —— 缺口只是不生成格子。
+        assert!(
+            (x - (start + width as f32)).abs() <= 16.0,
+            "cursor should reach the far end, got {x}"
+        );
+
+        // 不可见的格子全部落在缺口里，且缺口两侧都有可见格子。
+        for (cx, _, w, _, visible) in &cells {
+            if !*visible {
+                assert!(
+                    *cx >= gap.0 && *cx < gap.1,
+                    "invisible cell at {cx} is outside the gap"
+                );
+            } else {
+                assert!(
+                    *cx + *w as f32 <= gap.0 || *cx >= gap.1,
+                    "visible cell at {cx} ({w} wide) overlaps the gap"
+                );
+            }
+        }
+        assert!(
+            cells.iter().any(|(cx, .., v)| *v && *cx < gap.0),
+            "left half exists"
+        );
+        assert!(
+            cells.iter().any(|(cx, .., v)| *v && *cx >= gap.1),
+            "right half exists"
+        );
+        assert!(
+            cells.iter().any(|(_, .., v)| !*v),
+            "the gap must skip at least one cell"
+        );
+
+        // 图内 x 只能取 11 个尺寸表里的值。
+        for (_, cell_x, w, h, _) in &cells {
+            assert!(
+                BRIDGE_TILE_SIZES
+                    .iter()
+                    .any(|(tx, tw, th)| tx == cell_x && tw == w && th == h),
+                "cell ({cell_x},{w},{h}) is not in tileSizes"
+            );
+        }
+    }
+
+    /// 16px 端头竖切 24 + 12 + 12 + …，其余整条；两者都抹平到 y = -8
+    /// （`BridgeTile`，`107854-107878`）。
+    #[test]
+    fn bridge_tile_strips_split_wide_ends_only() {
+        let wide = bridge_tile_strips(0, 16, 52);
+        assert_eq!(
+            wide.iter().map(|s| s.3).collect::<Vec<_>>(),
+            vec![24, 12, 12, 4],
+            "52px of art is cut 24 + 12 + 12 + remainder"
+        );
+        assert_eq!(
+            wide.iter().map(|s| (s.1, s.4)).collect::<Vec<_>>(),
+            vec![(0, -8.0), (24, 16.0), (36, 28.0), (48, 40.0)],
+            "each strip keeps its image y and slides `y - 8` in world space"
+        );
+
+        let narrow = bridge_tile_strips(48, 8, 52);
+        assert_eq!(narrow, vec![(48, 0, 8, 52, -8.0)]);
     }
 }

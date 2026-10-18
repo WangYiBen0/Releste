@@ -155,6 +155,30 @@ pub fn tile_cell(sprite: &Sprite, col: u32, row: u32) -> Sprite {
     }
 }
 
+/// 取 sprite 内任意像素子矩形（原版 `MTexture.GetSubtexture`）。
+///
+/// 裁到图内，永不越出图集 sprite 的范围；`origin`/`frame` 归零 —— 用它
+/// 的绘制方（如 `Bridge` 的竖条）直接给左上角坐标。
+pub fn sub_rect(sprite: &Sprite, x: i16, y: i16, w: i16, h: i16) -> Sprite {
+    let x = x.max(0);
+    let y = y.max(0);
+    let w = w.min(sprite.w - x).max(0);
+    let h = h.min(sprite.h - y).max(0);
+
+    Sprite {
+        name: sprite.name.clone(),
+        x: sprite.x + x,
+        y: sprite.y + y,
+        w,
+        h,
+        origin_x: 0,
+        origin_y: 0,
+        frame_w: w,
+        frame_h: h,
+        source: sprite.source.clone(),
+    }
+}
+
 /// 一个 sprite 在某个纹理组里的组下标（= atlas id）。
 ///
 /// `SpriteAtlas::sprite` 只返回引用，这里按指针找回下标。
