@@ -83,6 +83,8 @@ pub struct GameService {
     static_dirty: bool,
     overflow_warned: bool,
     reloads: u64,
+    /// 上次报告过的房间名（`-v` 下房间切换只在这变化时打一行）。
+    reported_room: String,
 }
 
 impl GameService {
@@ -106,6 +108,7 @@ impl GameService {
             None => (session, Vec::new()),
         };
 
+        let spawn_room = session.spawn_room.clone();
         GameService {
             session,
             player,
@@ -119,6 +122,7 @@ impl GameService {
             static_dirty: gpu.is_none(),
             overflow_warned: false,
             reloads: 0,
+            reported_room: spawn_room,
         }
     }
 
@@ -271,6 +275,20 @@ impl Service for GameService {
         }
         self.player.update(&self.input, &self.session);
         self.update_camera();
+
+        // 房间身份变化（中心跨缝）：`-v` 以上打一行，供排查"玩家到底
+        // 站在哪个房间"。物理本身不选房间，这只影响标题栏/相机。
+        let room = self.session.room_at(self.player.pos).name.to_string();
+        if room != self.reported_room {
+            debug!(
+                from = %self.reported_room,
+                to = %room,
+                x = self.player.pos.x.to_f32(),
+                y = self.player.pos.y.to_f32(),
+                "room changed"
+            );
+            self.reported_room = room;
+        }
     }
 
     fn dispose(&mut self) {
