@@ -62,10 +62,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .map(|(nx, ny)| format!("({nx:.0},{ny:.0})"))
                     .collect();
                 println!(
-                    "           {} at ({:.0},{:.0}) -> {}",
+                    "           {} at ({:.0},{:.0}) size {:?}x{:?} -> {}",
                     e.kind,
                     e.x,
                     e.y,
+                    e.width,
+                    e.height,
                     nodes.join(" ")
                 );
             }
