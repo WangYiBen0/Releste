@@ -161,9 +161,13 @@ Place libfmod.so / fmod.dll / libfmod.dylib in:
 ### 5.3 Commits
 
 - One logical change per commit.
-- Message format: `<scope>: <imperative summary>`
-  - `map: add stable entity IDs for hot reload`
-  - `render: fix batch flush order`
+- **Conventional Commits**: `type(scope): imperative summary`, subject ≤ 72 chars.
+  - `type`: `feat` `fix` `refactor` `perf` `docs` `test` `build` `ci` `chore`
+  - `scope`: the affected crate/module (`player`, `map`, `render`, …), or
+    `workspace` / `repo` for tree-wide changes.
+  - `fix(player): collide across room seams and snap to world-cell edges`
+  - `feat(map): add dump_rooms example for seam analysis`
+  - `chore(workspace): normalize all package and binary names to releste`
 - For commits involving original asset conversion, include the source asset path(s).
 
 ## 6. Common Commands
