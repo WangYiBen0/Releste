@@ -1,5 +1,5 @@
 [package]
-name = "reles-plugin-host"
+name = "releste-plugin-host"
 description = "Plugin loader, Fiber/scope lifecycle and capability registry"
 version.workspace = true
 edition.workspace = true

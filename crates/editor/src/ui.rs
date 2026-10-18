@@ -2,8 +2,8 @@
 
 use egui::{Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2 as EguiVec2};
 
-use reles_world::EntityId;
-use reles_world::{FieldValue, Schema};
+use releste_world::EntityId;
+use releste_world::{FieldValue, Schema};
 
 use crate::model::{Editor, Selection};
 use crate::schema_panel::{SchemaPanel, WidgetKind};
@@ -137,16 +137,16 @@ impl EditorUi {
                 ui.menu_button("房间", |ui| {
                     if ui.button("新增房间").clicked() {
                         let name = format!("room_{}", editor.document().rooms.len());
-                        let room = reles_map::Room {
+                        let room = releste_map::Room {
                             name,
-                            bounds: reles_map::RectDef {
+                            bounds: releste_map::RectDef {
                                 x: 0.0,
                                 y: 0.0,
                                 w: 320.0,
                                 h: 180.0,
                             },
-                            tiles: reles_map::Tileset::new("Gameplay", 20, 12),
-                            bg: reles_map::Tileset::default(),
+                            tiles: releste_map::Tileset::new("Gameplay", 20, 12),
+                            bg: releste_map::Tileset::default(),
                             entities: Vec::new(),
                             triggers: Vec::new(),
                             script: None,
@@ -202,7 +202,7 @@ impl EditorUi {
                 .unwrap_or((0.0, 0.0));
             // 稳定 ID 由地图作者/管线决定；编辑器用位置 + 种类散列占位。
             let id = EntityId::generate(0, &kind, 0, x as i32, y as i32);
-            let entity = reles_world::EntityData::new(kind, id, x, y);
+            let entity = releste_world::EntityData::new(kind, id, x, y);
             match editor.add_entity(entity) {
                 Ok(id) => {
                     editor.select(Selection::Entity(id));
@@ -246,7 +246,7 @@ impl EditorUi {
             .inner;
 
         if changed {
-            let _ = editor.move_entity(id, reles_math::Vec2::from_f32s(nx, ny));
+            let _ = editor.move_entity(id, releste_math::Vec2::from_f32s(nx, ny));
         }
 
         ui.separator();
@@ -328,7 +328,7 @@ impl EditorUi {
             let x = idx % tiles_w;
             let y = idx / tiles_w;
             let rect = tile_rect(origin, x, y, self.zoom);
-            // 用 tile 值派生一个可区分的颜色（真实渲染由 reles-render 负责）。
+            // 用 tile 值派生一个可区分的颜色（真实渲染由 releste-render 负责）。
             let hue = (*value as f32) / 36.0;
             painter.rect_filled(
                 rect,

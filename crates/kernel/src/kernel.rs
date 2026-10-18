@@ -115,7 +115,7 @@ impl Kernel {
     /// `tick` 只按固定步长推进模拟；窗口宿主还需要在 tick 之间读写
     /// service 状态——把渲染快照取出来交给 wgpu、把键盘事件注入输入
     /// service。这属于宿主侧的常规出口，不改变 "`dt` 恒为
-    /// [`FIXED_DT`](reles_math::FIXED_DT)" 的契约。
+    /// [`FIXED_DT`](releste_math::FIXED_DT)" 的契约。
     pub fn resolve_mut<S: Service>(&mut self) -> Option<&mut S> {
         self.services.get_mut::<S>()
     }

@@ -346,7 +346,7 @@ mod tests {
     ///
     /// 这是"用实物测"的入口：
     /// ```text
-    /// RELESTE_FMOD_LIB=/path/to/libfmod.so cargo test -p reles-audio \
+    /// RELESTE_FMOD_LIB=/path/to/libfmod.so cargo test -p releste-audio \
     ///     --features fmod -- --nocapture
     /// ```
     ///
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn architecture_mismatch_is_reported_as_unusable() {
         // 用一个内容合法但不是 ELF 的文件冒充库。
-        let dir = std::env::temp_dir().join("reles-fmod-arch-test");
+        let dir = std::env::temp_dir().join("releste-fmod-arch-test");
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("libfmod-fake.so");
         std::fs::write(&fake, b"not an ELF file at all").unwrap();

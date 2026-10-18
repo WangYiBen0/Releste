@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use reles_net_client::protocol::{Down, PlayerId, Up, PROTOCOL_VERSION};
+use releste_net_client::protocol::{Down, PlayerId, Up, PROTOCOL_VERSION};
 
 /// 已连接玩家。
 #[derive(Debug, Clone)]
@@ -204,7 +204,7 @@ impl Relay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reles_net_client::protocol::{AvatarState, CarryMode, SyncEvent, SyncPayload};
+    use releste_net_client::protocol::{AvatarState, CarryMode, SyncEvent, SyncPayload};
 
     fn ready(relay: &mut Relay, name: &str) -> PlayerId {
         let id = relay.on_connect();

@@ -1,5 +1,5 @@
 [package]
-name = "reles-script"
+name = "releste-script"
 version.workspace = true
 edition.workspace = true
 
@@ -13,9 +13,9 @@ default = []
 lua = ["dep:mlua"]
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-world = { path = "../world" }
-reles-kernel = { path = "../kernel" }
+releste-math = { path = "../math" }
+releste-world = { path = "../world" }
+releste-kernel = { path = "../kernel" }
 serde.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

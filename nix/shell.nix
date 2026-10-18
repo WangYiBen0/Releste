@@ -74,18 +74,18 @@
           echo ""
           echo "直接用 cargo（快速迭代）："
           echo "  cargo test --workspace"
-          echo "  cargo run -p reles-editor"
+          echo "  cargo run -p releste-editor"
           echo ""
           echo "可选 feature（本 shell 已提供 make / udev / pkg-config）："
-          echo "  cargo test -p reles-script --features lua"
-          echo "  cargo test -p reles-input  --features gamepad"
+          echo "  cargo test -p releste-script --features lua"
+          echo "  cargo test -p releste-input  --features gamepad"
           echo ""
           echo "GUI：wayland / libX11 / libxkbcommon / vulkan-loader 已在 LD_LIBRARY_PATH，"
-          echo "  窗口直接 cargo run -p reles-game 就能起。"
+          echo "  窗口直接 cargo run -p releste-game 就能起。"
           echo ""
           echo "FMOD：本仓库不含 libfmod.so，需自备并指向它："
           echo "  RELESTE_FMOD_ALLOW_MISSING=1 RELESTE_FMOD_LIB=/path/to/libfmod.so \\"
-          echo "    cargo test -p reles-audio --features fmod -- --nocapture"
+          echo "    cargo test -p releste-audio --features fmod -- --nocapture"
         '';
       };
     };

@@ -133,8 +133,8 @@ impl ScriptEngine {
             self.lua
                 .create_function(|lua, (actor, x, y, secs): (u64, f32, f32, f32)| {
                     Self::queue(lua)?.push(SimCommand::DummyWalkTo {
-                        actor: reles_world::EntityId::new(actor),
-                        target: reles_math::Vec2::from_f32s(x, y),
+                        actor: releste_world::EntityId::new(actor),
+                        target: releste_math::Vec2::from_f32s(x, y),
                         duration: DurationFrames::from_secs(secs),
                     });
                     Ok(())
@@ -161,7 +161,7 @@ impl ScriptEngine {
             self.lua
                 .create_function(|lua, (x, y, zoom, secs): (f32, f32, f32, f32)| {
                     Self::queue(lua)?.push(SimCommand::CameraZoom {
-                        target: reles_math::Vec2::from_f32s(x, y),
+                        target: releste_math::Vec2::from_f32s(x, y),
                         zoom,
                         duration: DurationFrames::from_secs(secs),
                     });
@@ -194,7 +194,7 @@ impl ScriptEngine {
                 .create_function(|lua, (kind, x, y): (String, f32, f32)| {
                     Self::queue(lua)?.push(SimCommand::SpawnActor {
                         kind: ActorKind::Npc(kind),
-                        pos: reles_math::Vec2::from_f32s(x, y),
+                        pos: releste_math::Vec2::from_f32s(x, y),
                     });
                     Ok(())
                 })?,

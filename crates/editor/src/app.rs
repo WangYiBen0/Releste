@@ -45,7 +45,7 @@ impl EditorApp {
     }
 
     /// Registers a Schema for a loaded entity kind so the inspector can auto-generate a panel.
-    pub fn register_schema(&mut self, kind: &str, schema: &reles_world::Schema) {
+    pub fn register_schema(&mut self, kind: &str, schema: &releste_world::Schema) {
         self.ui.register_schema(kind, schema);
     }
 
@@ -78,7 +78,7 @@ impl EditorApp {
 
         let (device, queue) = pollster_block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                label: Some("reles-editor-device"),
+                label: Some("releste-editor-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::downlevel_defaults(),
                 memory_hints: wgpu::MemoryHints::Performance,

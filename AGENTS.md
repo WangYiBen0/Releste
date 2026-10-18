@@ -171,26 +171,26 @@ Place libfmod.so / fmod.dll / libfmod.dylib in:
 ```bash
 # Build
 cargo build --workspace
-cargo build -p editor --release
+cargo build -p releste-editor --release
 
 # Run
-cargo run -p editor                       # map editor
-cargo run -p net-server -- --port 7777    # server
+cargo run -p releste-editor                       # map editor
+cargo run -p releste-net-server -- --port 7777    # server
 cargo run --bin releste                   # game
 
 # Content pipeline (run once)
-cargo run -p content-pipeline -- \
+cargo run -p releste-content-pipeline -- \
   --source ../assets-src \
   --output ../assets \
   --atlas-format packer
 
 # Test
 cargo test --workspace
-cargo test -p world -- --ignored          # run slow tests
+cargo test -p releste-world -- --ignored          # run slow tests
 
 # Profiling
 cargo flamegraph --bin releste
-cargo bench -p world
+cargo bench -p releste-world
 ```
 
 ## 7. Key Module Contracts
@@ -317,7 +317,7 @@ Target frame time: 16.67ms (60 FPS). Budgets:
 | Stage | Budget | Monitoring |
 |---|---|---|
 | Input sampling | < 0.1ms | `tracing::span` |
-| Simulation tick | < 2ms | `cargo bench -p world` |
+| Simulation tick | < 2ms | `cargo bench -p releste-world` |
 | Lua cutscene | < 0.5ms | `mlua` internal timing |
 | Render submission | < 4ms | `wgpu` timestamp query |
 | Audio | < 0.5ms | fmod-oxide timing |

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use bytemuck::{Pod, Zeroable};
-use reles_math::Vec2;
+use releste_math::Vec2;
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -150,7 +150,7 @@ impl GpuRenderer {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label: Some("reles-device"),
+                    label: Some("releste-device"),
                     required_features: wgpu::Features::empty(),
                     required_limits: limits,
                     memory_hints: wgpu::MemoryHints::Performance,

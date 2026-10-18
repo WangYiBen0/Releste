@@ -1,11 +1,11 @@
 [package]
-name = "reles-world"
+name = "releste-world"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-kernel = { path = "../kernel" }
+releste-math = { path = "../math" }
+releste-kernel = { path = "../kernel" }
 tracing.workspace = true
 thiserror.workspace = true
 slotmap.workspace = true

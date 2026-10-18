@@ -1,12 +1,12 @@
 [package]
-name = "reles-render"
+name = "releste-render"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-world = { path = "../world" }
-reles-kernel = { path = "../kernel" }
+releste-math = { path = "../math" }
+releste-world = { path = "../world" }
+releste-kernel = { path = "../kernel" }
 wgpu.workspace = true
 winit.workspace = true
 image.workspace = true

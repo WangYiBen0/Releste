@@ -48,8 +48,8 @@ impl PipelineError {
     }
 }
 
-impl From<reles_map::MapError> for PipelineError {
-    fn from(e: reles_map::MapError) -> Self {
+impl From<releste_map::MapError> for PipelineError {
+    fn from(e: releste_map::MapError) -> Self {
         PipelineError::Serialize(format!("map format: {e}"))
     }
 }

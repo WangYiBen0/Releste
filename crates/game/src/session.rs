@@ -7,10 +7,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use anyhow::{bail, Context as _, Result};
-use reles_map::{MapDocument, Room};
-use reles_math::Vec2;
-use reles_render::atlas::SpriteAtlas;
-use reles_render::{GpuRenderer, Layer, SpriteDraw};
+use releste_map::{MapDocument, Room};
+use releste_math::Vec2;
+use releste_render::atlas::SpriteAtlas;
+use releste_render::{GpuRenderer, Layer, SpriteDraw};
 use tracing::{debug, warn};
 
 use crate::paths::Paths;
@@ -33,7 +33,7 @@ pub struct Session {
     /// 图集名（来自 `Tileset.atlas`）。
     pub atlas_name: String,
     /// tileset 定义（content-pipeline 从 `ForegroundTiles.xml` 转换）。
-    pub tilesets: reles_map::TilesetsDoc,
+    pub tilesets: releste_map::TilesetsDoc,
     /// 玩家出生点（世界坐标，= hitbox 左上角）。
     pub spawn: Vec2,
     /// 出生点所在房间。
@@ -50,7 +50,7 @@ impl Session {
     pub fn load(map: &str, tileset: Option<&str>, paths: &Paths) -> Result<Self> {
         let _ = tileset; // 已废弃，见上
         let map_path = paths.map(map);
-        let doc = reles_map::load_map(&map_path)
+        let doc = releste_map::load_map(&map_path)
             .with_context(|| format!("failed to load map {}", map_path.display()))?;
         if doc.rooms.is_empty() {
             bail!("map {} has no rooms", map_path.display());
@@ -71,7 +71,7 @@ impl Session {
         })?;
 
         let tilesets_path = paths.tilesets();
-        let tilesets = reles_map::TilesetsDoc::from_file(&tilesets_path).with_context(|| {
+        let tilesets = releste_map::TilesetsDoc::from_file(&tilesets_path).with_context(|| {
             format!(
                 "failed to load tileset definitions {}",
                 tilesets_path.display()
@@ -255,15 +255,15 @@ pub(crate) fn room_containing(rooms: &[Room], pos: Vec2) -> Option<&Room> {
 /// 而不是出生房间 —— 否则地图另一头的坠落会被瞬移回出生点。
 pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
     let mut best = 0;
-    let mut best_d: Option<reles_math::Fx> = None;
+    let mut best_d: Option<releste_math::Fx> = None;
     for (i, room) in rooms.iter().enumerate() {
         let r = room.bounds.to_rect();
         let dx = (r.min.x - point.x)
             .max(point.x - r.max.x)
-            .max(reles_math::Fx::zero());
+            .max(releste_math::Fx::zero());
         let dy = (r.min.y - point.y)
             .max(point.y - r.max.y)
-            .max(reles_math::Fx::zero());
+            .max(releste_math::Fx::zero());
         let d = dx * dx + dy * dy;
         let closer = match best_d {
             Some(bd) => d < bd,
@@ -285,14 +285,14 @@ pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
 fn push_tiles(
     out: &mut Vec<SpriteDraw>,
     room: &Room,
-    tiles: &reles_map::Tileset,
+    tiles: &releste_map::Tileset,
     layer: Layer,
     tint: [f32; 4],
     session: &Session,
     gpu: &GpuRenderer,
 ) {
     // 一次性算好每块瓦片的 (col, row)（位置哈希选变体，确定性）。
-    let coords = reles_map::autotiler::generate(tiles, &session.tilesets);
+    let coords = releste_map::autotiler::generate(tiles, &session.tilesets);
 
     for ty in 0..tiles.height {
         for tx in 0..tiles.width {
@@ -300,7 +300,7 @@ fn push_tiles(
             if value == 0 {
                 continue; // 0 = 空
             }
-            let id = reles_map::tile_char(value);
+            let id = releste_map::tile_char(value);
             let Some(def) = session.tilesets.def(id) else {
                 if session.warn_once(&format!("no-tileset:{id}")) {
                     warn!(tile = %id, "no tileset definition; skipping this tile id");
@@ -371,8 +371,8 @@ fn info_load(doc: &MapDocument, atlas: &str, tilesets: usize, spawn: Vec2, room:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reles_map::{RectDef, Tileset};
-    use reles_render::atlas::{AtlasDescriptor, SpriteAtlas};
+    use releste_map::{RectDef, Tileset};
+    use releste_render::atlas::{AtlasDescriptor, SpriteAtlas};
     use std::path::Path;
 
     /// 复刻 0-Intro 的接缝几何：`lvl_-1`（x[-368,-48]）与 `lvl_0`
@@ -410,7 +410,7 @@ mod tests {
                 Path::new("/nonexistent"),
             ),
             atlas_name: "Test".into(),
-            tilesets: reles_map::TilesetsDoc::default(),
+            tilesets: releste_map::TilesetsDoc::default(),
             spawn: Vec2::from_f32s(-56.0, 136.0),
             spawn_room: "lvl_-1".into(),
             warned: RefCell::default(),

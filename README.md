@@ -69,9 +69,9 @@ cargo r                            # run the game (same bin `nix run .` uses)
 cargo r -- --headless --frames 600 # headless CI smoke: prints a frame report, exits 0
 cargo build --workspace
 cargo test --workspace             # 254 tests
-cargo run -p reles-editor
-cargo run -p reles-net-server -- --port 7777
-cargo run -p reles-content-pipeline -- --source references/Celeste/Content --output assets --verify
+cargo run -p releste-editor
+cargo run -p releste-net-server -- --port 7777
+cargo run -p releste-content-pipeline -- --source references/Celeste/Content --output assets --verify
 ```
 
 ## Crate layout
@@ -97,7 +97,7 @@ cargo run -p reles-content-pipeline -- --source references/Celeste/Content --out
 
 ## Measured results
 
-`content-pipeline` runs end to end over **every vanilla Celeste asset**, and the
+`releste-content-pipeline` runs end to end over **every vanilla Celeste asset**, and the
 output is read back and validated by the runtime loaders:
 
 ```
@@ -221,7 +221,7 @@ RELESTE_FMOD_ALLOW_MISSING=1 \
 RELESTE_FMOD_STUDIO_LIB="$PWD/.fmod/libfmodstudio.so" \
 RELESTE_FMOD_BANKS="$PWD/assets/audio" \
 LD_LIBRARY_PATH="$PWD/.fmod" \
-  cargo test -p reles-audio --features fmod full_studio_pipeline -- --nocapture
+  cargo test -p releste-audio --features fmod full_studio_pipeline -- --nocapture
 ```
 
 ## Lua cutscene scripts
@@ -262,7 +262,7 @@ textures still need decoding.
 ```bash
 nix flake check                    # everything (recommended)
 cargo test --workspace             # 254 tests
-cargo test --workspace --features reles-script/lua,reles-input/gamepad
+cargo test --workspace --features releste-script/lua,releste-input/gamepad
                                    # + lua/gamepad: 268 tests (needs make/udev/pkg-config)
-cargo test -p reles-reload         # includes hot reload end-to-end (real file watching)
+cargo test -p releste-reload         # includes hot reload end-to-end (real file watching)
 ```

@@ -1,10 +1,10 @@
 [package]
-name = "reles-net-server"
+name = "releste-net-server"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "net-server"
+name = "releste-net-server"
 path = "src/main.rs"
 
 [features]
@@ -15,10 +15,10 @@ udp = ["dep:laminar", "dep:tokio", "dep:quinn"]
 relay = []
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-world = { path = "../world" }
-reles-kernel = { path = "../kernel" }
-reles-net-client = { path = "../net-client" }
+releste-math = { path = "../math" }
+releste-world = { path = "../world" }
+releste-kernel = { path = "../kernel" }
+releste-net-client = { path = "../net-client" }
 serde.workspace = true
 bincode.workspace = true
 flume.workspace = true

@@ -2631,27 +2631,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "reles-audio"
+name = "releste-audio"
 version = "0.1.0"
 dependencies = [
  "libloading",
- "reles-kernel",
+ "releste-kernel",
  "serde",
  "thiserror 2.0.21",
  "tracing",
 ]
 
 [[package]]
-name = "reles-content-pipeline"
+name = "releste-content-pipeline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
  "clap",
  "image",
- "reles-map",
- "reles-math",
- "reles-world",
+ "releste-map",
+ "releste-math",
+ "releste-world",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2661,7 +2661,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-editor"
+name = "releste-editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2669,10 +2669,10 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
- "reles-kernel",
- "reles-map",
- "reles-math",
- "reles-world",
+ "releste-kernel",
+ "releste-map",
+ "releste-math",
+ "releste-world",
  "serde",
  "thiserror 2.0.21",
  "toml",
@@ -2683,19 +2683,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-game"
+name = "releste-game"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "libloading",
- "reles-kernel",
- "reles-map",
- "reles-math",
- "reles-plugin-host",
- "reles-reload",
- "reles-render",
- "reles-world",
+ "releste-kernel",
+ "releste-map",
+ "releste-math",
+ "releste-plugin-host",
+ "releste-reload",
+ "releste-render",
+ "releste-world",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -2704,38 +2704,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-input"
+name = "releste-input"
 version = "0.1.0"
 dependencies = [
  "gilrs",
- "reles-kernel",
- "reles-math",
+ "releste-kernel",
+ "releste-math",
  "serde",
  "thiserror 2.0.21",
  "tracing",
 ]
 
 [[package]]
-name = "reles-kernel"
+name = "releste-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam",
  "flume",
- "reles-math",
+ "releste-math",
  "slotmap",
  "thiserror 2.0.21",
  "tracing",
 ]
 
 [[package]]
-name = "reles-map"
+name = "releste-map"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
- "reles-math",
- "reles-world",
+ "releste-math",
+ "releste-world",
  "serde",
  "thiserror 2.0.21",
  "toml",
@@ -2743,7 +2743,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-math"
+name = "releste-math"
 version = "0.1.0"
 dependencies = [
  "bincode",
@@ -2752,7 +2752,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-net-client"
+name = "releste-net-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2760,9 +2760,9 @@ dependencies = [
  "flume",
  "laminar",
  "quinn",
- "reles-kernel",
- "reles-math",
- "reles-world",
+ "releste-kernel",
+ "releste-math",
+ "releste-world",
  "serde",
  "thiserror 2.0.21",
  "tokio",
@@ -2770,7 +2770,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-net-server"
+name = "releste-net-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2779,10 +2779,10 @@ dependencies = [
  "flume",
  "laminar",
  "quinn",
- "reles-kernel",
- "reles-math",
- "reles-net-client",
- "reles-world",
+ "releste-kernel",
+ "releste-math",
+ "releste-net-client",
+ "releste-world",
  "serde",
  "thiserror 2.0.21",
  "tokio",
@@ -2791,7 +2791,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-plugin-host"
+name = "releste-plugin-host"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -2803,30 +2803,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-reload"
+name = "releste-reload"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "flume",
  "notify",
- "reles-kernel",
- "reles-map",
- "reles-math",
- "reles-world",
+ "releste-kernel",
+ "releste-map",
+ "releste-math",
+ "releste-world",
  "thiserror 2.0.21",
  "tracing",
 ]
 
 [[package]]
-name = "reles-render"
+name = "releste-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
  "image",
- "reles-kernel",
- "reles-math",
- "reles-world",
+ "releste-kernel",
+ "releste-math",
+ "releste-world",
  "serde",
  "thiserror 2.0.21",
  "toml",
@@ -2836,26 +2836,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "reles-script"
+name = "releste-script"
 version = "0.1.0"
 dependencies = [
  "mlua",
- "reles-kernel",
- "reles-math",
- "reles-world",
+ "releste-kernel",
+ "releste-math",
+ "releste-world",
  "serde",
  "thiserror 2.0.21",
  "tracing",
 ]
 
 [[package]]
-name = "reles-world"
+name = "releste-world"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
- "reles-kernel",
- "reles-math",
+ "releste-kernel",
+ "releste-math",
  "serde",
  "slotmap",
  "smallvec",

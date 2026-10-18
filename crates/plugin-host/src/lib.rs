@@ -1,4 +1,4 @@
-//! `reles-plugin-host`: the plugin loader and lifecycle.
+//! `releste-plugin-host`: the plugin loader and lifecycle.
 //!
 //! The engine core ships no gameplay. Everything below the host boundary is a
 //! plugin dropped into `plugins/`, which makes hot-plug a runtime concern

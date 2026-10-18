@@ -1,4 +1,4 @@
-//! `reles-world`: ECS、实体工厂、Schema、组件。
+//! `releste-world`: ECS、实体工厂、Schema、组件。
 //!
 //! 所有地图实体通过稳定 ID（`blake3` 散列）索引，
 //! 由 [`EntityFactory`] trait 构建。

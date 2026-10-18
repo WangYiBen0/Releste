@@ -6,9 +6,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use reles_kernel::Kernel;
-use reles_math::FIXED_DT;
-use reles_render::{GpuRenderer, GpuRendererConfig, SpriteBatch};
+use releste_kernel::Kernel;
+use releste_math::FIXED_DT;
+use releste_render::{GpuRenderer, GpuRendererConfig, SpriteBatch};
 use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -35,7 +35,7 @@ const TITLE_INTERVAL: Duration = Duration::from_secs(1);
 pub struct GameApp {
     paths: Paths,
     session: Option<Session>,
-    watcher: Option<reles_reload::FileWatcher>,
+    watcher: Option<releste_reload::FileWatcher>,
     load_plugins: bool,
     window: Option<Arc<Window>>,
     gpu: Option<GpuRenderer>,

@@ -1,10 +1,10 @@
 [package]
-name = "reles-kernel"
+name = "releste-kernel"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-reles-math = { path = "../math" }
+releste-math = { path = "../math" }
 tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true

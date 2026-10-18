@@ -26,7 +26,7 @@ Updated 2026-10-09 after verifying against the tree, not from memory. Every row
 below was re-measured: `cargo build --workspace` clean, `cargo test --workspace`
 **254 passed / 0 failed**, `cargo run --bin releste -- --headless --frames 600`
 exits 0, and `nix develop --command cargo test --workspace --features
-reles-script/lua,reles-input/gamepad` gives **268 passed / 0 failed**.
+releste-script/lua,releste-input/gamepad` gives **268 passed / 0 failed**.
 
 The engine's parts exist and are well-tested, and the keystone binary now exists
 and runs. What is missing is *gameplay*: the vanilla feel of Phase 4.
@@ -37,7 +37,7 @@ and runs. What is missing is *gameplay*: the vanilla feel of Phase 4.
 | Math / kernel / world / map / reload | ☑ | fixed-point `Fx`, blake3 stable IDs, patch + rollback verified |
 | Content pipeline | ◐ | 22 atlases / 27 maps / 10 dialogs converted; packed `.data` pages decoded to PNG; **per-sprite `PackerNoAtlas` pages still need a multi-page packer + per-sprite runtime binding** |
 | FMOD audio | ☑ | real `libfmodstudio.so.10` loaded, 527 events, bank played |
-| Rendering | ☑ | `reles-render` consumed by `crates/game`; per-group textures, UV lookup, nearest sampling, autotiled tiles |
+| Rendering | ☑ | `releste-render` consumed by `crates/game`; per-group textures, UV lookup, nearest sampling, autotiled tiles |
 | **Playable game binary** | ◐ | **`releste` bin exists and boots a real room** (`crates/game`); vanilla gameplay (dash / wall-jump / climb / entities) still absent |
 | **Windowed main loop** | ☑ | winit `ApplicationHandler` + `FIXED_DT` accumulator + interpolation, FPS/room title, `Esc` pause, graceful shutdown |
 | **Plugin system** | ◐ | `.so` path works end to end: `plugin.toml` scan → `#[repr(C)]` vtable → `Fiber` states → frame-boundary unload → LIFO `Scope::effect`. **`.wasm` (the primary format, §3.2) is not implemented**; `plugins/` is not yet watched for hot-plug |
@@ -69,13 +69,13 @@ Replace the default `tracing_subscriber::fmt()` with a layer implementing [Appen
 - `RUST_LOG` still honoured via `EnvFilter`.
 - Works when stdout is not a TTY (no ANSI escape codes — detect or honour `NO_COLOR`).
 
-Deliverable: a `reles-log` module (or `crates/kernel/src/log.rs`) plus a snapshot test asserting the exact bytes of each level and a multi-line message.
+Deliverable: a `releste-log` module (or `crates/kernel/src/log.rs`) plus a snapshot test asserting the exact bytes of each level and a multi-line message.
 
 **Done:** the layer lives in [`crates/game/src/logging.rs`](crates/game/src/logging.rs)
 (`AppendixA` event formatter + `print_fatal` panic hook), wired into `releste`.
 It is still game-only, so the remaining work is lifting it into a shared crate
 (or `crates/kernel/src/log.rs`) and giving the other three bins
-(`editor`, `net-server`, `content-pipeline`) the same formatter — and adding the
+(`releste-editor`, `releste-net-server`, `releste-content-pipeline`) the same formatter — and adding the
 byte-exact snapshot test the deliverable asks for.
 
 ### 1.2 Purge raw output ◐
@@ -135,25 +135,25 @@ game on top of it is Phase 4.
 Becomes the only consumer that wires the engine together:
 
 ```
-reles-kernel  ← main loop, ServiceRegistry, EventBus
-reles-input   ← 1kHz sampling, virtual buttons
-reles-world   ← simulation
-reles-map     ← load .map
-reles-reload  ← FileWatcher + Patch apply
-reles-render  ← wgpu (currently a leaf — first real consumer)
-reles-audio   ← FMOD / NullBackend
-reles-script  ← CutsceneBridge
+releste-kernel  ← main loop, ServiceRegistry, EventBus
+releste-input   ← 1kHz sampling, virtual buttons
+releste-world   ← simulation
+releste-map     ← load .map
+releste-reload  ← FileWatcher + Patch apply
+releste-render  ← wgpu (currently a leaf — first real consumer)
+releste-audio   ← FMOD / NullBackend
+releste-script  ← CutsceneBridge
 ```
 
 `crates/game` exists with `main` / `app` / `service` / `session` / `player` /
-`paths` / `sprites` / `logging`. It consumes `reles-kernel`, `reles-math`,
-`reles-map`, `reles-reload`, `reles-render` and `reles-plugin-host`;
-`reles-input`, `reles-audio` and `reles-script` are wired in Phase 4.
+`paths` / `sprites` / `logging`. It consumes `releste-kernel`, `releste-math`,
+`releste-map`, `releste-reload`, `releste-render` and `releste-plugin-host`;
+`releste-input`, `releste-audio` and `releste-script` are wired in Phase 4.
 
 ### 2.2 Windowed loop ◐
 
 - `winit` `EventLoop` drives `kernel::tick()`; fixed `FIXED_DT = 1/60` accumulator with interpolation for rendering. ☑
-- Frame pipeline: poll input → step sim → drain `SimCommand` → rebuild batches → submit to wgpu. ☐ (`SimCommand` draining lands with `reles-script` in Phase 4)
+- Frame pipeline: poll input → step sim → drain `SimCommand` → rebuild batches → submit to wgpu. ☐ (`SimCommand` draining lands with `releste-script` in Phase 4)
 - Window title shows FPS and current room; `Esc` opens an in-game menu. ◐ title shows room / FPS / sprite count / plugin count; `Esc` toggles pause, but there is no menu UI yet.
 - Graceful shutdown on window close and on `SIGINT` (flush audio, drop GPU resources). ◐ close + `Drop` teardown are in place; explicit `SIGINT` handling is not.
 
@@ -301,7 +301,7 @@ The whole feel lives here — this is what "接近原版" means.
 - ☐ Wall jump, wall slide, wall climb, stamina
 - ☐ Grab / hang, super dash, hyper dash
 - ☐ Death, respawn, strawberry / winged strawberry collection
-- Standing gap flagged in the baseline: `crates/game` still carries its own `Input` struct and does **not** use `reles-input`'s `InputManager`/`InputFrame`; wiring the real input crate in is what makes rebinding and 1 kHz sampling apply to gameplay.
+- Standing gap flagged in the baseline: `crates/game` still carries its own `Input` struct and does **not** use `releste-input`'s `InputManager`/`InputFrame`; wiring the real input crate in is what makes rebinding and 1 kHz sampling apply to gameplay.
 - Commit step-by-step against reference recordings, not by eyeballing
 
 ### 4.2 Core entity families, one plugin each
@@ -462,9 +462,9 @@ nix run . -- <subcommand>
 releste [GLOBAL FLAGS] <COMMAND>
 
   play        Launch the game window (default when no COMMAND is given)
-  edit        Open the map editor            (wraps reles-editor)
-  serve       Run the relay server            (wraps reles-net-server)
-  convert     Run the content pipeline        (wraps reles-content-pipeline)
+  edit        Open the map editor            (wraps releste-editor)
+  serve       Run the relay server            (wraps releste-net-server)
+  convert     Run the content pipeline        (wraps releste-content-pipeline)
   verify      Validate converted assets / maps
   probe-fmod  Report FMOD library generation and available symbols
   dev         Developer tools (subcommands: --inspect-plugins, watch, bench)
@@ -568,7 +568,7 @@ The manifest is **data, not code** (§4.2 applies to plugins too) — it can be 
 | FMOD lib on `$LD_LIBRARY_PATH` | `libs/` first, then fallback |
 | *(no plugins)* | `plugins/` |
 
-`content-pipeline` gains `--resources-root` and `--namespace` flags so its output lands directly in the target layout — this is a Phase 1 CLI change, not a late migration (cheaper to do before content accumulates).
+`releste-content-pipeline` gains `--resources-root` and `--namespace` flags so its output lands directly in the target layout — this is a Phase 1 CLI change, not a late migration (cheaper to do before content accumulates).
 
 ---
 

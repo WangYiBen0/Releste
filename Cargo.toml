@@ -18,7 +18,7 @@ members = [
     "tools/content-pipeline",
 ]
 # `cargo build` / `cargo run` default to the game; the tools stay opt-in
-# (`cargo build -p reles-content-pipeline`) so `cargo r` "just works".
+# (`cargo build -p releste-content-pipeline`) so `cargo r` "just works".
 default-members = ["crates/game"]
 
 [workspace.package]

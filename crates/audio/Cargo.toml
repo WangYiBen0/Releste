@@ -1,5 +1,5 @@
 [package]
-name = "reles-audio"
+name = "releste-audio"
 version.workspace = true
 edition.workspace = true
 build = "build.rs"
@@ -11,7 +11,7 @@ default = []
 fmod = ["dep:libloading"]
 
 [dependencies]
-reles-kernel = { path = "../kernel" }
+releste-kernel = { path = "../kernel" }
 serde.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

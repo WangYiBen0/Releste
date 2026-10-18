@@ -21,7 +21,7 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-/// 日志级别，镜像 `reles_plugin_host::abi::LogLevel` 的数值。
+/// 日志级别，镜像 `releste_plugin_host::abi::LogLevel` 的数值。
 mod level {
     pub const TRACE: u32 = 0;
     pub const DEBUG: u32 = 1;
@@ -82,7 +82,7 @@ static VTABLE: VTable = VTable(PluginV1 {
 /// host 保证它在载入期间一直有效，卸载前 `unload()` 会先跑。
 static API: AtomicPtr<HostApi> = AtomicPtr::new(std::ptr::null_mut());
 
-/// host 找的唯一符号（`reles_plugin_host::abi::ENTRY_SYMBOL`）。
+/// host 找的唯一符号（`releste_plugin_host::abi::ENTRY_SYMBOL`）。
 #[no_mangle]
 pub extern "C" fn releste_plugin_v1() -> *const PluginV1 {
     &VTABLE.0

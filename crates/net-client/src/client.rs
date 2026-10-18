@@ -1,7 +1,7 @@
 //! NetClient：客户端网络服务。
 
-use reles_kernel::{Context, FrameId, Service, ServiceId};
-use reles_math::Fx;
+use releste_kernel::{Context, FrameId, Service, ServiceId};
+use releste_math::Fx;
 use tracing::{info, warn};
 
 use crate::carry::CarryState;
@@ -346,8 +346,8 @@ mod tests {
 
     fn test_ctx() -> Context<'static> {
         // 测试用：泄漏一个事件总线以获得 'static 上下文。
-        let bus: &'static mut reles_kernel::EventBus =
-            Box::leak(Box::new(reles_kernel::EventBus::new()));
+        let bus: &'static mut releste_kernel::EventBus =
+            Box::leak(Box::new(releste_kernel::EventBus::new()));
         Context::new(bus)
     }
 }

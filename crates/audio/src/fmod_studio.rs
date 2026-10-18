@@ -395,7 +395,7 @@ mod tests {
     /// ```text
     /// RELESTE_FMOD_STUDIO_LIB=/path/libfmodstudio.so \
     /// RELESTE_FMOD_BANKS=/path/to/assets/audio \
-    ///   cargo test -p reles-audio --features fmod -- --nocapture
+    ///   cargo test -p releste-audio --features fmod -- --nocapture
     /// ```
     #[test]
     fn full_studio_pipeline_when_library_provided() {

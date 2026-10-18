@@ -2,15 +2,15 @@
 
 use std::collections::HashMap;
 
-use reles_math::Vec2;
-use reles_world::EntityId;
+use releste_math::Vec2;
+use releste_world::EntityId;
 
 use crate::format::{MapDocument, Props, Room, SyncRule, Tileset};
 
 /// 热重载补丁。
 #[derive(Debug, Clone)]
 pub enum Patch {
-    AddEntity(reles_world::EntityData),
+    AddEntity(releste_world::EntityData),
     RemoveEntity(EntityId),
     UpdateEntity { id: EntityId, props: Props },
     MoveEntity { id: EntityId, pos: Vec2 },
@@ -135,7 +135,7 @@ fn diff_entities(old: &[EntityRef], new: &[EntityRef]) -> Vec<Patch> {
     // 确定，否则同一份输入每次 diff 都会得到不同顺序的补丁。
     for e in new {
         if !old_map.contains_key(&e.id) {
-            patches.push(Patch::AddEntity(reles_world::EntityData {
+            patches.push(Patch::AddEntity(releste_world::EntityData {
                 id: e.id,
                 kind: e.kind.clone(),
                 x: e.x,
@@ -180,7 +180,7 @@ fn diff_entities(old: &[EntityRef], new: &[EntityRef]) -> Vec<Patch> {
 mod tests {
     use super::*;
     use crate::format::RectDef;
-    use reles_world::EntityData;
+    use releste_world::EntityData;
 
     fn doc(rooms: Vec<Room>) -> MapDocument {
         MapDocument {

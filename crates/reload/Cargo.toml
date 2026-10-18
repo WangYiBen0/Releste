@@ -1,13 +1,13 @@
 [package]
-name = "reles-reload"
+name = "releste-reload"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-world = { path = "../world" }
-reles-map = { path = "../map" }
-reles-kernel = { path = "../kernel" }
+releste-math = { path = "../math" }
+releste-world = { path = "../world" }
+releste-map = { path = "../map" }
+releste-kernel = { path = "../kernel" }
 thiserror.workspace = true
 tracing.workspace = true
 notify.workspace = true

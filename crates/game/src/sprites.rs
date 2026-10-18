@@ -6,7 +6,7 @@
 //! （ROADMAP Phase 3）；这里是 0-Intro 能跑起来的最小内置表，
 //! 未命中的实体一律 `tracing::warn` + 跳过（§15.8 / §15.9）。
 
-use reles_render::atlas::{Sprite, SpriteAtlas, TextureGroup};
+use releste_render::atlas::{Sprite, SpriteAtlas, TextureGroup};
 
 /// 一格瓦片的世界像素尺寸。房间 `lvl_-1` 宽 320 / 40 格 = 8px。
 pub const TILE_PX: i32 = 8;
@@ -32,7 +32,7 @@ pub const PLAYER_SPRITE: &str = "characters\\player\\idle00";
 
 /// 取 tileset 图里 `(col, row)` 格的 8×8 子矩形。
 ///
-/// `col` / `row` 来自 autotiler 的邻接匹配（`reles_map::autotiler`）；
+/// `col` / `row` 来自 autotiler 的邻接匹配（`releste_map::autotiler`）；
 /// 越界时裁到图内，所以随便哪张 tileset 图都不会采样出图集外的像素。
 pub fn tile_cell(sprite: &Sprite, col: u32, row: u32) -> Sprite {
     let w = TILE_PX as i16;

@@ -7,7 +7,7 @@
 
 ```bash
 # 需要自备原版 Celeste 资源到 assets-src/（见 references/README.md）
-cargo run -p reles-content-pipeline -- \
+cargo run -p releste-content-pipeline -- \
     --source assets-src \
     --output assets \
     --only maps \
@@ -20,16 +20,16 @@ cargo run -p reles-content-pipeline -- \
 
 ```bash
 # 新建空地图
-cargo run -p reles-editor
+cargo run -p releste-editor
 
 # 打开已有地图
-cargo run -p reles-editor -- assets/maps/1-ForsakenCity.map
+cargo run -p releste-editor -- assets/maps/1-ForsakenCity.map
 
 # 只校验能否加载（不需要 GPU / 显示器）
-cargo run -p reles-editor -- --check assets/maps/1-ForsakenCity.map
+cargo run -p releste-editor -- --check assets/maps/1-ForsakenCity.map
 ```
 
-编辑器保存后，`reles-reload` 的 `FileWatcher` 会在
+编辑器保存后，`releste-reload` 的 `FileWatcher` 会在
 debounce 窗口（默认 100ms）后触发重载，
 **玩家位置、速度、状态与携带物全部保留**（AGENTS.md §10）。
 

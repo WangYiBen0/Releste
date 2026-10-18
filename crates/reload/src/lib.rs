@@ -1,4 +1,4 @@
-//! `reles-reload`: FileWatcher, Patch, and conflict resolution.
+//! `releste-reload`: FileWatcher, Patch, and conflict resolution.
 //!
 //! The core of hot reloading: diff two maps into a `Vec<Patch>` and
 //! apply them to the live World without restarting or dropping the session.
@@ -16,5 +16,5 @@ mod watcher;
 pub use apply::{ApplyError, ApplyReport, Reload, ReloadError};
 pub use watcher::{FileWatcher, WatchEvent, WatcherError};
 
-/// Re-export the patch types so consumers only depend on `reles-reload`.
-pub use reles_map::Patch;
+/// Re-export the patch types so consumers only depend on `releste-reload`.
+pub use releste_map::Patch;

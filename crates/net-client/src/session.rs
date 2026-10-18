@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use reles_math::{Fx, Vec2};
+use releste_math::{Fx, Vec2};
 use tracing::{debug, warn};
 
 use crate::protocol::{AvatarState, Down, PlayerId, SyncPayload};

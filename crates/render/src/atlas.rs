@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use reles_math::Rect;
+use releste_math::Rect;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -64,8 +64,8 @@ impl Sprite {
     /// Source rectangle within the atlas.
     pub fn rect(&self) -> Rect {
         Rect::new(
-            reles_math::Vec2::from_f32s(f32::from(self.x), f32::from(self.y)),
-            reles_math::Vec2::from_f32s(f32::from(self.x + self.w), f32::from(self.y + self.h)),
+            releste_math::Vec2::from_f32s(f32::from(self.x), f32::from(self.y)),
+            releste_math::Vec2::from_f32s(f32::from(self.x + self.w), f32::from(self.y + self.h)),
         )
     }
 

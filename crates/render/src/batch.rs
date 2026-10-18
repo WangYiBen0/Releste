@@ -10,7 +10,7 @@
 //! 3. `ranges()` 给出相同纹理的连续区段 → 每段一个 draw call。
 //! 4. `vertices()` 把排序后的绘制项展开为 GPU 顶点（每 sprite 6 个）。
 
-use reles_math::Vec2;
+use releste_math::Vec2;
 use thiserror::Error;
 
 use crate::camera::Camera;

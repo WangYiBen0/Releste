@@ -1,21 +1,21 @@
 [package]
-name = "reles-editor"
+name = "releste-editor"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "reles_editor"
+name = "releste_editor"
 path = "src/lib.rs"
 
 [[bin]]
-name = "editor"
+name = "releste-editor"
 path = "src/main.rs"
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-world = { path = "../world" }
-reles-map = { path = "../map" }
-reles-kernel = { path = "../kernel" }
+releste-math = { path = "../math" }
+releste-world = { path = "../world" }
+releste-map = { path = "../map" }
+releste-kernel = { path = "../kernel" }
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true

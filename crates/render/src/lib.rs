@@ -1,4 +1,4 @@
-//! `reles-render`: wgpu renderer, camera, batching.
+//! `releste-render`: wgpu renderer, camera, batching.
 //!
 //! # Layering
 //! - [`camera`]: world ↔ screen/NDC transforms (pure math, tested).

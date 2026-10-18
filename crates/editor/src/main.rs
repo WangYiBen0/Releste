@@ -1,8 +1,8 @@
 //! `editor` binary: map editor entry point.
 //!
 //! ```text
-//! cargo run -p reles-editor                       # new map
-//! cargo run -p reles-editor -- assets/maps/1-ForsakenCity.map
+//! cargo run -p releste-editor                       # new map
+//! cargo run -p releste-editor -- assets/maps/1-ForsakenCity.map
 //! ```
 
 #![deny(warnings)]
@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use reles_editor::app::EditorApp;
-use reles_editor::Editor;
+use releste_editor::app::EditorApp;
+use releste_editor::Editor;
 use tracing::{info, warn};
 
 /// Command-line arguments.
@@ -89,7 +89,7 @@ fn main() -> ExitCode {
 /// a minimal set is provided here to exercise the
 /// "Schema auto-generates panels" pipeline.
 fn register_builtin_schemas(app: &mut EditorApp) {
-    use reles_world::{FieldType, FieldValue, Schema, SchemaField};
+    use releste_world::{FieldType, FieldValue, Schema, SchemaField};
     use std::borrow::Cow;
 
     let player = Schema::new(vec![

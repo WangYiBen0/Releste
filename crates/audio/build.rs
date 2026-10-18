@@ -93,7 +93,7 @@ fn main() {
     match env::var("CARGO_FEATURE_FMOD") {
         // Feature not enabled: do not require FMOD to be present.
         Err(_) => {
-            println!("cargo:rustc-cfg=reles_fmod_optional");
+            println!("cargo:rustc-cfg=releste_fmod_optional");
         }
         Ok(_) => match find_fmod() {
             Some(path) => {
@@ -112,7 +112,7 @@ fn main() {
                          building anyway because RELESTE_FMOD_ALLOW_MISSING is set. \
                          The runtime backend will report the error on first use."
                     );
-                    println!("cargo:rustc-cfg=reles_fmod_missing");
+                    println!("cargo:rustc-cfg=releste_fmod_missing");
                     return;
                 }
 

@@ -119,7 +119,7 @@
       #
       # `lua` 需要 vendored LuaJIT（构建期要 make），`gamepad` 需要
       # udev + pkg-config —— 二者都由 Nix 提供（见 commonArgs）。
-      fullFeatures = "--workspace --features reles-script/lua,reles-input/gamepad";
+      fullFeatures = "--workspace --features releste-script/lua,releste-input/gamepad";
 
       # full 变体有自己的依赖缓存：与默认变体的依赖图不同，
       # 复用同一份 artifacts 会让这些依赖在构建阶段重编。
@@ -276,7 +276,7 @@
               lib="''${pair#*:}/lib/libfmod.so"
               echo "--- expecting generation: $expect"
               RELESTE_FMOD_LIB="$lib" RELESTE_FMOD_EXPECT="$expect" \
-                cargo test -p reles-audio --features fmod fmod_backend -- --nocapture
+                cargo test -p releste-audio --features fmod fmod_backend -- --nocapture
             done
           '';
         }
@@ -290,8 +290,8 @@
           pname = "releste-content-pipeline-smoke";
           # 造一个最小 .map，过一遍管线的解析/序列化链路。
           buildPhaseCargoCommand = ''
-            cargo run --release -p reles-content-pipeline -- --help >/dev/null
-            cargo run --release -p reles-net-server -- --selftest
+            cargo run --release -p releste-content-pipeline -- --help >/dev/null
+            cargo run --release -p releste-net-server -- --selftest
           '';
           doInstallCargoArtifacts = false;
         }
@@ -319,18 +319,18 @@
         content-pipeline = craneLib.buildPackage (
           commonArgs
           // {
-            pname = "reles-content-pipeline";
+            pname = "releste-content-pipeline";
             inherit cargoArtifacts;
-            cargoExtraArgs = "-p reles-content-pipeline";
+            cargoExtraArgs = "-p releste-content-pipeline";
           }
         );
 
         editor = craneLib.buildPackage (
           commonArgs
           // {
-            pname = "reles-editor";
+            pname = "releste-editor";
             inherit cargoArtifacts;
-            cargoExtraArgs = "-p reles-editor";
+            cargoExtraArgs = "-p releste-editor";
           }
         );
       };

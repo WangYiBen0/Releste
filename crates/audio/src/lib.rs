@@ -1,4 +1,4 @@
-//! `reles-audio`: FMOD 封装与音频混音。
+//! `releste-audio`: FMOD 封装与音频混音。
 //!
 //! # FMOD 动态库由用户提供（AGENTS.md §4.7）
 //! 不 vendor FMOD 二进制。`fmod` feature 关闭时，混音层仍可用

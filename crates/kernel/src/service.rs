@@ -7,7 +7,7 @@ use slotmap::{DefaultKey, SlotMap};
 
 use crate::event::EventBus;
 use crate::frame::FrameId;
-use reles_math::Fx;
+use releste_math::Fx;
 
 /// Service 的唯一标识。
 ///
@@ -44,7 +44,7 @@ pub trait Service: 'static {
     /// 初始化：在这里注册事件订阅、获取其它 service 引用。
     fn attach(&mut self, ctx: &mut Context);
 
-    /// 每帧更新。`dt` 恒为 [`FIXED_DT`](reles_math::FIXED_DT)。
+    /// 每帧更新。`dt` 恒为 [`FIXED_DT`](releste_math::FIXED_DT)。
     fn update(&mut self, ctx: &mut Context, frame: FrameId, dt: Fx);
 
     /// 释放资源。

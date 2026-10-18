@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{ArgAction, Parser};
-use reles_kernel::Kernel;
+use releste_kernel::Kernel;
 use tracing_subscriber::EnvFilter;
 
 use crate::app::GameApp;
@@ -85,8 +85,8 @@ impl Args {
         }
         match self.verbose {
             0 => Self::default_filter().to_string(),
-            1 => "debug,releste=debug,reles_=debug".to_string(),
-            _ => "trace,releste=trace,reles_=trace".to_string(),
+            1 => "debug,releste=debug,releste_=debug".to_string(),
+            _ => "trace,releste=trace,releste_=trace".to_string(),
         }
     }
 
@@ -96,7 +96,7 @@ impl Args {
     /// 日志就没法读了（ROADMAP Appendix A：日志必须对人友好）。
     /// EnvFilter 的 target 是 `starts_with` 匹配，裸前缀即可，不用 `*`。
     fn default_filter() -> &'static str {
-        "warn,releste=info,reles_=info,plugins=info"
+        "warn,releste=info,releste_=info,plugins=info"
     }
 }
 

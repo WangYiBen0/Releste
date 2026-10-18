@@ -1,7 +1,7 @@
 //! 玩家仿真：8×8 AABB 对 tile grid 的轴分离解算。
 //!
 //! 所有状态都是 [`Fx`]（AGENTS.md §15.7），时间步恒为
-//! [`FIXED_DT`](reles_math::FIXED_DT)。
+//! [`FIXED_DT`](releste_math::FIXED_DT)。
 //!
 //! 与原版的关系（`references/pureCeleste.cs`，行为参考）：
 //! - **已对齐**：跑动加速（1000/400/0.65）、重力 900、落速上限
@@ -12,8 +12,8 @@
 //!   `JumpHBoost = 40`，本实现是 -240 单冲量）—— 下一轮对齐；
 //!   dash / 爬墙等尚未开始（ROADMAP Phase 4.1）。
 
-use reles_map::Room;
-use reles_math::{Fx, Vec2};
+use releste_map::Room;
+use releste_math::{Fx, Vec2};
 
 use crate::session::{nearest_room, room_containing, Session};
 
@@ -379,7 +379,7 @@ fn cell(v: Fx) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reles_map::{RectDef, Tileset};
+    use releste_map::{RectDef, Tileset};
 
     /// 4×4 格房间，最后一行是地板。
     fn floor_room() -> Room {

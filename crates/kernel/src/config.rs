@@ -1,6 +1,6 @@
 //! 内核配置。
 
-use reles_math::Fx;
+use releste_math::Fx;
 
 /// 内核运行配置。
 #[derive(Clone, Debug)]
@@ -14,7 +14,7 @@ pub struct KernelConfig {
 impl Default for KernelConfig {
     fn default() -> Self {
         KernelConfig {
-            fixed_dt: reles_math::FIXED_DT,
+            fixed_dt: releste_math::FIXED_DT,
             max_catchup_frames: 5,
         }
     }

@@ -1,9 +1,9 @@
-//! `reles-editor`: an egui map editor.
+//! `releste-editor`: an egui map editor.
 //!
 //! # Layering
 //! - [`model`]: document, selection, undo stack (**no egui dependency**, tested).
 //! - [`schema_panel`]: property panel auto-generated from an entity's
-//!   [`Schema`](reles_world::Schema) (form logic is pure, tested).
+//!   [`Schema`](releste_world::Schema) (form logic is pure, tested).
 //! - [`ui`]: renders the model as an egui interface.
 //! - [`app`]: the winit + egui-wgpu host (requires a GPU).
 //!
@@ -15,7 +15,7 @@
 //!   out of bounds
 //! - [ ] Schema panel generation stays smooth with hundreds of entities
 //!   (AGENTS.md §13 item)
-//! - [ ] After saving, `reles-reload` takes effect without a restart
+//! - [ ] After saving, `releste-reload` takes effect without a restart
 
 #![deny(warnings)]
 

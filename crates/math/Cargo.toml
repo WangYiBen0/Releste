@@ -1,5 +1,5 @@
 [package]
-name = "reles-math"
+name = "releste-math"
 version.workspace = true
 edition.workspace = true
 

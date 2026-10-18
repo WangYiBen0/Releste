@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use reles_math::{Rect, Vec2};
-use reles_world::{EntityData, FieldValue};
+use releste_math::{Rect, Vec2};
+use releste_world::{EntityData, FieldValue};
 
 /// 魔术字节：`"RELMAP\0\0"`
 pub const MAP_MAGIC: &[u8; 8] = b"RELMAP\x00\x00";

@@ -9,10 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use reles_map::{MapDocument, RectDef, Room, Tileset};
-use reles_math::Vec2;
-use reles_reload::{FileWatcher, Reload};
-use reles_world::{Entity, EntityData, EntityId, EntityKindId, FieldValue, World};
+use releste_map::{MapDocument, RectDef, Room, Tileset};
+use releste_math::Vec2;
+use releste_reload::{FileWatcher, Reload};
+use releste_world::{Entity, EntityData, EntityId, EntityKindId, FieldValue, World};
 
 const KIND_WALL: EntityKindId = EntityKindId::new(1);
 const KIND_PLAYER: EntityKindId = EntityKindId::new(2);
@@ -20,7 +20,7 @@ const KIND_PLAYER: EntityKindId = EntityKindId::new(2);
 const PLAYER_ID: EntityId = EntityId::new(0x911A_1E20);
 
 fn tmp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("reles-reload-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("releste-reload-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -80,7 +80,7 @@ fn make_map(wall_x: f32) -> MapDocument {
 
 /// 写下地图文件。
 fn write_map(path: &Path, doc: &MapDocument) {
-    reles_map::save_map(doc, path).expect("write map");
+    releste_map::save_map(doc, path).expect("write map");
 }
 
 fn player_props(w: &World) -> std::collections::HashMap<String, FieldValue> {
@@ -97,7 +97,7 @@ fn map_roundtrips_through_disk() {
     let doc = make_map(100.0);
     write_map(&path, &doc);
 
-    let loaded = reles_map::load_map(&path).expect("load");
+    let loaded = releste_map::load_map(&path).expect("load");
     assert_eq!(loaded.area, "HotReloadTest");
     assert_eq!(loaded.rooms.len(), 1);
     assert_eq!(loaded.rooms[0].entities.len(), 1);
@@ -114,12 +114,12 @@ fn wall_edit_produces_a_move_patch() {
     write_map(&path_old, &make_map(100.0));
     write_map(&path_new, &make_map(104.0));
 
-    let old = reles_map::load_map(&path_old).unwrap();
-    let new = reles_map::load_map(&path_new).unwrap();
-    let patches = reles_map::diff(&old, &new);
+    let old = releste_map::load_map(&path_old).unwrap();
+    let new = releste_map::load_map(&path_new).unwrap();
+    let patches = releste_map::diff(&old, &new);
 
     assert_eq!(patches.len(), 1, "wall move should yield exactly one patch");
-    assert!(matches!(patches[0], reles_map::Patch::MoveEntity { .. }));
+    assert!(matches!(patches[0], releste_map::Patch::MoveEntity { .. }));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -136,9 +136,9 @@ fn applying_wall_edit_keeps_player_untouched() {
     let mut world = world_with_wall(100.0);
     let before = player_props(&world);
 
-    let old = reles_map::load_map(&path_old).unwrap();
-    let new = reles_map::load_map(&path_new).unwrap();
-    let patches = reles_map::diff(&old, &new);
+    let old = releste_map::load_map(&path_old).unwrap();
+    let new = releste_map::load_map(&path_new).unwrap();
+    let patches = releste_map::diff(&old, &new);
 
     let mut reload = Reload::new();
     let report = reload.apply(&mut world, patches).expect("apply");
@@ -164,8 +164,8 @@ fn reload_does_not_remove_or_recreate_the_player() {
 
     // 一批与本房间无关的 patch。
     let patches = vec![
-        reles_map::Patch::AddEntity(EntityData::new("spinner", EntityId::new(50), 250.0, 50.0)),
-        reles_map::Patch::ReplaceTiles(Tileset::new("Gameplay", 20, 12)),
+        releste_map::Patch::AddEntity(EntityData::new("spinner", EntityId::new(50), 250.0, 50.0)),
+        releste_map::Patch::ReplaceTiles(Tileset::new("Gameplay", 20, 12)),
     ];
 
     let mut reload = Reload::new();
@@ -228,9 +228,9 @@ fn full_hot_reload_loop_via_file_watcher() {
     };
 
     // 监听触发 → 解析 → diff → apply。
-    let new_doc = reles_map::load_map(&changed_path).expect("load changed map");
+    let new_doc = releste_map::load_map(&changed_path).expect("load changed map");
     let old_doc = make_map(100.0);
-    let patches = reles_map::diff(&old_doc, &new_doc);
+    let patches = releste_map::diff(&old_doc, &new_doc);
     assert!(!patches.is_empty(), "expected a patch from the edit");
 
     let mut reload = Reload::new();
@@ -294,16 +294,16 @@ fn shrinking_room_past_player_rolls_back_entire_patch() {
     let mut world = world_with_wall(100.0);
     let before: Vec<(EntityId, Entity)> = world.all().map(|e| (e.id, e.clone())).collect();
 
-    let shrunk = reles_math::Rect::new(Vec2::from_f32s(0.0, 0.0), Vec2::from_f32s(300.0, 300.0));
+    let shrunk = releste_math::Rect::new(Vec2::from_f32s(0.0, 0.0), Vec2::from_f32s(300.0, 300.0));
     // 玩家在 (16,16)，把它移到边界外以触发校验。
-    let mut reload = Reload::new().with_bounds(reles_math::Rect::new(
+    let mut reload = Reload::new().with_bounds(releste_math::Rect::new(
         Vec2::from_f32s(500.0, 500.0),
         Vec2::from_f32s(600.0, 600.0),
     ));
 
     let err = reload.apply(
         &mut world,
-        vec![reles_map::Patch::AddEntity(EntityData::new(
+        vec![releste_map::Patch::AddEntity(EntityData::new(
             "wall",
             EntityId::new(77),
             1.0,
@@ -324,7 +324,7 @@ fn shrinking_room_past_player_rolls_back_entire_patch() {
     reload_ok
         .apply(
             &mut world,
-            vec![reles_map::Patch::AddEntity(EntityData::new(
+            vec![releste_map::Patch::AddEntity(EntityData::new(
                 "wall",
                 EntityId::new(78),
                 200.0,

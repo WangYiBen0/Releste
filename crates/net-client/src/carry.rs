@@ -9,7 +9,7 @@
 //! 服务器对此完全无感知：它只转发 [`CarryRequest`](crate::protocol::Up::CarryRequest)
 //! 与接受 / 结束消息，不参与物理。
 
-use reles_math::{Fx, Vec2};
+use releste_math::{Fx, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{CarryMode, PlayerId};

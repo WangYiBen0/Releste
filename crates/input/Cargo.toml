@@ -1,5 +1,5 @@
 [package]
-name = "reles-input"
+name = "releste-input"
 version.workspace = true
 edition.workspace = true
 
@@ -10,8 +10,8 @@ default = []
 gamepad = ["dep:gilrs"]
 
 [dependencies]
-reles-math = { path = "../math" }
-reles-kernel = { path = "../kernel" }
+releste-math = { path = "../math" }
+releste-kernel = { path = "../kernel" }
 serde.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

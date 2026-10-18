@@ -1,4 +1,4 @@
-//! `reles-input`: input sampling, virtual buttons, key bindings.
+//! `releste-input`: input sampling, virtual buttons, key bindings.
 //!
 //! # Design
 //! - The window layer pushes raw key events into [`InputBuffer`].

@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use reles_map::{MapDocument, RectDef, Room, SyncMode, SyncRule, Tileset, TriggerData};
-use reles_world::{EntityData, EntityId, FieldValue};
+use releste_map::{MapDocument, RectDef, Room, SyncMode, SyncRule, Tileset, TriggerData};
+use releste_world::{EntityData, EntityId, FieldValue};
 use tracing::{info, warn};
 
 use crate::atlas::{AtlasBuild, AtlasTexture, TextureSource};
@@ -427,7 +427,7 @@ impl Pipeline {
                     .map_err(|e| PipelineError::io(parent.display(), e))?;
             }
 
-            let bytes = reles_map::to_bytes(&doc)?;
+            let bytes = releste_map::to_bytes(&doc)?;
             std::fs::write(&out, bytes).map_err(|e| PipelineError::io(out.display(), e))?;
 
             self.report.maps += 1;

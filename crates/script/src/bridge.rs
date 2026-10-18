@@ -90,8 +90,8 @@ impl CutsceneBridge {
 mod tests {
     use super::*;
     use crate::command::{DurationFrames, PlayerState};
-    use reles_math::Vec2;
-    use reles_world::EntityId;
+    use releste_math::Vec2;
+    use releste_world::EntityId;
 
     #[test]
     fn enqueue_then_drain() {

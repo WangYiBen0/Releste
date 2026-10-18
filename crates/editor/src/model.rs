@@ -5,16 +5,16 @@
 
 use std::path::{Path, PathBuf};
 
-use reles_map::{load_map, save_map, MapDocument, RectDef, Room, Tileset};
-use reles_math::Vec2;
-use reles_world::{EntityData, EntityId, FieldValue};
+use releste_map::{load_map, save_map, MapDocument, RectDef, Room, Tileset};
+use releste_math::Vec2;
+use releste_world::{EntityData, EntityId, FieldValue};
 use thiserror::Error;
 
 /// 编辑器错误。
 #[derive(Debug, Error)]
 pub enum EditorError {
     #[error("map error: {0}")]
-    Map(#[from] reles_map::MapError),
+    Map(#[from] releste_map::MapError),
     #[error("no room at index {0}")]
     NoRoom(usize),
     #[error("no entity with id {0}")]
@@ -202,7 +202,7 @@ impl Editor {
     /// 保存到当前路径。
     pub fn save(&mut self) -> Result<(), EditorError> {
         let Some(path) = self.path.clone() else {
-            return Err(EditorError::Map(reles_map::MapError::Io(
+            return Err(EditorError::Map(releste_map::MapError::Io(
                 std::io::Error::new(std::io::ErrorKind::NotFound, "no path set; use save_as"),
             )));
         };
@@ -540,7 +540,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reles_math::Vec2;
+    use releste_math::Vec2;
 
     fn room(name: &str) -> Room {
         Room {
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn save_and_reopen_roundtrip() {
-        let dir = std::env::temp_dir().join("reles-editor-test");
+        let dir = std::env::temp_dir().join("releste-editor-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("roundtrip.map");
 

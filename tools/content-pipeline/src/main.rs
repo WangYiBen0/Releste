@@ -3,7 +3,7 @@
 //! **一次性转换**，不在运行时做（AGENTS.md §4.6 / §12）。
 //!
 //! ```text
-//! cargo run -p reles-content-pipeline -- \
+//! cargo run -p releste-content-pipeline -- \
 //!     --source ../assets-src \
 //!     --output ../assets
 //! ```
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use reles_content_pipeline::{Pipeline, PipelineConfig};
+use releste_content_pipeline::{Pipeline, PipelineConfig};
 use tracing::info;
 
 /// 命令行参数。
@@ -131,7 +131,7 @@ fn verify_maps(output: &std::path::Path) -> anyhow::Result<(usize, usize, usize)
 
     for path in entries {
         let doc =
-            reles_map::load_map(&path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            releste_map::load_map(&path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         files += 1;
         rooms += doc.rooms.len();
         entities += doc.rooms.iter().map(|r| r.entities.len()).sum::<usize>();

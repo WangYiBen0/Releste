@@ -2,8 +2,8 @@
 //!
 //! **Lua 永远不直接改物理状态**（AGENTS.md §4.5）。
 
-use reles_math::Vec2;
-use reles_world::EntityId;
+use releste_math::Vec2;
+use releste_world::EntityId;
 use serde::{Deserialize, Serialize};
 
 /// 由 Lua 脚本排队、由仿真在下一帧消费的命令。

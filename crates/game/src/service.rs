@@ -1,15 +1,15 @@
 //! 游戏 service：固定步长推进玩家 + 插件，渲染步把快照喂给 wgpu。
 //!
-//! 它是窗口宿主与 [`reles_kernel`] 之间的唯一桥梁（AGENTS.md §4.1：
+//! 它是窗口宿主与 [`releste_kernel`] 之间的唯一桥梁（AGENTS.md §4.1：
 //! kernel 只认识 `Service`）。地图是数据，改地图不重启（§4.3）。
 
 use std::time::Instant;
 
-use reles_kernel::{Context, FrameId, Service, ServiceId};
-use reles_math::{Fx, Vec2};
-use reles_plugin_host::PluginHost;
-use reles_reload::FileWatcher;
-use reles_render::{Camera, GpuRenderer, SpriteBatch, SpriteDraw};
+use releste_kernel::{Context, FrameId, Service, ServiceId};
+use releste_math::{Fx, Vec2};
+use releste_plugin_host::PluginHost;
+use releste_reload::FileWatcher;
+use releste_render::{Camera, GpuRenderer, SpriteBatch, SpriteDraw};
 use tracing::{debug, info, warn};
 
 use crate::paths::Paths;
@@ -202,7 +202,7 @@ impl GameService {
         };
 
         let started = Instant::now();
-        let doc = match reles_map::load_map(&path) {
+        let doc = match releste_map::load_map(&path) {
             Ok(doc) => doc,
             Err(e) => {
                 warn!(path = %path.display(), error = %e, "reload failed; keeping the current map");
@@ -210,7 +210,7 @@ impl GameService {
             }
         };
 
-        let patches = reles_map::diff(&self.session.doc, &doc);
+        let patches = releste_map::diff(&self.session.doc, &doc);
         if patches.is_empty() {
             debug!(path = %path.display(), "reload produced no changes");
             return;
@@ -286,22 +286,22 @@ impl Service for GameService {
 mod tests {
     use super::*;
     use crate::paths::Paths;
-    use reles_map::{RectDef, Tileset};
-    use reles_world::EntityData;
+    use releste_map::{RectDef, Tileset};
+    use releste_world::EntityData;
 
     /// 自足的测试地图：一个房间 + 一个玩家出生点。
     ///
     /// 真实的 `assets/` 被 gitignore（Appendix C 规则 6），nix/CI 的构建
     /// 源里没有它 —— 测试必须自己造数据，而不是依赖开发树里的转换产物。
-    fn fixture_doc() -> reles_map::MapDocument {
+    fn fixture_doc() -> releste_map::MapDocument {
         let mut tiles = Tileset::new("Test", 8, 4);
         for x in 0..8 {
             tiles.set(x, 3, 1); // 一行地板
         }
-        let player = EntityData::new("player", reles_world::EntityId::new(1), 16.0, 16.0);
-        reles_map::MapDocument {
+        let player = EntityData::new("player", releste_world::EntityId::new(1), 16.0, 16.0);
+        releste_map::MapDocument {
             area: "test".into(),
-            rooms: vec![reles_map::Room {
+            rooms: vec![releste_map::Room {
                 name: "lvl_t".into(),
                 bounds: RectDef {
                     x: 0.0,
@@ -332,7 +332,7 @@ mod tests {
             "name = \"Test\"\ntextures = []\n",
         )?;
         std::fs::write(atlas_dir.join("tilesets.toml"), "tileset = {}\n")?;
-        reles_map::save_map(&fixture_doc(), &root.join("maps/reload-fixture.map"))?;
+        releste_map::save_map(&fixture_doc(), &root.join("maps/reload-fixture.map"))?;
         Ok(Paths::resolve(Some(&root)))
     }
 
@@ -352,7 +352,7 @@ mod tests {
         let mut service = GameService::new(session, None, Some(watcher), None);
 
         // 改一个瓦片并保存 —— 这才是热重载要吃到的真实变更。
-        let mut doc = reles_map::load_map(&map_path).expect("reload the fixture");
+        let mut doc = releste_map::load_map(&map_path).expect("reload the fixture");
         let (room, tx, ty) = {
             let room = &mut doc.rooms[0];
             room.tiles.set(1, 1, 1);
@@ -360,7 +360,7 @@ mod tests {
         };
         let before = doc.rooms[0].tiles.get(tx, ty);
         assert_eq!(before, Some(1), "the edit landed in the doc");
-        reles_map::save_map(&doc, &map_path).expect("save the edited map");
+        releste_map::save_map(&doc, &map_path).expect("save the edited map");
 
         // debounce 从**看到事件**那一刻起算。事件投递是后台线程的事，
         // 在并行测试负载下可能晚到，所以不能写死"poll 两次"——

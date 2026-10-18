@@ -1,16 +1,16 @@
 [package]
-name = "reles-content-pipeline"
+name = "releste-content-pipeline"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "content-pipeline"
+name = "releste-content-pipeline"
 path = "src/main.rs"
 
 [dependencies]
-reles-math = { path = "../../crates/math" }
-reles-world = { path = "../../crates/world" }
-reles-map = { path = "../../crates/map" }
+releste-math = { path = "../../crates/math" }
+releste-world = { path = "../../crates/world" }
+releste-map = { path = "../../crates/map" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

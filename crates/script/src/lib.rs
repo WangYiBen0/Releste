@@ -1,4 +1,4 @@
-//! `reles-script`: 过场脚本层与 [`CutsceneBridge`]。
+//! `releste-script`: 过场脚本层与 [`CutsceneBridge`]。
 //!
 //! # 核心不变量（AGENTS.md §4.5）
 //! **Lua 永远不直接改物理状态。** 所有副作用通过

@@ -5,8 +5,8 @@
 //!
 //! # 运行
 //! ```text
-//! cargo run -p reles-net-server -- --port 7777
-//! cargo run -p reles-net-server -- --selftest     # 纯逻辑自检，不需要网络
+//! cargo run -p releste-net-server -- --port 7777
+//! cargo run -p releste-net-server -- --selftest     # 纯逻辑自检，不需要网络
 //! ```
 
 #![deny(warnings)]
@@ -88,7 +88,7 @@ fn main() -> ExitCode {
 
 /// 纯逻辑自检：驱动一次完整握手 + 化身转发 + 断开。
 fn selftest() -> anyhow::Result<()> {
-    use reles_net_client::protocol::{AvatarState, Down, Up, PROTOCOL_VERSION};
+    use releste_net_client::protocol::{AvatarState, Down, Up, PROTOCOL_VERSION};
 
     let mut relay = Relay::new();
     let a = relay.on_connect();
@@ -161,7 +161,7 @@ fn run_udp(port: u16, max_players: usize) -> anyhow::Result<()> {
     use std::net::SocketAddr;
 
     use laminar::{Config, Packet, Socket, SocketEvent};
-    use reles_net_client::protocol::{Down, PlayerId, Up};
+    use releste_net_client::protocol::{Down, PlayerId, Up};
 
     use std::collections::HashMap;
 

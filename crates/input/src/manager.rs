@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use reles_kernel::{Context, FrameId, Service, ServiceId};
-use reles_math::Fx;
+use releste_kernel::{Context, FrameId, Service, ServiceId};
+use releste_math::Fx;
 use tracing::trace;
 
 use crate::binding::InputMap;

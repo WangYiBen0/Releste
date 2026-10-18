@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use reles_world::{FieldType, FieldValue, Schema, SchemaField};
+use releste_world::{FieldType, FieldValue, Schema, SchemaField};
 
 /// Editor widget kind.
 ///

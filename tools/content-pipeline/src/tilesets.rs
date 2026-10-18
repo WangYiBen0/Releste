@@ -1,7 +1,7 @@
 //! `ForegroundTiles.xml` → 引擎原生 [`TilesetsDoc`]。
 //!
 //! XML 是原始格式，只在 build time 解析（AGENTS.md §4.6）；产物是
-//! `atlas/tilesets.toml`，运行时由 `reles_map::TilesetsDoc` 读取。
+//! `atlas/tilesets.toml`，运行时由 `releste_map::TilesetsDoc` 读取。
 //!
 //! `copy="z"` 的 tileset 继承被拷贝者的 masks / center / padding
 //! （原版 `Autotiler` 对 tileset 自己的 set 调一次 `ReadInto`，
@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use reles_map::{MaskEntry, TilesetDef, TilesetsDoc};
+use releste_map::{MaskEntry, TilesetDef, TilesetsDoc};
 
 use crate::xml::{parse_tilesets, XmlError};
 

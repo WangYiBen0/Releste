@@ -7,7 +7,7 @@
 //!
 //! The camera position is the viewport **center** (matching Celeste's `Camera.Position`).
 
-use reles_math::{Fx, Rect, Vec2};
+use releste_math::{Fx, Rect, Vec2};
 use serde::{Deserialize, Serialize};
 
 /// Base resolution (Celeste's native 320x180).

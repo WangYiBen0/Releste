@@ -10,7 +10,7 @@ use crate::entity::Entity;
 use crate::factory::EntityKindId;
 use crate::id::EntityId;
 use crate::schema::FieldValue;
-use reles_math::Rect;
+use releste_math::Rect;
 
 /// World — 所有实体的运行时容器。
 ///
@@ -122,20 +122,20 @@ impl World {
     ///
     /// 缺少尺寸时回退为 8x8 单位（约等于半个 tile），保证
     /// 热重载的推离逻辑总有一个可用的碰撞盒。
-    pub fn bounds(&self, id: EntityId) -> Option<reles_math::Rect> {
+    pub fn bounds(&self, id: EntityId) -> Option<releste_math::Rect> {
         let e = self.get(id)?;
         let x = get_f32(e, "x").unwrap_or(0.0);
         let y = get_f32(e, "y").unwrap_or(0.0);
         let w = get_i32(e, "width").map(|v| v as f32).unwrap_or(8.0);
         let h = get_i32(e, "height").map(|v| v as f32).unwrap_or(8.0);
-        Some(reles_math::Rect::new(
-            reles_math::Vec2::from_f32s(x, y),
-            reles_math::Vec2::from_f32s(x + w, y + h),
+        Some(releste_math::Rect::new(
+            releste_math::Vec2::from_f32s(x, y),
+            releste_math::Vec2::from_f32s(x + w, y + h),
         ))
     }
 
     /// 玩家的世界 AABB。
-    pub fn player_bounds(&self) -> Option<reles_math::Rect> {
+    pub fn player_bounds(&self) -> Option<releste_math::Rect> {
         self.bounds(self.player?)
     }
 
@@ -181,7 +181,7 @@ impl World {
     }
 
     /// 读取实体的 AABB（内部使用；公开版本见 [`World::bounds`]）。
-    fn entity_rect(&self, id: EntityId) -> Option<reles_math::Rect> {
+    fn entity_rect(&self, id: EntityId) -> Option<releste_math::Rect> {
         self.bounds(id)
     }
 }
@@ -205,17 +205,17 @@ fn get_i32(e: &Entity, key: &str) -> Option<i32> {
 }
 
 /// AABB 重叠判定。
-fn rects_overlap(a: reles_math::Rect, b: reles_math::Rect) -> bool {
+fn rects_overlap(a: releste_math::Rect, b: releste_math::Rect) -> bool {
     a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.y <= b.max.y && a.max.y >= b.min.y
 }
 
 /// 把 `pos`（尺寸 `size`）沿最小平移轴推出 `blocker`。
 fn push_out(
-    pos: reles_math::Vec2,
-    size: reles_math::Vec2,
-    blocker: reles_math::Rect,
-) -> reles_math::Vec2 {
-    if !rects_overlap(reles_math::Rect::from_origin_size(pos, size), blocker) {
+    pos: releste_math::Vec2,
+    size: releste_math::Vec2,
+    blocker: releste_math::Rect,
+) -> releste_math::Vec2 {
+    if !rects_overlap(releste_math::Rect::from_origin_size(pos, size), blocker) {
         return pos;
     }
 
@@ -227,19 +227,19 @@ fn push_out(
     let candidates = [
         (
             dx_left.abs(),
-            reles_math::Vec2::new(dx_left, reles_math::Fx::zero()),
+            releste_math::Vec2::new(dx_left, releste_math::Fx::zero()),
         ),
         (
             dx_right.abs(),
-            reles_math::Vec2::new(dx_right, reles_math::Fx::zero()),
+            releste_math::Vec2::new(dx_right, releste_math::Fx::zero()),
         ),
         (
             dy_up.abs(),
-            reles_math::Vec2::new(reles_math::Fx::zero(), dy_up),
+            releste_math::Vec2::new(releste_math::Fx::zero(), dy_up),
         ),
         (
             dy_down.abs(),
-            reles_math::Vec2::new(reles_math::Fx::zero(), dy_down),
+            releste_math::Vec2::new(releste_math::Fx::zero(), dy_down),
         ),
     ];
 

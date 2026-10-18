@@ -1,4 +1,4 @@
-//! `reles-kernel`: 引擎内核。
+//! `releste-kernel`: 引擎内核。
 //!
 //! 只认识 `Service` trait、`EventBus`、`FrameId`。
 //! **不能**依赖任何业务 crate（`world`、`render`、`audio`、`script`）。

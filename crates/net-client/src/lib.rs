@@ -1,4 +1,4 @@
-//! `reles-net-client`: client networking layer.
+//! `releste-net-client`: client networking layer.
 //!
 //! # Core principles (AGENTS.md §4.4)
 //! - **The world is not synced by default**. Only entities explicitly

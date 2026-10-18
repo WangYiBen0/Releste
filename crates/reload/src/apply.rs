@@ -1,8 +1,8 @@
 //! 应用 patch 到 World，含冲突解决与回滚。
 
-use reles_map::Patch;
-use reles_math::Rect;
-use reles_world::{Entity, EntityData, EntityId, World};
+use releste_map::Patch;
+use releste_math::Rect;
+use releste_world::{Entity, EntityData, EntityId, World};
 use tracing::{info, warn};
 
 /// 热重载应用器。
@@ -130,9 +130,9 @@ impl Reload {
         };
 
         // 用玩家中心点判定，避免贴边时被误判。
-        let center = reles_math::Vec2::new(
-            (player_bounds.min.x + player_bounds.max.x) / reles_math::Fx::from_int(2),
-            (player_bounds.min.y + player_bounds.max.y) / reles_math::Fx::from_int(2),
+        let center = releste_math::Vec2::new(
+            (player_bounds.min.x + player_bounds.max.x) / releste_math::Fx::from_int(2),
+            (player_bounds.min.y + player_bounds.max.y) / releste_math::Fx::from_int(2),
         );
         if bounds.contains(center) {
             Ok(())
@@ -185,8 +185,8 @@ impl Reload {
                     warn!(%id, "MoveEntity: id not found, skipping");
                     return Ok(());
                 };
-                entity.set("x", reles_world::FieldValue::Float(pos.x.to_f32()));
-                entity.set("y", reles_world::FieldValue::Float(pos.y.to_f32()));
+                entity.set("x", releste_world::FieldValue::Float(pos.x.to_f32()));
+                entity.set("y", releste_world::FieldValue::Float(pos.y.to_f32()));
                 report.moved += 1;
             }
             Patch::ReplaceTiles(_tiles) => {
@@ -207,13 +207,13 @@ impl Reload {
         let kind_id = kind_id_for(&data.kind);
         let mut entity = Entity::new(data.id, kind_id);
         entity.properties = data.properties.clone();
-        entity.set("x", reles_world::FieldValue::Float(data.x));
-        entity.set("y", reles_world::FieldValue::Float(data.y));
+        entity.set("x", releste_world::FieldValue::Float(data.x));
+        entity.set("y", releste_world::FieldValue::Float(data.y));
         if let Some(w) = data.width {
-            entity.set("width", reles_world::FieldValue::Int(w));
+            entity.set("width", releste_world::FieldValue::Int(w));
         }
         if let Some(h) = data.height {
-            entity.set("height", reles_world::FieldValue::Int(h));
+            entity.set("height", releste_world::FieldValue::Int(h));
         }
         entity
     }
@@ -240,19 +240,19 @@ impl Reload {
 }
 
 /// 由种类名称推导 `EntityKindId`（注册表未命中时的回退）。
-fn kind_id_for(kind: &str) -> reles_world::EntityKindId {
+fn kind_id_for(kind: &str) -> releste_world::EntityKindId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(kind.as_bytes());
     let bytes: [u8; 32] = hasher.finalize().into();
-    reles_world::EntityKindId::new(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
+    releste_world::EntityKindId::new(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reles_map::{MapDocument, Props, Room, Tileset};
-    use reles_math::{Rect, Vec2};
-    use reles_world::{Entity, EntityKindId, FieldValue};
+    use releste_map::{MapDocument, Props, Room, Tileset};
+    use releste_math::{Rect, Vec2};
+    use releste_world::{Entity, EntityKindId, FieldValue};
 
     const KIND_WALL: EntityKindId = EntityKindId::new(1);
     const KIND_PLAYER: EntityKindId = EntityKindId::new(2);
@@ -592,7 +592,7 @@ mod tests {
         t.set(0, 0, tiles);
         Room {
             name: "room_0".into(),
-            bounds: reles_map::RectDef {
+            bounds: releste_map::RectDef {
                 x: 0.0,
                 y: 0.0,
                 w: 320.0,
@@ -626,7 +626,7 @@ mod tests {
             &[(1, "wall", 110.0, 100.0), (2, "spinner", 200.0, 50.0)],
         )]);
 
-        let patches = reles_map::diff(&old, &new);
+        let patches = releste_map::diff(&old, &new);
         assert!(!patches.is_empty(), "diff should produce patches");
 
         // 用旧地图构建世界，然后应用 diff。
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn diff_of_identical_maps_is_empty() {
         let a = doc(vec![room_with(1, &[(1, "wall", 0.0, 0.0)])]);
-        let patches = reles_map::diff(&a, &a.clone());
+        let patches = releste_map::diff(&a, &a.clone());
         assert!(patches.is_empty());
     }
 
