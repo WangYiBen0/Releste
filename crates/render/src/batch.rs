@@ -34,6 +34,12 @@ pub struct SpriteDraw {
     pub layer: i32,
     /// 水平翻转。
     pub flip_x: bool,
+    /// 绕 `position`（左上角）旋转的弧度，`0.0` = 轴对齐（快路径）。
+    ///
+    /// 语义对齐 XNA `SpriteBatch.Draw(…, rotation, origin: Vector2.Zero,
+    /// scale)`：原版 `Draw.Line` 正是"旋转的 1px 高横条"
+    /// （`pureCeleste.cs:23386-23404`），引擎用它画 `Wire`。
+    pub rotation: f32,
 }
 
 impl SpriteDraw {
@@ -48,6 +54,7 @@ impl SpriteDraw {
             color: [1.0; 4],
             layer: 0,
             flip_x: false,
+            rotation: 0.0,
         }
     }
 
@@ -66,6 +73,12 @@ impl SpriteDraw {
     /// 水平翻转。
     pub fn with_flip_x(mut self, flip: bool) -> Self {
         self.flip_x = flip;
+        self
+    }
+
+    /// 绕 `position` 旋转（弧度；屏幕坐标 y 向下，正值顺时针）。
+    pub fn with_rotation(mut self, rotation: f32) -> Self {
+        self.rotation = rotation;
         self
     }
 }
@@ -210,40 +223,69 @@ impl SpriteBatch {
         let mut out = Vec::with_capacity(self.draws.len() * 6);
 
         for d in &self.draws {
-            let (px, py) = camera.world_to_ndc(d.position, viewport);
-            let (sx, sy) = camera.world_size_to_ndc(d.size, viewport);
-
-            // NDC 的 y 向上，因此"顶部"是 py，底部是 py - sy。
-            let left = px;
-            let right = px + sx;
-            let top = py;
-            let bottom = py - sy;
-
             let (mut u0, v0) = d.uv_min;
             let (mut u1, v1) = d.uv_max;
             if d.flip_x {
                 std::mem::swap(&mut u0, &mut u1);
             }
 
-            let bl = SpriteVertex {
-                position: [left, bottom],
-                uv: [u0, v1],
-                color: d.color,
-            };
-            let br = SpriteVertex {
-                position: [right, bottom],
-                uv: [u1, v1],
-                color: d.color,
-            };
-            let tl = SpriteVertex {
-                position: [left, top],
-                uv: [u0, v0],
-                color: d.color,
-            };
-            let tr = SpriteVertex {
-                position: [right, top],
-                uv: [u1, v0],
-                color: d.color,
+            let [bl, br, tl, tr] = if d.rotation == 0.0 {
+                let (px, py) = camera.world_to_ndc(d.position, viewport);
+                let (sx, sy) = camera.world_size_to_ndc(d.size, viewport);
+
+                // NDC 的 y 向上，因此"顶部"是 py，底部是 py - sy。
+                let left = px;
+                let right = px + sx;
+                let top = py;
+                let bottom = py - sy;
+
+                [
+                    SpriteVertex {
+                        position: [left, bottom],
+                        uv: [u0, v1],
+                        color: d.color,
+                    },
+                    SpriteVertex {
+                        position: [right, bottom],
+                        uv: [u1, v1],
+                        color: d.color,
+                    },
+                    SpriteVertex {
+                        position: [left, top],
+                        uv: [u0, v0],
+                        color: d.color,
+                    },
+                    SpriteVertex {
+                        position: [right, top],
+                        uv: [u1, v0],
+                        color: d.color,
+                    },
+                ]
+            } else {
+                // 旋转：先在世界坐标（y 向下，顺时针为正）里绕左上角转
+                // 四个角，再各自投影到 NDC —— 相机只做均匀缩放，旋转角
+                // 不受纵横比影响。
+                let (sin, cos) = d.rotation.sin_cos();
+                let w = d.size.x.to_f32();
+                let h = d.size.y.to_f32();
+                let corner = |lx: f32, ly: f32| -> SpriteVertex {
+                    let (rx, ry) = (lx * cos - ly * sin, lx * sin + ly * cos);
+                    let (x, y) =
+                        camera.world_to_ndc(d.position + Vec2::from_f32s(rx, ry), viewport);
+                    SpriteVertex {
+                        position: [x, y],
+                        uv: [u0, v0],
+                        color: d.color,
+                    }
+                };
+                let tl = corner(0.0, 0.0);
+                let mut tr = corner(w, 0.0);
+                let mut bl = corner(0.0, h);
+                let mut br = corner(w, h);
+                tr.uv = [u1, v0];
+                bl.uv = [u0, v1];
+                br.uv = [u1, v1];
+                [bl, br, tl, tr]
             };
 
             // 三角形 1: bl, br, tl ; 三角形 2: tl, br, tr
@@ -411,6 +453,46 @@ mod tests {
         let v = b.vertices(&cam, (320, 180));
         // 左下角应该拿到 uv_max.x
         assert!((v[0].uv[0] - 0.1).abs() < 1e-6, "uv u0={}", v[0].uv[0]);
+    }
+
+    #[test]
+    fn rotation_turns_the_quad_around_its_anchor() {
+        let mut b = SpriteBatch::new(8);
+        b.begin();
+        // 10x1 的横条绕左上角转 90°（屏幕 y 向下 → 正角顺时针）：
+        // 本该向右 10px 的边现在应当竖直向下。
+        b.push(
+            SpriteDraw::new(
+                0,
+                Vec2::from_f32s(0.0, 0.0),
+                Vec2::from_f32s(10.0, 1.0),
+                ((0.0, 0.0), (1.0, 1.0)),
+            )
+            .with_rotation(std::f32::consts::FRAC_PI_2),
+        )
+        .unwrap();
+        let cam = Camera::new();
+        let v = b.vertices(&cam, (320, 180));
+        let tl = v[2]; // 顶点顺序 bl,br,tl,tl,br,tr
+        let tr = v[5];
+        // 竖直向下 → NDC 中 x 不变、y 变小（NDC y 向上）。
+        assert!(
+            (tr.position[0] - tl.position[0]).abs() < 1e-5,
+            "rotated tip must stay on the anchor's vertical, got {} vs {}",
+            tr.position[0],
+            tl.position[0]
+        );
+        assert!(
+            tr.position[1] < tl.position[1],
+            "90° CW must point down in NDC, tip y={} anchor y={}",
+            tr.position[1],
+            tl.position[1]
+        );
+        // uv 仍然按角分配（白 texel / 纹理采样靠它）。
+        assert_eq!(tl.uv, [0.0, 0.0]);
+        assert_eq!(tr.uv, [1.0, 0.0]);
+        assert_eq!(v[0].uv, [0.0, 1.0]); // bl
+        assert_eq!(v[1].uv, [1.0, 1.0]); // br
     }
 
     #[test]
