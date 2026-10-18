@@ -43,7 +43,8 @@ struct Args {
     #[arg(default_value = "0-Intro.map", value_name = "MAP")]
     map: String,
 
-    /// Asset root; defaults to the executable's directory, then the repo, then the cwd.
+    /// Asset root; defaults to the first of exe dir / repo / cwd that
+    /// actually contains maps.
     #[arg(long, value_name = "DIR")]
     root: Option<PathBuf>,
 

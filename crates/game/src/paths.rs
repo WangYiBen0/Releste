@@ -20,28 +20,34 @@ pub struct Paths {
 impl Paths {
     /// 解析根目录并定位子目录。
     ///
-    /// 根目录查找顺序：`--root` → 可执行文件所在目录 → 仓库根（开发构建）→ 当前目录。
-    /// 找不到已知子目录时不会报错，后续加载会带着**完整路径**报错。
+    /// `--root` 永远无条件生效。否则按 可执行文件目录 → 仓库根（开发
+    /// 构建）→ 当前目录 挑选：**第一个真有地图的**候选赢 —— 光"长得
+    /// 像"资源根不够：nix store 里的构建源码树带着空壳 `maps/` 和
+    /// tracked 的 `plugins/`，看起来像根却跑不起来。全都不可用时退回
+    /// 第一个长得像的，让后续加载带着**完整路径**报错。
     pub fn resolve(explicit: Option<&Path>) -> Self {
-        let root = explicit
-            .map(Path::to_path_buf)
-            .or_else(Self::exe_root)
-            .or_else(Self::dev_root)
-            .unwrap_or_else(|| PathBuf::from("."));
+        if let Some(root) = explicit {
+            return Self::under(&root.to_path_buf());
+        }
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        candidates.extend(Self::exe_root());
+        candidates.extend(Self::dev_root());
+        candidates.push(PathBuf::from("."));
+        Self::pick(&candidates)
+    }
 
-        let legacy = root.join("assets").join("maps");
-        let namespaced = root.join("maps");
-        // Appendix C 的发布树用 `maps/<namespace>/*.map`；开发树的 `maps/`
-        // 目录是空壳，真正的地图在 `assets/maps/`。哪个目录**真有地图**就用哪个。
-        let maps = if has_maps(&namespaced) {
-            namespaced
-        } else if has_maps(&legacy) {
-            legacy
-        } else if namespaced.is_dir() {
-            namespaced
-        } else {
-            legacy
-        };
+    /// 从候选里挑根：真有地图者优先，退而求其次选"长得像资源根"的。
+    fn pick(candidates: &[PathBuf]) -> Self {
+        let chosen = candidates
+            .iter()
+            .find(|root| has_maps(&maps_dir_under(root)))
+            .or_else(|| candidates.iter().find(|root| looks_like_root(root)));
+        Self::under(chosen.unwrap_or(&PathBuf::from(".")))
+    }
+
+    /// 在 `root` 下生成 Paths（maps/atlas/plugins 的具体取舍）。
+    fn under(root: &Path) -> Self {
+        let maps = maps_dir_under(root);
         let atlas = if root.join("atlas").is_dir() {
             root.join("atlas")
         } else if root.join("resources").is_dir() {
@@ -55,7 +61,7 @@ impl Paths {
         let plugins = root.join("plugins");
 
         Paths {
-            root,
+            root: root.to_path_buf(),
             maps,
             atlas,
             plugins,
@@ -133,6 +139,22 @@ fn looks_like_root(dir: &Path) -> bool {
         .any(|d| dir.join(d).is_dir())
 }
 
+/// `root` 下实际可用的地图目录：发布树 `maps/<namespace>/` 优先，回落
+/// 开发树的 `assets/maps/` —— 哪个目录**真有地图**就用哪个。
+fn maps_dir_under(root: &Path) -> PathBuf {
+    let namespaced = root.join("maps");
+    let legacy = root.join("assets").join("maps");
+    if has_maps(&namespaced) {
+        namespaced
+    } else if has_maps(&legacy) {
+        legacy
+    } else if namespaced.is_dir() {
+        namespaced
+    } else {
+        legacy
+    }
+}
+
 /// 目录里有没有 `.map`（看一层子目录，够覆盖 `maps/<namespace>/`）。
 fn has_maps(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -193,6 +215,32 @@ mod tests {
             p.atlas_dir()
         );
         assert!(p.atlas("Gameplay").ends_with("assets/atlas/Gameplay.atlas"));
+    }
+
+    /// exe/dev 根"长得像"资源根（空壳 maps/ + tracked plugins/）但没有
+    /// 一张可加载的地图时，必须让位给**真有地图**的候选（仓库根/cwd）。
+    ///
+    /// nix run 场景：store 里的构建源码树就是那个"长得像"的根，旧实现
+    /// 选中它后直接报"地图不存在"，哪怕仓库就在 cwd。
+    #[test]
+    fn a_root_without_any_map_yields_to_one_that_has_maps() {
+        let lookalike = std::env::temp_dir().join("releste-paths-lookalike");
+        let real = std::env::temp_dir().join("releste-paths-real-root");
+        let _ = std::fs::remove_dir_all(&lookalike);
+        let _ = std::fs::remove_dir_all(&real);
+        // store 源码树的形状：空 maps/、tracked 的 plugins/<name>/。
+        std::fs::create_dir_all(lookalike.join("maps")).unwrap();
+        std::fs::create_dir_all(lookalike.join("plugins/clock")).unwrap();
+        // 仓库根的形状：assets/maps/ 里有真地图。
+        std::fs::create_dir_all(real.join("assets/maps")).unwrap();
+        std::fs::write(real.join("assets/maps/0-Intro.map"), b"RELMAP").unwrap();
+
+        let picked = Paths::pick(&[lookalike.clone(), real.clone()]);
+        assert_eq!(picked.root(), real, "the root with actual maps must win");
+        assert!(picked.maps().starts_with(&real), "{:?}", picked.maps());
+
+        let _ = std::fs::remove_dir_all(&lookalike);
+        let _ = std::fs::remove_dir_all(&real);
     }
 
     /// 开发树：`maps/` 是空壳，应退到 `assets/maps/`。
