@@ -11,6 +11,15 @@
 //! - [`Room::bg_scenery`] / [`Room::fg_scenery`] —— `Scenery` 装饰层覆盖（`77244-77253`）；
 //! - [`EntityData::nodes`] —— 实体节点（`introCrusher` 的终点、`wire` 的折线、`bridge` 的桥墩）。
 //!
+//! v3 相对 v2 的追加（全部在 [`Backdrop`] 末尾）：
+//! - [`Backdrop::only_in`] / [`Backdrop::exclude_from`] —— 房间过滤
+//!   （原版 `Backdrop.OnlyIn` / `ExcludeFrom`，`109406-109409`，来自
+//!   `only=` / `exclude=`，`112860-112873`；通配符转换期展开，见
+//!   `ParseLevelsList`，`113019-113036`）；
+//! - [`Backdrop::instant_in`] / [`Backdrop::instant_out`] —— 转场可见性
+//!   （原版 `InstantIn` / `InstantOut`，`109411-109418`，来自
+//!   `instantIn=` / `instantOut=`，`112895-112905`）。
+//!
 //! 同时把 `properties` / `Props.fields` 从 `HashMap` 换成 `BTreeMap`：
 //! `HashMap` 按 `RandomState` 顺序遍历，同一张地图两次序列化的字节
 //! 不同，内容哈希因此不可用（ROADMAP E.8 / E.9 #3），而 `HashMap` 的
@@ -29,8 +38,9 @@ pub const MAP_MAGIC: &[u8; 8] = b"RELMAP\x00\x00";
 
 /// 当前 `.map` 格式版本。
 ///
-/// v2：区域视差背景 + 贴花 + `Scenery` 装饰层 + 实体节点 + `BTreeMap` 属性。
-pub const MAP_VERSION: u32 = 2;
+/// v3：backdrop 的房间过滤（`only` / `exclude`）与转场可见性
+/// （`instantIn` / `instantOut`）。
+pub const MAP_VERSION: u32 = 3;
 
 /// `.map` 文件的完整结构。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -113,6 +123,27 @@ pub struct Backdrop {
     /// 混合模式：`"alphablend"`（默认）或 `"additive"`（`112658-112673`）。
     #[serde(default)]
     pub blend: String,
+    /// 只在哪些房间渲染（v3 追加；原版 `Backdrop.OnlyIn`，`109406`，
+    /// `only=`，`112860-112873`）。转换期已展开通配符为具体房间名。
+    #[serde(default)]
+    pub only_in: Vec<String>,
+    /// 不在哪些房间渲染（v3 追加；原版 `Backdrop.ExcludeFrom`，`109409`，
+    /// `exclude=`，`112855-112860`）。
+    #[serde(default)]
+    pub exclude_from: Vec<String>,
+    /// 转场切入时立即可见（v3 追加；原版 `InstantIn`，默认 `true`，
+    /// `109411`、`112895-112900`）。
+    #[serde(default = "default_true")]
+    pub instant_in: bool,
+    /// 转场切出时立即隐藏（v3 追加；原版 `InstantOut`，默认 `false`，
+    /// `109413`、`112900-112905`）。
+    #[serde(default)]
+    pub instant_out: bool,
+}
+
+/// serde 默认值辅助：`true`。
+fn default_true() -> bool {
+    true
 }
 
 impl Backdrop {
@@ -138,6 +169,10 @@ impl Backdrop {
             flip_y: false,
             wind: 0.0,
             blend: "alphablend".to_string(),
+            only_in: Vec::new(),
+            exclude_from: Vec::new(),
+            instant_in: true,
+            instant_out: false,
         }
     }
 

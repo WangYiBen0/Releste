@@ -8,7 +8,9 @@
 //! 事实。任何演进都在 [`crate::format`] 里做，并在这里留下新的一份。
 //!
 //! 当前持有：
-//! - [`v1`] —— 引入 `nodes` / `style` / 贴花 / 装饰层之前的版本。
+//! - [`v1`] —— 引入 `nodes` / `style` / 贴花 / 装饰层之前的版本；
+//! - [`v2`] —— 引入 backdrop 房间过滤（`only` / `exclude`）与转场可见性
+//!   （`instantIn` / `instantOut`）之前的版本。
 
 use serde::{Deserialize, Serialize};
 
@@ -130,6 +132,93 @@ pub mod v1 {
     }
 }
 
+/// `MAP_VERSION == 2` 时的磁盘结构（只用于解码旧文件）。
+///
+/// v2 → v3 只在 [`v2::Backdrop`] 末尾追加了四个字段（房间过滤 + 转场
+/// 可见性），其余结构逐字节相同 —— 直接**别名复用** `crate::format`
+/// 的类型，别名即同构，不会引入布局偏差。
+pub mod v2 {
+    use super::*;
+
+    /// `releste_world::EntityData` 在 v2/v3 之间没有变化。
+    pub use releste_world::EntityData;
+    pub type RectDef = crate::format::RectDef;
+    pub type Tileset = crate::format::Tileset;
+    pub type Decal = crate::format::Decal;
+    pub type TriggerData = crate::format::TriggerData;
+    pub type SyncRule = crate::format::SyncRule;
+    pub type SyncMode = crate::format::SyncMode;
+    pub type Room = crate::format::Room;
+
+    /// 带版本头部的磁盘格式。
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct MapDisk {
+        pub magic: [u8; 8],
+        pub version: u32,
+        pub document: MapDocument,
+    }
+
+    /// v2 的地图文档。
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct MapDocument {
+        pub area: String,
+        pub rooms: Vec<Room>,
+        #[serde(default)]
+        pub sync_rules: Vec<SyncRule>,
+        #[serde(default)]
+        pub style: MapStyle,
+    }
+
+    /// v2 的样式（与 v3 相同，只是 backdrop 类型不同）。
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    pub struct MapStyle {
+        #[serde(default)]
+        pub background_color: [u8; 3],
+        #[serde(default)]
+        pub backgrounds: Vec<Backdrop>,
+        #[serde(default)]
+        pub foregrounds: Vec<Backdrop>,
+    }
+
+    /// v2 的 backdrop：v3 追加的四个字段之前的完整字段序。
+    ///
+    /// 字段顺序与 v2 时的 `crates/map/src/format.rs` 逐一对应，不得调整。
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Backdrop {
+        pub kind: String,
+        #[serde(default)]
+        pub texture: String,
+        #[serde(default)]
+        pub atlas: String,
+        #[serde(default)]
+        pub x: f32,
+        #[serde(default)]
+        pub y: f32,
+        #[serde(default)]
+        pub scroll_x: f32,
+        #[serde(default)]
+        pub scroll_y: f32,
+        #[serde(default)]
+        pub speed_x: f32,
+        #[serde(default)]
+        pub speed_y: f32,
+        #[serde(default)]
+        pub color: [u8; 4],
+        #[serde(default)]
+        pub loop_x: bool,
+        #[serde(default)]
+        pub loop_y: bool,
+        #[serde(default)]
+        pub flip_x: bool,
+        #[serde(default)]
+        pub flip_y: bool,
+        #[serde(default)]
+        pub wind: f32,
+        #[serde(default)]
+        pub blend: String,
+    }
+}
+
 impl From<v1::SyncMode> for crate::format::SyncMode {
     fn from(value: v1::SyncMode) -> Self {
         match value {
@@ -181,10 +270,10 @@ impl From<v1::EntityData> for releste_world::EntityData {
     }
 }
 
-/// 把一个 v1 文档迁移到当前版本。
+/// 把一个 v1 文档迁移到 v2（冻结形态）。
 ///
 /// 迁移是**纯函数**：只做数据搬运，不碰磁盘、不碰全局状态，因此可以
-/// 串联（`v0 → v1 → v2 …`，ROADMAP E.7）。
+/// 串联（`v0 → v1 → v2 → v3 …`，ROADMAP E.7）。
 ///
 /// v2 新增的字段一律取"旧文件没有表达力"的那个值 —— 空。旧版本根本
 /// 没有视差背景、贴花和装饰层，所以迁移后的文档渲染出来与旧解释器
@@ -194,8 +283,8 @@ impl From<v1::EntityData> for releste_world::EntityData {
 /// `112428-112449` 的 `<Style>`）、`77244-77253`（`TileGrid.Overlay`）、
 /// `113467-113497`（`bgdecals` / `fgdecals` 解析）、
 /// `113135-113198`（`EntityData.Nodes`）。
-pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> crate::format::MapDocument {
-    crate::format::MapDocument {
+pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> v2::MapDocument {
+    v2::MapDocument {
         area: doc.area,
         rooms: doc
             .rooms
@@ -239,7 +328,51 @@ pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> crate::format::MapDocument {
                 flag: r.flag,
             })
             .collect(),
-        style: crate::format::MapStyle::default(),
+        style: v2::MapStyle::default(),
+    }
+}
+
+/// 把一个 v2 文档迁移到当前版本（v3）。
+///
+/// v3 只给 backdrop 追加了房间过滤与转场可见性。旧文件没有这个表达力，
+/// 一律取"未设置"：`only_in` / `exclude_from` 为空（所有房间可见），
+/// `instant_in` 取原版默认 `true`、`instant_out` 取默认 `false`
+/// （`pureCeleste.cs:109411-109418` 的字段初始化）—— 迁移后的渲染与
+/// v2 解释器逐像素一致。
+pub fn migrate_v2_to_v3(doc: v2::MapDocument) -> crate::format::MapDocument {
+    fn backdrop(bd: v2::Backdrop) -> crate::format::Backdrop {
+        crate::format::Backdrop {
+            kind: bd.kind,
+            texture: bd.texture,
+            atlas: bd.atlas,
+            x: bd.x,
+            y: bd.y,
+            scroll_x: bd.scroll_x,
+            scroll_y: bd.scroll_y,
+            speed_x: bd.speed_x,
+            speed_y: bd.speed_y,
+            color: bd.color,
+            loop_x: bd.loop_x,
+            loop_y: bd.loop_y,
+            flip_x: bd.flip_x,
+            flip_y: bd.flip_y,
+            wind: bd.wind,
+            blend: bd.blend,
+            only_in: Vec::new(),
+            exclude_from: Vec::new(),
+            instant_in: true,
+            instant_out: false,
+        }
+    }
+    crate::format::MapDocument {
+        area: doc.area,
+        rooms: doc.rooms,
+        sync_rules: doc.sync_rules,
+        style: crate::format::MapStyle {
+            background_color: doc.style.background_color,
+            backgrounds: doc.style.backgrounds.into_iter().map(backdrop).collect(),
+            foregrounds: doc.style.foregrounds.into_iter().map(backdrop).collect(),
+        },
     }
 }
 
@@ -255,7 +388,14 @@ pub fn migrate(version: u32, bytes: &[u8]) -> Result<crate::format::MapDocument,
             if disk.magic != *crate::format::MAP_MAGIC {
                 return Err(crate::MapError::InvalidMagic);
             }
-            Ok(migrate_v1_to_v2(disk.document))
+            Ok(migrate_v2_to_v3(migrate_v1_to_v2(disk.document)))
+        }
+        2 => {
+            let disk: v2::MapDisk = bincode::deserialize(bytes).map_err(crate::MapError::Parse)?;
+            if disk.magic != *crate::format::MAP_MAGIC {
+                return Err(crate::MapError::InvalidMagic);
+            }
+            Ok(migrate_v2_to_v3(disk.document))
         }
         v => Err(crate::MapError::UnsupportedVersion { found: v }),
     }
@@ -368,6 +508,50 @@ pub mod fixtures {
             document: downgrade(doc),
         };
         bincode::serialize(&disk).expect("fixture must serialize")
+    }
+
+    /// 从当前文档里丢掉 v3 新增的四个 backdrop 字段，得到它的 v2 形态。
+    pub fn downgrade_to_v2(doc: &Current) -> v2::MapDocument {
+        fn backdrop(bd: &crate::format::Backdrop) -> v2::Backdrop {
+            v2::Backdrop {
+                kind: bd.kind.clone(),
+                texture: bd.texture.clone(),
+                atlas: bd.atlas.clone(),
+                x: bd.x,
+                y: bd.y,
+                scroll_x: bd.scroll_x,
+                scroll_y: bd.scroll_y,
+                speed_x: bd.speed_x,
+                speed_y: bd.speed_y,
+                color: bd.color,
+                loop_x: bd.loop_x,
+                loop_y: bd.loop_y,
+                flip_x: bd.flip_x,
+                flip_y: bd.flip_y,
+                wind: bd.wind,
+                blend: bd.blend.clone(),
+            }
+        }
+        v2::MapDocument {
+            area: doc.area.clone(),
+            rooms: doc.rooms.clone(),
+            sync_rules: doc.sync_rules.clone(),
+            style: v2::MapStyle {
+                background_color: doc.style.background_color,
+                backgrounds: doc.style.backgrounds.iter().map(backdrop).collect(),
+                foregrounds: doc.style.foregrounds.iter().map(backdrop).collect(),
+            },
+        }
+    }
+
+    /// 把 v2 文档写成磁盘字节（含版本头）—— v3 迁移的金样夹具。
+    pub fn to_v2_bytes(doc: &Current) -> Vec<u8> {
+        let disk = v2::MapDisk {
+            magic: *crate::format::MAP_MAGIC,
+            version: 2,
+            document: downgrade_to_v2(doc),
+        };
+        bincode::serialize(&disk).expect("v2 fixture must serialize")
     }
 
     /// 迁移后**必须**逐字段相等的那部分（v2 新增字段除外）。

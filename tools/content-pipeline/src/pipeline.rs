@@ -828,6 +828,23 @@ fn convert_style(root: &MapBinElement) -> MapStyle {
         return MapStyle::default();
     };
 
+    // 房间名表：`only=` / `exclude=` 的通配符在**转换期**展开成具体
+    // 房间名（原版 `ParseLevelsList`，`pureCeleste.cs:113019-113036`，
+    // 对 `Levels` 逐个匹配后收进集合）。这里收集名字的顺序与
+    // `convert_map` 的 levels→level 循环一致，缺名时用同一个
+    // `room_{n}` 回退，保证两边指同一间房。
+    let mut room_names = Vec::new();
+    for level in root.children_named("levels") {
+        for lv in level.children_named("level") {
+            room_names.push(
+                lv.attr("name")
+                    .and_then(BinValue::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("room_{}", room_names.len())),
+            );
+        }
+    }
+
     let mut out = MapStyle::default();
     if let Some(hex) = style.attr("color").and_then(BinValue::as_str) {
         out.background_color = match hex_rgb(hex) {
@@ -842,10 +859,10 @@ fn convert_style(root: &MapBinElement) -> MapStyle {
         };
     }
     if let Some(group) = style.child("Backgrounds") {
-        out.backgrounds = convert_backdrops(group);
+        out.backgrounds = convert_backdrops(group, &room_names);
     }
     if let Some(group) = style.child("Foregrounds") {
-        out.foregrounds = convert_backdrops(group);
+        out.foregrounds = convert_backdrops(group, &room_names);
     }
     out
 }
@@ -855,15 +872,15 @@ fn convert_style(root: &MapBinElement) -> MapStyle {
 /// 原版 `CreateBackdrops`（`pureCeleste.cs:112593-112618`）：子元素叫
 /// `apply` 时，它的**子**元素继承 `apply` 的属性（`ParseBackdrop(child2, child)`），
 /// 否则按 `(child, null)` 解析。
-fn convert_backdrops(group: &MapBinElement) -> Vec<Backdrop> {
+fn convert_backdrops(group: &MapBinElement, room_names: &[String]) -> Vec<Backdrop> {
     let mut out = Vec::new();
     for child in &group.children {
         if child.name.eq_ignore_ascii_case("apply") {
             for nested in &child.children {
-                out.push(parse_backdrop(nested, Some(child)));
+                out.push(parse_backdrop(nested, Some(child), room_names));
             }
         } else {
-            out.push(parse_backdrop(child, None));
+            out.push(parse_backdrop(child, None, room_names));
         }
     }
     out
@@ -880,7 +897,11 @@ fn convert_backdrops(group: &MapBinElement) -> Vec<Backdrop> {
 /// 所以存下来的 RGBA 是 `[r·a, g·a, b·a, 255·a]`，正好是本引擎
 /// `SpriteDraw` 需要的直通（未预乘）RGBA，渲染时再乘一次 alpha
 /// 才能复现原版 `SpriteBatch` 的 `SourceAlpha` 混合。
-fn parse_backdrop(child: &MapBinElement, above: Option<&MapBinElement>) -> Backdrop {
+fn parse_backdrop(
+    child: &MapBinElement,
+    above: Option<&MapBinElement>,
+    room_names: &[String],
+) -> Backdrop {
     let kind = child.name.to_ascii_lowercase();
     let mut backdrop = Backdrop::new(&kind);
 
@@ -930,6 +951,31 @@ fn parse_backdrop(child: &MapBinElement, above: Option<&MapBinElement>) -> Backd
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_else(|| "alphablend".to_string());
 
+    // 房间过滤：`exclude=` / `only=`（112855-112873），通配符在转换期
+    // 展开成具体房间名（ParseLevelsList，113019-113036）。
+    if let Some(list) = attr_or(child, above, "exclude").and_then(BinValue::as_str) {
+        backdrop.exclude_from = expand_levels_list(list, room_names);
+    }
+    if let Some(list) = attr_or(child, above, "only").and_then(BinValue::as_str) {
+        backdrop.only_in = expand_levels_list(list, room_names);
+    }
+    // 转场可见性：`instantIn=`（默认 true）/ `instantOut=`（默认 false）
+    // （109411-109418 的字段默认、112895-112905 的属性覆盖）。
+    backdrop.instant_in = attr_or(child, above, "instantIn")
+        .and_then(BinValue::as_bool)
+        .unwrap_or(true);
+    backdrop.instant_out = attr_or(child, above, "instantOut")
+        .and_then(BinValue::as_bool)
+        .unwrap_or(false);
+    // 尚未移植的会话属性：需要 Session flag / 梦境 / 渐变带宽，先点名
+    // 告警（不能静默丢弃，AGENTS.md 15.9）。
+    for attr in ["flag", "notflag", "always", "dreaming", "fadex", "fadey"] {
+        if attr_or(child, above, attr).is_some() {
+            warn!(attribute = attr, texture = %backdrop.texture,
+                  "backdrop session attribute is not supported yet; ignoring it");
+        }
+    }
+
     // `Color = White` 起手，有 `color` 就覆盖，再 `Color *= alpha`。
     let (r, g, b) = match attr_or(child, above, "color").and_then(BinValue::as_str) {
         Some(hex) => match hex_rgb(hex) {
@@ -962,6 +1008,54 @@ fn parse_backdrop(child: &MapBinElement, above: Option<&MapBinElement>) -> Backd
     }
 
     backdrop
+}
+
+/// `only=` / `exclude=` 的房间列表 → 具体房间名集合。
+///
+/// 原版 `ParseLevelsList`（`pureCeleste.cs:113019-113036`）：逗号分隔；
+/// 含 `*` 的项按 `^` + 转义 + `.*` + `$` 的正则对 `Levels` 逐个匹配后
+/// 收进集合，其余按字面量收进。这里用同义的通配符匹配代替正则
+/// （`Regex.Escape` 后唯一有特殊含义的就是被换掉的 `*`），输出排序
+/// 保证确定性（成员判定语义与原版 `HashSet` 一致）。
+fn expand_levels_list(list: &str, room_names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for piece in list.split(',') {
+        let piece = piece.trim();
+        if piece.is_empty() {
+            continue;
+        }
+        if piece.contains('*') {
+            for name in room_names {
+                if wildcard_match(piece, name) && !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        } else if !out.iter().any(|n| n == piece) {
+            out.push(piece.to_string());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `*` 通配符匹配：等价于原版 `^` + `Regex.Escape(p).Replace("\\*", ".*")` + `$`。
+fn wildcard_match(pattern: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !name.starts_with(first) || !name.ends_with(last) {
+        return false;
+    }
+    if name.len() < first.len() + last.len() {
+        return false;
+    }
+    let mut rest = &name[first.len()..name.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// 属性：先看自己，再看 `<apply>` 父元素（原版每个属性都这么回落）。

@@ -248,11 +248,17 @@ fn push_backdrops(
     backdrops: &[Backdrop],
     camera_pos: Vec2,
     layer: i32,
+    visibility: &[bool],
     session: &Session,
     gpu: &GpuRenderer,
 ) {
     let screen = (releste_render::BASE_WIDTH, releste_render::BASE_HEIGHT);
-    for bd in backdrops {
+    for (i, bd) in backdrops.iter().enumerate() {
+        // 房间过滤的可见性由 [`Session::update_backdrop_visibility`] 按
+        // 原版 `Backdrop.Update` 的节奏刷新；这里只读。
+        if visibility.get(i).copied() != Some(true) {
+            continue;
+        }
         // 仅支持 `parallax`：其余 kind（snowBg/snowFg/mirrorFg/godrays…）
         // 是独立 `Backdrop` 子类，各自有自己的 `Render`，尚未移植。
         if !bd.kind.eq_ignore_ascii_case("parallax") {
@@ -330,11 +336,65 @@ pub struct Session {
     pub spawn: Vec2,
     /// 出生点所在房间。
     pub spawn_room: String,
+    /// 每 backdrop 的可见性状态（原版 `Backdrop.Visible`，109366 起始
+    /// 为 `true`；`Backdrop.Update` 每帧按 `IsVisible` + 转场规则刷新，
+    /// `109468-109489`）。下标 = backgrounds + foregrounds 顺序拼接。
+    backdrop_visible: RefCell<Vec<bool>>,
     /// 只告警一次的 key，避免每帧刷屏。
     warned: RefCell<HashSet<String>>,
 }
 
 impl Session {
+    /// 每帧刷新 backdrop 可见性（原版 `Backdrop.Update`，109468-109489）。
+    ///
+    /// 非转场：`Visible = IsVisible`（[`Session::backdrop_is_visible`]，
+    /// 房间过滤）。转场期间：`InstantIn` 立即点亮、`InstantOut` 立即
+    /// 熄灭，**其余保持上一帧的状态** —— 默认（InstantIn=true,
+    /// InstantOut=false）下，切进一个"该图不显示"的房间时图会保留到
+    /// 转场结束，这正是原版房间过滤图的淡入淡出语义。
+    pub fn update_backdrop_visibility(&self, room: &str, transitioning: bool) {
+        let total = self.doc.style.backgrounds.len() + self.doc.style.foregrounds.len();
+        let mut vis = self.backdrop_visible.borrow_mut();
+        if vis.len() != total {
+            // 热重载可能整体换掉 style：新增条目按原版初值 `true` 起。
+            vis.resize(total, true);
+        }
+        for (i, bd) in self
+            .doc
+            .style
+            .backgrounds
+            .iter()
+            .chain(&self.doc.style.foregrounds)
+            .enumerate()
+        {
+            let is_visible = self.backdrop_is_visible(bd, room);
+            vis[i] = if transitioning {
+                if bd.instant_in && is_visible {
+                    true
+                } else if bd.instant_out && !is_visible {
+                    false
+                } else {
+                    vis[i]
+                }
+            } else {
+                is_visible
+            };
+        }
+    }
+
+    /// 原版 `Backdrop.IsVisible`（109438-109466）的房间过滤部分：
+    /// `ExcludeFrom` / `OnlyIn` 对当前房间名（`Session.Level`）做成员
+    /// 判定。flag / dreaming / 渐变带宽未移植（转换器对未捕获属性
+    /// 已告警）。
+    fn backdrop_is_visible(&self, bd: &Backdrop, room: &str) -> bool {
+        if !bd.exclude_from.is_empty() && bd.exclude_from.iter().any(|n| n == room) {
+            return false;
+        }
+        if !bd.only_in.is_empty() && !bd.only_in.iter().any(|n| n == room) {
+            return false;
+        }
+        true
+    }
     /// 从 `paths` 解析出的地图路径加载。
     ///
     /// `tileset` 已废弃（真 tileset 按 tile id 从 `ForegroundTiles.xml`
@@ -405,6 +465,7 @@ impl Session {
             bg_tilesets,
             spawn,
             spawn_room,
+            backdrop_visible: RefCell::default(),
             warned: RefCell::default(),
         })
     }
@@ -498,12 +559,14 @@ impl Session {
     /// （[`Layer::Foreground`] = 500 > [`Layer::Effects`] = 300），
     /// 与原版 `Backdrop` 的前后层级一致。
     pub fn backdrop_draws(&self, gpu: &GpuRenderer, camera_pos: Vec2) -> Vec<SpriteDraw> {
+        let vis = self.backdrop_visible.borrow();
         let mut out = Vec::new();
         push_backdrops(
             &mut out,
             &self.doc.style.backgrounds,
             camera_pos,
             Layer::Background.value(),
+            &vis,
             self,
             gpu,
         );
@@ -512,6 +575,7 @@ impl Session {
             &self.doc.style.foregrounds,
             camera_pos,
             Layer::Foreground.value(),
+            &vis,
             self,
             gpu,
         );
@@ -1213,6 +1277,7 @@ mod tests {
             bg_tilesets: releste_map::TilesetsDoc::default(),
             spawn: Vec2::from_f32s(-56.0, 136.0),
             spawn_room: "lvl_-1".into(),
+            backdrop_visible: RefCell::default(),
             warned: RefCell::default(),
         }
     }
@@ -1249,6 +1314,49 @@ mod tests {
             "lvl_-1",
             "a centre exactly on the shared edge resolves to the first room in file order"
         );
+    }
+
+    /// 房间过滤 + 转场可见性语义（原版 `Backdrop.Update`，
+    /// `pureCeleste.cs:109468-109489`；`IsVisible` 的 `OnlyIn` /
+    /// `ExcludeFrom` 分支，109456-109465）。
+    #[test]
+    fn backdrop_room_filter_and_transition_visibility() {
+        let mut session = seam_session();
+        let mut excluded = Backdrop::new("parallax");
+        excluded.exclude_from = vec!["lvl_0".into()];
+        let mut only = Backdrop::new("parallax");
+        only.only_in = vec!["lvl_0".into()];
+        session.doc.style.backgrounds = vec![excluded, only];
+
+        // 非转场：直接跟 IsVisible。
+        session.update_backdrop_visibility("lvl_-1", false);
+        let vis = session.backdrop_visible.borrow();
+        assert!(vis[0], "excluded=lvl_0 must show in lvl_-1");
+        assert!(!vis[1], "only_in=lvl_0 must hide in lvl_-1");
+        drop(vis);
+
+        // 转场切进 lvl_0：InstantIn 默认 true → 命中的图立即可见；
+        // 未命中的图没有 InstantOut → **保留**上一帧的可见（原版
+        // Update 在转场期间只做这两个检查，其余不动，109470-109483）。
+        session.update_backdrop_visibility("lvl_0", true);
+        let vis = session.backdrop_visible.borrow();
+        assert!(vis[0], "without InstantOut the excluded backdrop lingers");
+        assert!(vis[1], "only_in=lvl_0 must appear instantly (InstantIn)");
+        drop(vis);
+
+        // 转场**切出**到过滤命中的房间时默认 InstantOut=false → 保留到
+        // 转场结束：from lvl_0 看 only 图，转入 lvl_-1 的转场期间仍可见。
+        session.update_backdrop_visibility("lvl_0", false);
+        session.update_backdrop_visibility("lvl_-1", true);
+        let vis = session.backdrop_visible.borrow();
+        assert!(
+            vis[1],
+            "without InstantOut the filtered backdrop lingers through the transition"
+        );
+        drop(vis);
+        session.update_backdrop_visibility("lvl_-1", false);
+        let vis = session.backdrop_visible.borrow();
+        assert!(!vis[1], "after the transition IsVisible wins again");
     }
 
     /// 造一条 `parallax` backdrop。

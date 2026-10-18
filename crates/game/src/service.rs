@@ -366,6 +366,12 @@ impl Service for GameService {
         self.player.update(&self.input, &self.session);
         self.update_camera();
 
+        // backdrop 可见性每 tick 刷新（原版 `Backdrop.Update` 的节奏，
+        // 109468-109489）；房间过滤用当前房间名（`Session.Level` 语义）。
+        // 转场语义随后续房间转场一起接入。
+        self.session
+            .update_backdrop_visibility(self.room_name(), false);
+
         // 房间身份变化（中心跨缝）：`-v` 以上打一行，供排查"玩家到底
         // 站在哪个房间"。物理本身不选房间，这只影响标题栏/相机。
         let room = self.session.room_at(self.player.pos).name.to_string();

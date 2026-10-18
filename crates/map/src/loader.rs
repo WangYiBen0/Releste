@@ -250,6 +250,44 @@ mod tests {
         assert_eq!(loaded.style, MapStyle::default());
     }
 
+    /// E.11（金样）：v2 的 backdrop 迁到 v3 后，既有字段逐字节一致，
+    /// 新增的房间过滤取"未设置"、转场可见性取原版默认。
+    #[test]
+    fn v2_fixture_still_loads_and_migrates() {
+        let mut map = sample();
+        let mut bd = crate::format::Backdrop::new("parallax");
+        bd.texture = "bgs/00/bg0".into();
+        bd.x = -24.0;
+        bd.y = -64.0;
+        bd.scroll_x = 0.15;
+        bd.scroll_y = 0.05;
+        bd.loop_x = true;
+        bd.loop_y = false;
+        bd.color = [140, 140, 140, 140];
+        map.style.backgrounds.push(bd);
+
+        let bytes = fixtures::to_v2_bytes(&map);
+        let loaded = load_map_bytes(&bytes).expect("v2 must migrate");
+        assert_eq!(loaded.area, map.area);
+        assert_eq!(loaded.rooms, map.rooms);
+        assert_eq!(loaded.sync_rules, map.sync_rules);
+        let got = &loaded.style.backgrounds[0];
+        let want = &map.style.backgrounds[0];
+        assert_eq!(got.kind, want.kind);
+        assert_eq!(got.texture, want.texture);
+        assert_eq!(got.atlas, want.atlas);
+        assert_eq!((got.x, got.y), (want.x, want.y));
+        assert_eq!((got.scroll_x, got.scroll_y), (want.scroll_x, want.scroll_y));
+        assert_eq!((got.loop_x, got.loop_y), (want.loop_x, want.loop_y));
+        assert_eq!(got.color, want.color);
+        // v3 新增字段：v2 文件没有表达力 → 过滤为空、可见性取原版默认
+        // （InstantIn = true，InstantOut = false，pureCeleste.cs:109411-109418）。
+        assert!(got.only_in.is_empty());
+        assert!(got.exclude_from.is_empty());
+        assert!(got.instant_in);
+        assert!(!got.instant_out);
+    }
+
     /// v0 没有迁移链，必须明确点名而不是当成解析失败。
     #[test]
     fn v0_is_unsupported_not_a_parse_error() {
