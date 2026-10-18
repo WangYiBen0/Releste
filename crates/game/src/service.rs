@@ -199,7 +199,10 @@ impl GameService {
     ///
     /// `alpha` ∈ [0, 1] 是上个 tick 到这个 tick 的插值进度，玩家位置按
     /// 它取 `prev_pos` → `pos` 的线性插值，避免 60Hz 模拟在 144Hz 屏幕上抖动。
-    pub fn render(&mut self, gpu: &GpuRenderer, alpha: f32, batch: &mut SpriteBatch) {
+    pub fn render(&mut self, gpu: &mut GpuRenderer, alpha: f32, batch: &mut SpriteBatch) {
+        // 清屏色来自地图样式（`<Style color=...>` → `MapStyle::background_color`）。
+        gpu.set_clear_color(self.session.clear_color());
+
         // 原版一次只画一个房间：切房（或热重载）就重建当前房间的静态批次。
         let room_name = self.session.room_at(self.player.pos).name.clone();
         if self.static_dirty || self.built_room != room_name {
@@ -228,6 +231,14 @@ impl GameService {
                 break;
             }
         }
+        // 视差背景/前景依赖相机位置，每帧按插值相机重建
+        // （`Parallax.Render`，`pureCeleste.cs:112163-112236`）。
+        for draw in self.session.backdrop_draws(gpu, self.camera_pos(alpha)) {
+            if batch.push(draw).is_err() && !self.overflow_warned {
+                self.overflow_warned = true;
+                warn!("sprite batch full; backdrop draw dropped");
+            }
+        }
         for draw in self.player_draws(gpu, alpha) {
             if batch.push(draw).is_err() && !self.overflow_warned {
                 self.overflow_warned = true;
@@ -244,12 +255,15 @@ impl GameService {
         self.session.player_draws(gpu, pos, self.player.facing < 0)
     }
 
+    /// 插值后的相机位置（视口**中心**）。
+    fn camera_pos(&self, alpha: f32) -> Vec2 {
+        let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
+        self.prev_camera.position + (self.camera.position - self.prev_camera.position) * a
+    }
+
     /// 插值后的相机（供渲染使用）。
     pub fn render_camera(&self, alpha: f32) -> Camera {
-        let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
-        let pos =
-            self.prev_camera.position + (self.camera.position - self.prev_camera.position) * a;
-        Camera::at(pos)
+        Camera::at(self.camera_pos(alpha))
     }
 
     /// 轮询 `.map` 变更；成功则换掉文档、重建静态批次。

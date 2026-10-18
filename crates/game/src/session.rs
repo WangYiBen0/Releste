@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use anyhow::{bail, Context as _, Result};
-use releste_map::{MapDocument, Room};
+use releste_map::{Backdrop, MapDocument, Room};
 use releste_math::Vec2;
 use releste_render::atlas::SpriteAtlas;
 use releste_render::{GpuRenderer, Layer, SpriteDraw};
@@ -19,6 +19,169 @@ use crate::sprites;
 
 /// 一格瓦片的世界像素数（`lvl_-1` 宽 320 / 40 格 = 8px）。
 const TILE: f32 = sprites::TILE_PX as f32;
+
+/// 单个 `Backdrop` 的有效颜色：全零视为"未设置"，取原版默认白
+/// （`112789` `backdrop.Color = Color.White` 起点，`112790-112796`
+/// 仅当 `HasAttr("color")` 才覆盖）；否则按原版做法用 `alpha`
+/// 缩放一次（`112798-112804` `backdrop.Color *= alpha`）。
+fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
+    let c = bd.effective_color();
+    [
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+        c[3] as f32 / 255.0,
+    ]
+}
+
+/// 视差平铺几何：给定一个 `Backdrop`、相机位置与贴图尺寸，算出本帧要
+/// 画的每一片左上角（屏幕坐标）。纯函数，便于对照原版单测。
+///
+/// 逐步对照 `Parallax.Render`（`pureCeleste.cs:112163-112236`）：
+/// 1. `v = (Camera.Position + CameraOffset).Floor()`（`112165`）。引擎尚无
+///    `Backdrop.CameraOffset` 概念（`CameraOffset` 是 `Parallax` 独有字段、
+///    默认 `Vector2.Zero`，`112129-112130`），故直接取相机位置。
+/// 2. `p = (Position − v*Scroll).Floor()`（`112166`）。
+/// 3. 若 `LoopX`/`LoopY`：两段 `while` 把 `p.X`/`p.Y` 折回（`112185-112206`），
+///    顺序与原版一致（先 `<0` 加、后 `>0` 减）；`!Loop` 时不折。
+/// 4. 双重 `for` 铺到 `320×180`（`112220-112234`）——**条件在前**、外层 X
+///    内层 Y：起点越界（`p.X ≥ 320` 或 `p.Y ≥ 180`）时该轴一片都不画；
+///    `!LoopY` 内层画完一片就 `break`，`!LoopX` 外层画完一列就 `break`。
+///    每片 `Texture.Draw(pos, Vector2.Zero, color, 1, 0, flip)`（`112224`），
+///    原点 `Vector2.Zero`（裁剪子图左上角）、缩放 `1`。
+fn parallax_tiles(
+    bd: &Backdrop,
+    camera_pos: (f32, f32),
+    tex: (f32, f32),
+    screen: (f32, f32),
+) -> Vec<(f32, f32)> {
+    // 贴图 0 尺寸会让两段 while 死循环——钳到 ≥1（原版 `Texture.Width`
+    // 恒 ≥1，引擎侧防御性钳制，不是行为差异）。
+    let (tw, th) = (tex.0.max(1.0), tex.1.max(1.0));
+    // 1. v = (Camera + CameraOffset).Floor()（无 CameraOffset）。
+    let (cam_x, cam_y) = (camera_pos.0.floor(), camera_pos.1.floor());
+    // 2. p = (Position − v*Scroll).Floor()。
+    let mut px = (bd.x - cam_x * bd.scroll_x).floor();
+    let mut py = (bd.y - cam_y * bd.scroll_y).floor();
+    // 3. while 折回（原版两段 while 的顺序：先 <0 加，再 >0 减）。
+    if bd.loop_x {
+        while px < 0.0 {
+            px += tw;
+        }
+        while px > 0.0 {
+            px -= tw;
+        }
+    }
+    if bd.loop_y {
+        while py < 0.0 {
+            py += th;
+        }
+        while py > 0.0 {
+            py -= th;
+        }
+    }
+    // 4. 双重 for（外 X 内 Y，条件在前）。
+    let mut out = Vec::new();
+    let mut x = px;
+    while x < screen.0 {
+        let mut y = py;
+        while y < screen.1 {
+            out.push((x, y));
+            if !bd.loop_y {
+                break;
+            }
+            y += th;
+        }
+        if !bd.loop_x {
+            break;
+        }
+        x += tw;
+    }
+    out
+}
+
+/// 背景 / 前景视差贴图平铺（`Parallax.Render`，`pureCeleste.cs:112163-112236`）。
+///
+/// 几何走 [`parallax_tiles`]（纯函数、带对照单测）；这里只负责纹理查询、
+/// 调色与转 [`SpriteDraw`]。
+///
+/// 引擎差异（记录在案，非行为偏差）：
+/// - 原点 `Vector2.Zero` 落到裁剪子图 = 左上角贴齐，故直接用 `sprite.w/h` 与
+///   `uv_for_sprite`，不走 [`sprites::origin_in_trim`]（那是给"有帧内原点"的
+///   sprite 用的）。
+/// - `blendmode="additive"` 暂不支持（wgpu 后端当前只有单一
+///   `PREMULTIPLIED_ALPHA_BLENDING` 管线，见 `gpu.rs:289-291`），统一按
+///   预乘 alpha 画，已知偏差；同理 `FlipY`（`SpriteDraw` 只有 `flip_x`）
+///   与 `WindMultiplier` 驱动的水平漂移（`112157`）暂不生效，0-Intro 未用。
+/// - `fadeIn`（`DoFadeIn`，`112153-112160`）与 `FadeX`/`FadeY`（`Fader`，
+///   `109343-109378`）尚未移植：0-Intro 的 `ParseBackdrop`（`112651`
+///   `DoFadeIn = bool.Parse(child.Attr("fadeIn", "false"))`）默认 `false`，
+///   故 `fadeIn` 恒为 `Visible ? 1 : 0`，进场景即 `1`（无过渡），当前
+///   `Service` 不追踪 `Visible`，这里恒定 `1`；`FadeX`/`FadeY` 仅在
+///   `<apply fade=...>` 时才有值，0-Intro 无此写法。
+/// - `Parallax.Alpha`（`112141`）字段 `ParseBackdrop` 从不写（`alpha` 属性
+///   只乘进 `backdrop.Color`，`112798-112804`），默认 `1` → `Render` 里
+///   `num = fadeIn*Alpha*FadeAlphaMultiplier = 1`、`color *= num` 不触发
+///   （`112167-112179`），所以直接用 `effective_color()` 是等价的。
+fn push_backdrops(
+    out: &mut Vec<SpriteDraw>,
+    backdrops: &[Backdrop],
+    camera_pos: Vec2,
+    layer: i32,
+    session: &Session,
+    gpu: &GpuRenderer,
+) {
+    let screen = (releste_render::BASE_WIDTH, releste_render::BASE_HEIGHT);
+    for bd in backdrops {
+        // 仅支持 `parallax`：其余 kind（snowBg/snowFg/mirrorFg/godrays…）
+        // 是独立 `Backdrop` 子类，各自有自己的 `Render`，尚未移植。
+        if !bd.kind.eq_ignore_ascii_case("parallax") {
+            if session.warn_once(&format!("backdrop-kind:{}", bd.kind)) {
+                warn!(
+                    kind = %bd.kind,
+                    "non-parallax backdrop kind is not implemented yet; skipping it"
+                );
+            }
+            continue;
+        }
+        if bd.flip_y && session.warn_once(&format!("backdrop-flipy:{}", bd.texture)) {
+            warn!(
+                texture = %bd.texture,
+                "backdrop flipy is not supported yet; drawing unflipped"
+            );
+        }
+
+        let Some((group, sprite)) = session.atlas.sprite(&bd.texture) else {
+            if session.warn_once(&format!("backdrop-tex:{}", bd.texture)) {
+                warn!(
+                    texture = %bd.texture,
+                    "backdrop texture not found in atlas; skipping it"
+                );
+            }
+            continue;
+        };
+        let atlas_id = sprites::group_id(&session.atlas, group);
+        let Some((tw, th)) = gpu.texture_size(atlas_id) else {
+            continue; // 纹理没上传（未转码的 .data），`load_atlas` 已告警
+        };
+        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+        let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+        let tint = backdrop_tint(bd);
+        // 原版 `color.A <= 1` 早退（`112181-112184`）——等价于 alpha ≤ 1/255。
+        if tint[3] <= 1.0 / 255.0 {
+            continue;
+        }
+
+        for (x, y) in parallax_tiles(bd, camera_pos.to_f32s(), (w, h), screen) {
+            out.push(
+                SpriteDraw::new(atlas_id, Vec2::from_f32s(x, y), Vec2::from_f32s(w, h), uv)
+                    .with_layer(layer)
+                    .with_color(tint)
+                    .with_flip_x(bd.flip_x),
+            );
+        }
+    }
+}
 
 /// 前景瓦片 / 实体 / 背景瓦片的色调。
 ///
@@ -201,6 +364,43 @@ impl Session {
             "static draw list rebuilt"
         );
         out
+    }
+
+    /// 本帧的视差背景/前景 draw（`Parallax.Render`，`pureCeleste.cs:112163-112236`）。
+    ///
+    /// **每帧都要重建**（不像瓦片/实体那样按房间缓存）：平铺起点依赖
+    /// 相机位置（`p = (Position − Camera.Position.Floor()*Scroll).Floor()`，
+    /// `112165-112166`），相机一动整张分布就变。数量很小（4 张背景图
+    /// × 若干平铺），重建成本可忽略。
+    ///
+    /// 层：背景在所有瓦片之后画（[`Layer::Background`] = -1000 <
+    /// [`Layer::BgTiles`] = -500），前景压在玩家与特效之上
+    /// （[`Layer::Foreground`] = 500 > [`Layer::Effects`] = 300），
+    /// 与原版 `Backdrop` 的前后层级一致。
+    pub fn backdrop_draws(&self, gpu: &GpuRenderer, camera_pos: Vec2) -> Vec<SpriteDraw> {
+        let mut out = Vec::new();
+        push_backdrops(
+            &mut out,
+            &self.doc.style.backgrounds,
+            camera_pos,
+            Layer::Background.value(),
+            self,
+            gpu,
+        );
+        push_backdrops(
+            &mut out,
+            &self.doc.style.foregrounds,
+            camera_pos,
+            Layer::Foreground.value(),
+            self,
+            gpu,
+        );
+        out
+    }
+
+    /// 地图样式的清屏色（`<Style color="#rrggbb">`，`pureCeleste.cs:112434`）。
+    pub fn clear_color(&self) -> [u8; 3] {
+        self.doc.style.background_color
     }
 
     /// 玩家本帧的 draw：头发（4 节链 + 刘海 + 黑描边）在身体后面。
@@ -699,5 +899,96 @@ mod tests {
             "lvl_-1",
             "a centre exactly on the shared edge resolves to the first room in file order"
         );
+    }
+
+    /// 造一条 `parallax` backdrop。
+    fn parallax_bd(x: f32, y: f32, scroll: (f32, f32), loops: (bool, bool)) -> Backdrop {
+        let mut bd = Backdrop::new("parallax");
+        bd.x = x;
+        bd.y = y;
+        bd.scroll_x = scroll.0;
+        bd.scroll_y = scroll.1;
+        bd.loop_x = loops.0;
+        bd.loop_y = loops.1;
+        bd
+    }
+
+    /// 0-Intro `bg0` 的真实参数（`x=-24 y=-64 scroll=(0.15,0.05) loopx`），
+    /// 纹理 320×137（`Gameplay.atlas` 的 `bgs\00\bg0`）：
+    /// 起点经 `Position − Floor(cam)*Scroll` 折算后必须覆盖整个 320 宽屏，
+    /// 且 `loopy=false` 时只有一行——与 `Parallax.Render` 112185-112234 一致。
+    #[test]
+    fn parallax_loop_x_without_loop_y_tiles_one_row() {
+        let bd = parallax_bd(-24.0, -64.0, (0.15, 0.05), (true, false));
+        let tiles = parallax_tiles(&bd, (176.9, 92.2), (320.0, 137.0), (320.0, 180.0));
+
+        // Floor(cam) = (176, 92) → px = Floor(-24 - 26.4) = -51、
+        // py = Floor(-64 - 4.6) = -69；loopx 折回是原版的两段 while
+        // （先 <0 加、再 >0 减，112185-112195）→ -51 原样返回。
+        assert_eq!(
+            tiles,
+            vec![(-51.0, -69.0), (269.0, -69.0)],
+            "two columns of one row: -51..269 and 269..589 cover the 320px screen"
+        );
+        // 覆盖性：每列 320 宽，首列尾 = -51+320 = 269 ≤ 320 屏右缘被盖住。
+        for (x, y) in &tiles {
+            assert!(*y < 180.0, "row must start on screen (y={y})");
+            assert!(
+                *x < 320.0,
+                "column must start before the right edge (x={x})"
+            );
+        }
+    }
+
+    /// 双轴 loop（`purplesunset` 参数形态：`loopx/loopy` 都开）必须铺满
+    /// 320×180，且起点折进 `[0, 宽)`/`[0, 高)`。
+    #[test]
+    fn parallax_double_loop_covers_the_whole_screen() {
+        let bd = parallax_bd(0.0, 0.0, (0.5, 0.5), (true, true));
+        let tiles = parallax_tiles(&bd, (320.0, 180.0), (160.0, 90.0), (320.0, 180.0));
+
+        // Floor(0 − 160*0.5) = -160 → 折回 0；y 同理 → 网格 (0,0)/(160,90) 起步。
+        assert_eq!(
+            tiles,
+            vec![(0.0, 0.0), (0.0, 90.0), (160.0, 0.0), (160.0, 90.0)]
+        );
+        // 每片 160×90 → 2×2 正好盖满 320×180。
+        assert!(tiles.iter().all(|(x, y)| *x < 320.0 && *y < 180.0));
+    }
+
+    /// `for` 条件在前（`112220`/`112222`）：起点越界时该轴一片都不画；
+    /// 不越界且双轴都不 loop 时恰好画一片。
+    #[test]
+    fn parallax_start_off_screen_draws_nothing() {
+        let off = parallax_bd(400.0, 10.0, (1.0, 1.0), (false, false));
+        assert!(
+            parallax_tiles(&off, (0.0, 0.0), (320.0, 180.0), (320.0, 180.0)).is_empty(),
+            "p.X = 400 >= 320: vanilla's for-condition never enters the loop"
+        );
+
+        let one = parallax_bd(10.0, 10.0, (1.0, 1.0), (false, false));
+        assert_eq!(
+            parallax_tiles(&one, (0.0, 0.0), (320.0, 180.0), (320.0, 180.0)),
+            vec![(10.0, 10.0)],
+            "!LoopX && !LoopY draws exactly one tile"
+        );
+    }
+
+    /// 颜色：全零 = 原版默认白（`112789`/`effective_color`）；
+    /// `alpha` 属性折进 Color（`112798-112804` `Color *= alpha`）。
+    #[test]
+    fn backdrop_tint_matches_parse_semantics() {
+        let mut bd = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
+        assert_eq!(
+            backdrop_tint(&bd),
+            [1.0; 4],
+            "unset color falls back to white"
+        );
+
+        bd.color = [140, 140, 140, 140]; // `alpha=0.55` × 白，0-Intro 的 bg0
+        let tint = backdrop_tint(&bd);
+        for c in tint {
+            assert!((c - 140.0 / 255.0).abs() < 1e-6, "tint channel {c}");
+        }
     }
 }
