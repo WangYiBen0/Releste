@@ -37,7 +37,8 @@ pub const PLAYER_H: f32 = PLAYER_H_PX as f32;
 const RUN: Fx = Fx::from_ratio(3, 2);
 /// 水平加速度 1000 px/s²（≈0.278 px/tick²）—— 起步不是瞬间满速。
 const RUN_ACCEL: Fx = Fx::from_ratio(5, 18);
-/// 超速回归 / 反向刹车 400 px/s²：冲下坡或急转身时收得比起步更慢。
+/// 超速回归 400 px/s²：仅当 **同向超速**（|vx| > 90 且与输入同号）时用；
+/// 无输入停下、反向刹车都走 1000 的全速档（`pureCeleste.cs:122068-122074`）。
 const RUN_REDUCE: Fx = Fx::from_ratio(1, 9);
 /// 空中操控系数 0.65 —— 空中加速是地面的一半多点。
 const AIR_MULT: Fx = Fx::from_ratio(13, 20);
@@ -57,20 +58,34 @@ const FAST_MAX_FALL: Fx = Fx::from_int(4);
 const FAST_MAX_ACCEL: Fx = Fx::from_ratio(1, 12);
 /// 顶点半重力阈值 40 px/s（2/3 px/tick）。参考 `HalfGravThreshold = 40f`。
 const HALF_GRAV_THRESHOLD: Fx = Fx::from_ratio(2, 3);
-/// 起跳初速度 -240 px/s，冲量高度约 32px（4 格）。
-const JUMP: Fx = Fx::from_int(-4);
+/// 起跳竖直速度 -105 px/s（-7/4 px/tick）。`Player.Jump`：
+/// `Speed.Y = -105f`（pureCeleste.cs:120714）。
+const JUMP_SPEED: Fx = Fx::from_ratio(-7, 4);
+/// 跳跃水平助力 40 px/s（2/3 px/tick）：`Speed.X += 40f * moveX`
+/// （pureCeleste.cs:120713）。跑动中起跳会短暂超速，再被 400 档拉回。
+const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
+/// varJump 时长 0.2s = 12 tick（pureCeleste.cs:120715）。
+///
+/// 按住跳跃期间竖直速度被钳回起跳值（122130-122138）—— 重力被完全
+/// 抵消，跳满 ≈ 12×1.75 + 105²/1800 ≈ 27px（3.4 格）；松手计时清零、
+/// 只剩重力，即得可变跳高。**没有**"松手瞬间砍速度"——削高全靠钳制。
+const VAR_JUMP_TICKS: u32 = 12;
 /// 碰撞解算的推进步长：1/2 px。
 const STEP: Fx = Fx::from_ratio(1, 2);
 
-/// 起跳输入缓冲：落地前多少帧内按过跳跃，落地瞬间仍会触发（Phase 4.1）。
-const JUMP_BUFFER_FRAMES: u32 = 6;
-/// 土狼时间：离开平台后多少帧内仍可起跳（Phase 4.1）。
-const COYOTE_FRAMES: u32 = 6;
-/// 松开跳跃时对上升速度的削减系数（= 0.4，Celeste 风格的一次性 dampening）。
+/// 起跳输入缓冲：0.08s = 5 tick（含按下当帧）。
 ///
-/// 按下跳跃→按住不放能跳到全高；快速松手则跃得更矮更平，这是
-/// "可变跳高"的核心。削减只做一次（松手那一刻），不是每帧。
-const JUMP_CUT: Fx = Fx::from_ratio(2, 5);
+/// 原版 `VirtualButton` 的 `BufferTime`：Jump = 0.08f
+/// （pureCeleste.cs:110376），按下即计满、每帧递减、`Pressed` 在
+/// 计数 > 0 时为真（16715-16840）—— 落地前 4 tick 内按的跳跃，
+/// 落地瞬间仍会触发。
+const JUMP_BUFFER_FRAMES: u32 = 5;
+/// 土狼时间：0.1s（`jumpGraceTimer`，pureCeleste.cs:119832-119839 ——
+/// 接地每帧刷满 0.1，离地后逐帧递减，> 0 即可起跳）。
+///
+/// 引擎在 tick 末段递减（物理已用完上一 tick 的接地态），6 次计数
+/// 恰好给出 5 个可起跳的离地 tick，与原版逐帧等价。
+const COYOTE_FRAMES: u32 = 6;
 
 /// 一帧的按键状态（由窗口宿主喂进来）。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +130,9 @@ pub struct Player {
     jump_buffer: u32,
     /// 土狼时间倒计时：0 = 无。接地时重置，离地后递减。
     coyote: u32,
+    /// varJump 倒计时（tick）：> 0 且按住跳跃时竖直速度被钳回起跳值
+    /// （pureCeleste.cs:122130-122138 的 `varJumpTimer`）。
+    var_jump: u32,
 }
 
 impl Player {
@@ -130,6 +148,7 @@ impl Player {
             prev_jump: false,
             jump_buffer: 0,
             coyote: 0,
+            var_jump: 0,
         }
     }
 
@@ -148,54 +167,39 @@ impl Player {
     }
 
     /// 物理推进（不含世界夹取，夹取在 [`Player::step`] 尾部统一做）。
+    ///
+    /// tick 内顺序对照原版（`pureCeleste.cs`）：varJump 递减（Update
+    /// 119864-119867，先于状态机）→ 跑动（122050-122074）→ maxFall
+    /// （122088-122106）→ 重力（122123-122146，仅空中）→ varJump 钳制
+    /// （122148-122156）→ 跳跃判定（122158-122163）→ 移动解算 →
+    /// 土狼/缓冲递减（119830-119840 的节奏）。
     fn physics_in(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // 水平：朝目标速度做加速 / 减速，而不是瞬间赋值。
-        // 地面用全加速度，空中打折（AIR_MULT）—— 这正是"空中不能急转"的来源。
-        let target = input.axis_x() * RUN;
-        let accel = if self.on_ground {
-            RUN_ACCEL
+        // varJump 计时：原版在 Update 头部递减（119864-119867）。
+        if self.var_jump > 0 {
+            self.var_jump -= 1;
+        }
+
+        // 水平：原版两分支（122068-122074）—— 同向超速（|vx| > 90 且与
+        // 输入同号）用 400 回归；其余（无输入、反向刹车、起步）一律
+        // 1000 全速档。空中两档都乘 0.65。
+        let move_x = input.axis_x();
+        let mult = if self.on_ground { Fx::one() } else { AIR_MULT };
+        let target = move_x * RUN;
+        let overspeed = move_x != Fx::zero()
+            && self.vel.x.abs() > RUN
+            && self.vel.x.signum() == move_x.signum();
+        let rate = if overspeed {
+            RUN_REDUCE * mult
         } else {
-            RUN_ACCEL * AIR_MULT
+            RUN_ACCEL * mult
         };
-        let reduce = if self.on_ground {
-            RUN_REDUCE
-        } else {
-            RUN_REDUCE * AIR_MULT
-        };
-        // 同向且没超速 → 加速；反向 / 超速 → 用较小的减速率。
-        // 注意静止起步（vel.x == 0）必须走加速分支：signum() 为 0，若不显式
-        // 判定就会掉进 reduce，起步反而比刹车还慢。
-        let speeding_up = target != Fx::zero()
-            && (self.vel.x == Fx::zero() || self.vel.x.signum() == target.signum())
-            && self.vel.x.abs() <= target.abs();
-        let rate = if speeding_up { accel } else { reduce };
         approach(&mut self.vel.x, target, rate);
-        if self.vel.x != Fx::zero() {
-            self.facing = self.vel.x.signum();
-        }
-
-        // 跳跃输入边沿：按下→缓冲，松开→（若在上升）削减速度。
-        let jump_pressed = input.jump && !self.prev_jump;
-        let jump_released = !input.jump && self.prev_jump;
-        self.prev_jump = input.jump;
-        if jump_pressed {
-            self.jump_buffer = JUMP_BUFFER_FRAMES;
-        }
-
-        // 起跳：在地面或土狼时间内，且缓冲里有跳跃按下。
-        // 用起跳前的接地状态（上一 tick 的解算结果），与平台游戏惯例一致。
-        if self.jump_buffer > 0 && (self.on_ground || self.coyote > 0) {
-            self.vel.y = JUMP;
-            self.on_ground = false;
-            self.jump_buffer = 0;
-            self.coyote = 0;
-        }
-
-        // 可变跳高：松开跳跃且正在上升 → 一次性削减上升速度。
-        if jump_released && self.vel.y < Fx::zero() {
-            self.vel.y *= JUMP_CUT;
+        // 朝向跟随输入而不是速度（119908-119917）：贴墙按住方向时
+        // 速度为 0，朝向必须仍朝墙，起跳助力方向才对。
+        if move_x != Fx::zero() {
+            self.facing = move_x.signum();
         }
 
         // 落速上限是**缓动状态**：按住"下"且已在加速下落 → 上限爬向
@@ -207,14 +211,43 @@ impl Player {
             approach(&mut self.max_fall, MAX_FALL, FAST_MAX_ACCEL);
         }
 
-        // 重力：只在空中施加。靠近顶点（|vy| < 40 px/s）且按住跳跃 →
-        // 重力减半。参考 pureCeleste Player.Update：
-        //   float g = (Math.Abs(Speed.Y) < 40f && Input.Jump.Check) ? 0.5f : 1f;
-        //   Speed.Y = Calc.Approach(Speed.Y, maxFall, 900f * g * dt);
+        // 重力：只在空中施加（122123）。靠近顶点（|vy| < 40 px/s）且
+        // 按住跳跃 → 重力减半（122140-122142）。
         if !self.on_ground {
             let half = input.jump && self.vel.y.abs() < HALF_GRAV_THRESHOLD;
             let rate = if half { HALF_GRAVITY } else { GRAVITY };
             approach(&mut self.vel.y, self.max_fall, rate);
+        }
+
+        // varJump 钳制（122148-122156）：计时未尽且按住跳跃 → 竖直速度
+        // 钳回起跳值（重力被抵消）；松开 → 计时清零。这就是"可变跳高"，
+        // 没有额外的松手砍速。
+        if self.var_jump > 0 {
+            if input.jump {
+                self.vel.y = self.vel.y.min(JUMP_SPEED);
+            } else {
+                self.var_jump = 0;
+            }
+        }
+
+        // 跳跃输入边沿：按下 → 缓冲计满（VirtualButton.BufferTime，
+        // 110376；缓冲语义 16824-16840）。
+        let jump_pressed = input.jump && !self.prev_jump;
+        self.prev_jump = input.jump;
+        if jump_pressed {
+            self.jump_buffer = JUMP_BUFFER_FRAMES;
+        }
+
+        // 起跳（122158-122163 → Jump() 120694-120716）：缓冲窗口内 +
+        // 接地/土狼 → 竖直 -105、水平 +40*moveX（JumpHBoost）、
+        // varJump 计满 0.2s、土狼与缓冲清零。
+        if self.jump_buffer > 0 && (self.on_ground || self.coyote > 0) {
+            self.vel.y = JUMP_SPEED;
+            self.vel.x += move_x * JUMP_H_BOOST;
+            self.var_jump = VAR_JUMP_TICKS;
+            self.jump_buffer = 0;
+            self.coyote = 0;
+            self.on_ground = false;
         }
 
         self.slide_x(rooms);
@@ -728,7 +761,10 @@ mod tests {
     }
 
     #[test]
-    fn releasing_jump_mid_rise_cuts_the_upward_speed() {
+    fn releasing_jump_mid_rise_resumes_gravity_without_a_cut() {
+        // 原版松手只停掉 varJump 钳制（122153-122155），**没有**额外的
+        // 砍速：重力从当前速度继续（122123）。跳起后第二 tick 的速度
+        // 必须正好是 起跳速 + 一帧重力，且钳制不再把它拉回去。
         let room = tall_room();
         let mut p = settled(&room, 32.0);
         let jump = Input {
@@ -736,16 +772,18 @@ mod tests {
             ..Input::default()
         };
         p.step(&jump, std::slice::from_ref(&room));
-        assert!(p.vel.y < Fx::zero(), "must be rising after the jump");
-        // 若不松手，本帧速度只会被重力自然拉小：
-        let undamped = p.vel.y + GRAVITY;
+        assert_eq!(p.vel.y, JUMP_SPEED, "the jump tick pins the rise speed");
         p.step(&Input::default(), std::slice::from_ref(&room));
-        assert!(p.vel.y < Fx::zero(), "the short hop must still rise");
-        assert!(
-            p.vel.y > undamped,
-            "releasing mid-rise must cut the upward speed ({} vs undamped {})",
+        assert_eq!(
             p.vel.y,
-            undamped
+            JUMP_SPEED + GRAVITY,
+            "release must not cut the rise; gravity alone applies"
+        );
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert_eq!(
+            p.vel.y,
+            JUMP_SPEED + GRAVITY + GRAVITY,
+            "the pin must stay off after release"
         );
     }
 
@@ -923,24 +961,22 @@ mod tests {
     fn falling_into_a_gap_is_caught_by_the_nearest_room() {
         // 缝上没有房间；B 不参与（A 距离更近）。给 B 留地板但它不该被选中。
         let rooms = [seam_room(0.0, true), seam_room(128.0, true)];
-        let mut p = Player::new(Vec2::from_f32s(40.0, 48.0));
-        let walk = Input {
-            right: true,
-            ..Input::default()
-        };
-        // 走进缝 → 中心离开所有房间 → 兜底把玩家夹回 A 的右缘。
-        // 夹回后若继续按方向会"走-夹"振荡，所以松键让玩家停稳再断言。
-        for _ in 0..90 {
-            p.step(&walk, &rooms);
-        }
-        for _ in 0..60 {
-            p.step(&Input::default(), &rooms);
-        }
+        // 直接把玩家放进缝里（中心 74 在所有房间之外）：一 tick 内必须
+        // 被最近的房间 A 夹回右缘（64 − 8 = 56）—— 这就是兜底。
+        let mut p = Player::new(Vec2::from_f32s(70.0, 48.0));
+        p.step(&Input::default(), &rooms);
         assert_eq!(
             p.pos.x.to_f32(),
             56.0,
             "the gap must be guarded by the nearest room's right edge"
         );
+        // 落到 A 的地板上（夹回只定 x，落地靠后续重力）。
+        for _ in 0..120 {
+            if p.on_ground {
+                break;
+            }
+            p.step(&Input::default(), &rooms);
+        }
         assert!(
             p.on_ground,
             "the guard stands the player on the room's bottom edge"
