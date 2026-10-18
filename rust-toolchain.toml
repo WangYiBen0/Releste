@@ -13,4 +13,10 @@
 channel = "1.98.1"
 components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]
 profile = "minimal"
-targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    # wasm 目标（Phase 7 起步）：std 随工具链就位后，
+    # `cargo check --target wasm32-unknown-unknown` 即可验证可移植性。
+    "wasm32-unknown-unknown",
+]
