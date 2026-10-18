@@ -296,6 +296,7 @@ The whole feel lives here — this is what "接近原版" means.
 
 - ☑ **Run** (ramps to 1.5 px/tick at 1000 px/s² ground / 650 airborne; release & turn-around bleed off at 400 px/s²), **variable jump height** (release cuts rise ×0.4), **coyote time** (6 ticks), **jump buffering** (6 ticks). All in `crates/game/src/player.rs`, all `Fx`, each covered by a test that goes red when the feature is deleted. Constants are first-pass, not reference-matched.
 - ☑ **Gravity / fall（2026-10-17，对照 `references/pureCeleste.cs` Player.Update）**：重力 900 px/s²；落速上限是**缓动状态** `maxFall`（160 ↔ 240 px/s，`FastMaxAccel = 300`，按住"下"且已在加速下落时爬升、松开回落）；顶点半重力（`|vy| < 40 px/s` 且按住跳跃 → 重力减半）。覆盖测试：`fall_speed_caps_at_vanilla_max_fall`、`holding_down_ramps_the_fall_cap_to_fast_fall_and_back`、`gravity_is_halved_near_the_apex_while_jump_is_held`。同一轮修掉了房间贴缝行走被夹取拽 ≈4px 的瞬移（兜底改为"中心不在任何房间才夹，回最近房间"）。
+- ☑ **连续世界碰撞（2026-10-18）**：碰撞查询覆盖 hitbox 触及的**所有**房间（骑缝时两边都查，头不再扎进隔壁的实心 —— 0-Intro `lvl_0` 顶板 x[288,384) 正对 `lvl_0b` 的实心地板，旧实现一跳就卡墙/瞬移）；撞墙/落地吸附改为**世界格边**（旧实现把世界格下标当房间局部下标、再补一次原点：`lvl_-1` ox=-368 碰墙西弹 368px，`lvl_2`/`lvl_3` oy=-88 顶头上弹 88px）。覆盖测试：`collisions_snap_to_world_edges_regardless_of_room_origin`、`a_solid_ceiling_in_the_room_above_stops_the_head_at_the_seam`。接缝分析工具：`cargo run -p releste-map --example dump_rooms -- <map>`。
 - ☐ **Jump 仍是一段式冲量**（-240 px/s + 松键 ×0.4 削减）—— 原版是 `JumpSpeed = -105` + varJump 钳制（按住跳跃 0.2s 内上升速度钉在 -105）+ `JumpHBoost = 40` 水平助推；这是手感对齐的下一项。
 - ☐ Dash (8 directions, dash refresh on ground/wall, dash attacks)
 - ☐ Wall jump, wall slide, wall climb, stamina

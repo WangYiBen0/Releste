@@ -6,8 +6,11 @@
 //! 与原版的关系（`references/pureCeleste.cs`，行为参考）：
 //! - **已对齐**：跑动加速（1000/400/0.65）、重力 900、落速上限
 //!   160/240 缓动（`maxFall` 状态）、顶点半重力（40 阈值）、
-//!   coyote/跳跃缓冲/松键削减（Phase 4.1 已落地）；房间选择与兜底
-//!   （中心选房、缝隙由最近房间接住）。
+//!   coyote/跳跃缓冲/松键削减（Phase 4.1 已落地）。
+//! - **连续世界语义**（原版是切屏转场，这里是同一世界连续行走）：
+//!   碰撞查询覆盖 hitbox 触及的**所有**房间（骑缝时两边都查，
+//!   头不会扎进隔壁房间的实心里）；撞墙/落地吸附到**世界格边**，
+//!   与房间原点无关。中心掉出所有房间时由最近房间兜底夹回。
 //! - **仍是初值**：跳跃（原版是 `JumpSpeed = -105` + varJump 钳制 +
 //!   `JumpHBoost = 40`，本实现是 -240 单冲量）—— 下一轮对齐；
 //!   dash / 爬墙等尚未开始（ROADMAP Phase 4.1）。
@@ -126,28 +129,22 @@ impl Player {
         }
     }
 
-    /// 推进一个固定 tick。房间由 [`Session::room_at`] 决定。
+    /// 推进一个固定 tick。房间身份（标题栏/相机/热重载检查）由
+    /// [`Session::room_at`] 决定；物理不选房间 —— 见 [`Player::hit_in`]。
     pub fn update(&mut self, input: &Input, session: &Session) {
         self.step(input, &session.doc.rooms);
     }
 
-    /// 单步仿真：按 hitbox 中心选房 → 物理 → 世界级兜底。
+    /// 单步仿真：物理（跨房间碰撞）→ 世界级兜底。
     ///
     /// `rooms` 显式传入，单测可以直接构造房间几何，不必起整个 Session。
     pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
-        let centre = self.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
-        let room = match room_containing(rooms, self.pos) {
-            Some(room) => room,
-            // 中心掉出所有房间：用**最近的**房间的几何做碰撞，
-            // 夹取也回最近房间 —— 绝不会被拽去出生房间。
-            None => nearest_room(rooms, centre),
-        };
-        self.physics_in(input, room);
+        self.physics_in(input, rooms);
         self.clamp_to_world(rooms);
     }
 
-    /// 物理推进（不含房间/世界夹取，夹取在 [`Player::step`] 尾部统一做）。
-    fn physics_in(&mut self, input: &Input, room: &Room) {
+    /// 物理推进（不含世界夹取，夹取在 [`Player::step`] 尾部统一做）。
+    fn physics_in(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
         // 水平：朝目标速度做加速 / 减速，而不是瞬间赋值。
@@ -216,11 +213,11 @@ impl Player {
             approach(&mut self.vel.y, self.max_fall, rate);
         }
 
-        self.slide_x(room);
+        self.slide_x(rooms);
         self.on_ground = false;
-        self.slide_y(room);
+        self.slide_y(rooms);
         if !self.on_ground {
-            self.on_ground = self.hits(room, self.pos.x, self.pos.y + Fx::one());
+            self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
         }
         // 土狼时间 + 跳跃缓冲的过期：接地就刷新土狼；离地则两者一起递减。
         // 缓冲要到"着陆的下一帧"才可能触发（接地状态是本 tick 尾才更新），
@@ -235,28 +232,56 @@ impl Player {
         }
     }
 
-    /// 当前 hitbox 是否与固体相交。
-    fn hits(&self, room: &Room, x: Fx, y: Fx) -> bool {
+    /// hitbox 是否与**任何**触及房间的固体相交；`Some` 返回挡路的房间。
+    ///
+    /// hitbox 骑在房间接缝上时（≤8px）两边的房间都要查 —— 只查中心
+    /// 所在房间的话，头会先扎进隔壁房间的实心瓦片，等中心跨过接缝
+    /// 才发现，玩家就卡在墙里了（0-Intro 的 `lvl_0` 顶板开孔正对
+    /// `lvl_0b` 的实心地板，就是这么卡人的）。
+    ///
+    /// 房间按各自原点把世界格换算回局部格；矩形与 hitbox 格范围
+    /// 不相交的房间直接跳过（贴边接触不算相交）。
+    fn hit_in<'r>(&self, rooms: &'r [Room], x: Fx, y: Fx) -> Option<&'r Room> {
         let right = x + Fx::from_int(PLAYER_W_PX) - Fx::from_bits(1);
         let bottom = y + Fx::from_int(PLAYER_H_PX) - Fx::from_bits(1);
-        for cy in cell(y)..=cell(bottom) {
-            for cx in cell(x)..=cell(right) {
-                if Session::solid_cell(room, cx, cy) {
-                    return true;
+        let (cx0, cx1) = (cell(x), cell(right));
+        let (cy0, cy1) = (cell(y), cell(bottom));
+        for room in rooms {
+            let (ox, oy) = (room.bounds.x.round() as i32, room.bounds.y.round() as i32);
+            let cols = (room.bounds.w.round() as i32).div_euclid(8);
+            let rows = (room.bounds.h.round() as i32).div_euclid(8);
+            let (gx0, gy0) = (ox.div_euclid(8), oy.div_euclid(8));
+            let lx0 = cx0.max(gx0);
+            let ly0 = cy0.max(gy0);
+            let lx1 = cx1.min(gx0 + cols - 1);
+            let ly1 = cy1.min(gy0 + rows - 1);
+            if lx0 > lx1 || ly0 > ly1 {
+                continue; // 这个房间根本不在 hitbox 的格范围里
+            }
+            for cy in ly0..=ly1 {
+                for cx in lx0..=lx1 {
+                    if Session::solid_cell(room, cx, cy) {
+                        return Some(room);
+                    }
                 }
             }
         }
-        false
+        None
+    }
+
+    /// 当前 hitbox 是否与固体相交（[`Player::hit_in`] 的布尔视图）。
+    fn hits(&self, rooms: &[Room], x: Fx, y: Fx) -> bool {
+        self.hit_in(rooms, x, y).is_some()
     }
 
     /// 沿 X 轴推进，撞到固体即贴到那列的外沿。
-    fn slide_x(&mut self, room: &Room) {
+    fn slide_x(&mut self, rooms: &[Room]) {
         let mut dx = self.vel.x;
         while dx != Fx::zero() {
             let step = clamp_step(dx);
             let nx = self.pos.x + step;
-            if self.hits(room, nx, self.pos.y) {
-                self.pos.x = edge_x(room, nx, step);
+            if self.hits(rooms, nx, self.pos.y) {
+                self.pos.x = edge_x(nx, step);
                 self.vel.x = Fx::zero();
                 return;
             }
@@ -266,13 +291,13 @@ impl Player {
     }
 
     /// 沿 Y 轴推进，撞到固体即贴到那行的外沿并记下落地。
-    fn slide_y(&mut self, room: &Room) {
+    fn slide_y(&mut self, rooms: &[Room]) {
         let mut dy = self.vel.y;
         while dy != Fx::zero() {
             let step = clamp_step(dy);
             let ny = self.pos.y + step;
-            if self.hits(room, self.pos.x, ny) {
-                self.pos.y = edge_y(room, ny, step);
+            if self.hits(rooms, self.pos.x, ny) {
+                self.pos.y = edge_y(ny, step);
                 if step > Fx::zero() {
                     self.on_ground = true;
                 }
@@ -341,33 +366,32 @@ fn approach(v: &mut Fx, target: Fx, rate: Fx) {
     }
 }
 
-/// 房间矩形原点（整数像素）。
-fn room_origin(room: &Room) -> (i32, i32) {
-    (room.bounds.x.round() as i32, room.bounds.y.round() as i32)
-}
-
 /// 撞墙后把 hitbox 贴到刚进入那一列的外沿。
+///
+/// `cell()` 给出的是**世界**格下标，所以吸附边也是世界坐标 ——
+/// 不掺任何房间原点。旧实现把世界格下标当房间局部下标用、再补一次
+/// 原点：在 `lvl_-1`（ox=-368）碰墙会被向西弹 368px，在
+/// `lvl_2`/`lvl_3`（oy=-88）落地会被向上弹 88px —— 任何原点非零
+/// 的房间一碰墙就是一次大瞬移。
 ///
 /// 直接把坐标减到格边界，而不是停在半像素上 —— 否则 1/2px 的步长
 /// 会让角色永远差一点点贴不住地面。
-fn edge_x(room: &Room, nx: Fx, step: Fx) -> Fx {
-    let (ox, _) = room_origin(room);
+fn edge_x(nx: Fx, step: Fx) -> Fx {
     if step > Fx::zero() {
         let right = nx + Fx::from_int(PLAYER_W_PX) - Fx::from_bits(1);
-        Fx::from_int(cell(right) * 8 + ox - PLAYER_W_PX)
+        Fx::from_int(cell(right) * 8 - PLAYER_W_PX)
     } else {
-        Fx::from_int(cell(nx) * 8 + ox + 8)
+        Fx::from_int(cell(nx) * 8 + 8)
     }
 }
 
-/// 撞地 / 撞天花板后把 hitbox 贴到刚进入那一行的外沿。
-fn edge_y(room: &Room, ny: Fx, step: Fx) -> Fx {
-    let (_, oy) = room_origin(room);
+/// 撞地 / 撞天花板后把 hitbox 贴到刚进入那一行的外沿（世界格边）。
+fn edge_y(ny: Fx, step: Fx) -> Fx {
     if step > Fx::zero() {
         let bottom = ny + Fx::from_int(PLAYER_H_PX) - Fx::from_bits(1);
-        Fx::from_int(cell(bottom) * 8 + oy - PLAYER_H_PX)
+        Fx::from_int(cell(bottom) * 8 - PLAYER_H_PX)
     } else {
-        Fx::from_int(cell(ny) * 8 + oy + 8)
+        Fx::from_int(cell(ny) * 8 + 8)
     }
 }
 
@@ -914,6 +938,130 @@ mod tests {
         );
         // 绝不允许被拽去 B（x ≥ 120）。
         assert!(p.pos.x.to_f32() < 100.0, "must not teleport across the map");
+    }
+
+    /// 原点非 (0,0) 的房间：撞墙 / 落地 / 顶头都必须吸附到**世界**格边。
+    ///
+    /// 回归：`edge_x`/`edge_y` 曾把世界格下标当房间局部下标用、再补一次
+    /// 房间原点 —— ox=64 的房间碰墙被向东弹 64px，oy=-88 的房间顶头
+    /// 被向上弹 88px。0-Intro 里除 `lvl_0` 外全是原点非零的房间，
+    /// 旧代码一碰墙就是一次大瞬移。
+    fn offset_room() -> Room {
+        let mut tiles = Tileset::new("Test", 8, 8);
+        for x in 0..8 {
+            tiles.set(x, 7, 1); // 地板：世界 y[-32,-24)
+        }
+        for y in 0..7 {
+            tiles.set(4, y, 1); // 竖墙：世界 x[96,104)
+        }
+        for x in 0..4 {
+            tiles.set(x, 2, 1); // 天花板：世界 x[64,96)、y[-72,-64)
+        }
+        Room {
+            name: "off".into(),
+            bounds: RectDef {
+                x: 64.0,
+                y: -88.0,
+                w: 64.0,
+                h: 64.0,
+            },
+            tiles,
+            bg: Tileset::new("Test", 8, 8),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+        }
+    }
+
+    #[test]
+    fn collisions_snap_to_world_edges_regardless_of_room_origin() {
+        let room = offset_room();
+
+        // 落地：地板顶边 y = -32 → hitbox 顶边停在 -40。
+        let mut p = Player::new(Vec2::from_f32s(72.0, -64.0));
+        for _ in 0..60 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert!(p.on_ground, "fixture: must land on the offset floor");
+        assert_eq!(
+            p.pos.y.to_f32(),
+            -40.0,
+            "landing must snap to the world edge of the floor"
+        );
+
+        // 撞墙：墙的左沿 x = 96 → hitbox 停在 88（旧实现弹到 152）。
+        let walk = Input {
+            right: true,
+            ..Input::default()
+        };
+        for _ in 0..90 {
+            p.step(&walk, std::slice::from_ref(&room));
+        }
+        assert_eq!(
+            p.pos.x.to_f32(),
+            88.0,
+            "wall snap must be the world edge of the blocking column"
+        );
+
+        // 顶头：天花板底边 y = -64 → 头停在 -64（旧实现弹到 -152）。
+        let mut q = Player::new(Vec2::from_f32s(72.0, -40.0));
+        q.on_ground = true;
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        let mut min_y = q.pos.y;
+        for _ in 0..30 {
+            q.step(&jump, std::slice::from_ref(&room));
+            if q.pos.y < min_y {
+                min_y = q.pos.y;
+            }
+        }
+        assert_eq!(
+            min_y.to_f32(),
+            -64.0,
+            "ceiling snap must be the world edge of the blocking row"
+        );
+    }
+
+    /// 上间底行实心、下间顶行开孔的贴边双房间：起跳顶头必须停在
+    /// 接缝（y=0），头不许扎进上间的实心里，更不许被卡进墙里。
+    ///
+    /// 0-Intro 实测：`lvl_0` 顶板在 x[288,400) 开着，正上方是
+    /// `lvl_0b` 的实心地板 —— 旧实现只查中心所在房间的瓦片，头先扎
+    /// 进去，等中心跨缝才发现，玩家被卡死/瞬移。
+    #[test]
+    fn a_solid_ceiling_in_the_room_above_stops_the_head_at_the_seam() {
+        let lower = seam_room(0.0, true);
+        let mut upper = seam_room(0.0, true);
+        upper.bounds.y = -64.0;
+        upper.name = "up".into();
+        let rooms = [lower, upper];
+
+        // 头在接缝下方 8px、正以 4 px/tick 上升：一两 tick 内跨过 y=0。
+        let mut p = Player::new(Vec2::from_f32s(32.0, 8.0));
+        p.vel.y = -Fx::from_int(4);
+        let hold = Input {
+            jump: true,
+            ..Input::default()
+        };
+        let mut min_y = p.pos.y;
+        for _ in 0..60 {
+            p.step(&hold, &rooms);
+            if p.pos.y < min_y {
+                min_y = p.pos.y;
+            }
+        }
+        assert_eq!(
+            min_y.to_f32(),
+            0.0,
+            "the head must stop exactly at the seam, not enter the solid room above"
+        );
+        assert!(
+            p.pos.y.to_f32() > 0.0,
+            "the player must fall back into the lower room"
+        );
+        assert!(p.on_ground, "and settle on the lower room's floor");
     }
 
     /// 8×48 格的深竖井：地板远在底部，供落速测试在**不落地**的前提下

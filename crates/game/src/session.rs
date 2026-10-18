@@ -240,9 +240,10 @@ impl Session {
 
 /// 中心点落在哪个房间（不含任何回落）。
 ///
-/// `pos` 是 hitbox 左上角，这里取几何中心判定。玩家仿真与
-/// [`Session::room_at`] 共用这一个事实来源，保证"标题栏说的房间"
-/// 和"碰撞用的房间"永远一致。
+/// `pos` 是 hitbox 左上角，这里取几何中心判定。它只回答"房间身份"
+/// （标题栏、相机、热重载检查）；物理碰撞**不选房间** —— hitbox
+/// 触及的每个房间都会被查（见 `player::Player::hit_in`），骑缝时
+/// 两边的瓦片都算数，不会因为"选错房间"而卡住。
 pub(crate) fn room_containing(rooms: &[Room], pos: Vec2) -> Option<&Room> {
     let centre =
         pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H * 0.5);
