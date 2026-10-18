@@ -11,10 +11,30 @@
 use crate::format::Tileset;
 use crate::tilesets::{tile_char, TilesetDef, TilesetsDoc};
 
-/// 每块瓦片在 tileset 纹理里的坐标。
+/// 网格之外（越界）的探测行为，对应原版 `Autotiler.Behaviour.EdgesExtend`
+/// （`pureCeleste.cs:87693`）。
+///
+/// 掩码匹配靠 3×3 邻居，越界怎么算直接决定边缘块取哪张图：
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Oob {
+    /// 边缘外延：越界探测钳到边缘格子再读（`GenerateMap` 的房间瓦片行为，
+    /// `CheckTile`/`GetTile` 的 `EdgesExtend` 分支，`87986-87996` / `88017-88031`）。
+    Extend,
+    /// 越界为空：网格之外一律当空（`GenerateBox` 的默认 `Behaviour`
+    /// —— `mapData == null` 时返回 `EdgesExtend` = false，`87985-87989`；
+    /// `IntroCrusher` 的盒子走的就是它，`106322 → 87832`）。
+    Empty,
+}
+
+/// 每块瓦片在 tileset 纹理里的坐标（房间瓦片：越界外延）。
 ///
 /// 空白格子的坐标无意义（调用方不会渲染它们）；越界的格子不存在。
 pub fn generate(tiles: &Tileset, defs: &TilesetsDoc) -> Vec<(u32, u32)> {
+    generate_with(tiles, defs, Oob::Extend)
+}
+
+/// [`generate`] 的可配置版：`oob` 选择越界探测行为（见 [`Oob`]）。
+pub fn generate_with(tiles: &Tileset, defs: &TilesetsDoc, oob: Oob) -> Vec<(u32, u32)> {
     let mut out = vec![(0u32, 0u32); (tiles.width as usize) * (tiles.height as usize)];
 
     for ty in 0..tiles.height {
@@ -28,8 +48,8 @@ pub fn generate(tiles: &Tileset, defs: &TilesetsDoc) -> Vec<(u32, u32)> {
                 continue; // 未定义的 tile id：调用方负责告警
             };
 
-            let adjacency = adjacency(tiles, tx, ty, def);
-            let (col, row) = pick(def, adjacency, tiles, tx, ty);
+            let adjacency = adjacency(tiles, tx, ty, def, oob);
+            let (col, row) = pick(def, adjacency, tiles, tx, ty, oob);
             out[(ty as usize) * (tiles.width as usize) + (tx as usize)] = (col, row);
         }
     }
@@ -38,9 +58,10 @@ pub fn generate(tiles: &Tileset, defs: &TilesetsDoc) -> Vec<(u32, u32)> {
 
 /// 3×3 邻接数组（`Autotiler.cs:295-321`）。
 ///
-/// 九个探测全部走 `neighbor_connects`，不越界短路 —— 越界在探测内部
-/// 由 `EdgesExtend`（钳到边缘格子）解决，这正是 `GenerateMap` 的行为。
-fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef) -> [u8; 9] {
+/// 九个探测全部走 `neighbor_connects`，不越界短路 —— 越界怎么处理由
+/// `oob` 决定（`Oob::Extend` 钳到边缘格子 = `GenerateMap` 的房间行为；
+/// `Oob::Empty` 返回 false = `GenerateBox` 的盒外行为）。
+fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef, oob: Oob) -> [u8; 9] {
     let offsets: [(i32, i32); 9] = [
         (-1, -1), // TL
         (0, -1),  // T
@@ -63,6 +84,7 @@ fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef) -> [u8; 9] {
             tx as i32 + dx,
             ty as i32 + dy,
             def,
+            oob,
         ));
     }
     adjacency
@@ -70,10 +92,15 @@ fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef) -> [u8; 9] {
 
 /// `(x, y)` 处的瓦片是否与 `def` 的 tileset 相连（`CheckTile`）。
 ///
-/// 越界钳到边缘格子（`EdgesExtend`，`GenerateMap` 的行为）；空格子不连。
-fn neighbor_connects(tiles: &Tileset, x: i32, y: i32, def: &TilesetDef) -> bool {
+/// 越界时：`Oob::Empty` 直接不连（`CheckTile` 的 `!EdgesExtend` 分支，
+/// `87990-87993`）；`Oob::Extend` 钳到边缘格子再读（`87995-88001`）。
+/// 在网格内的空格子不连。
+fn neighbor_connects(tiles: &Tileset, x: i32, y: i32, def: &TilesetDef, oob: Oob) -> bool {
     let w = tiles.width as i32;
     let h = tiles.height as i32;
+    if (x < 0 || y < 0 || x >= w || y >= h) && oob == Oob::Empty {
+        return false;
+    }
     let x = x.clamp(0, w - 1);
     let y = y.clamp(0, h - 1);
     let value = tiles.get(x as u32, y as u32).unwrap_or(0);
@@ -84,7 +111,14 @@ fn neighbor_connects(tiles: &Tileset, x: i32, y: i32, def: &TilesetDef) -> bool 
 }
 
 /// 选 `(col, row)`：全连走 center/padding，否则取第一条匹配的掩码。
-fn pick(def: &TilesetDef, adjacency: [u8; 9], tiles: &Tileset, tx: u32, ty: u32) -> (u32, u32) {
+fn pick(
+    def: &TilesetDef,
+    adjacency: [u8; 9],
+    tiles: &Tileset,
+    tx: u32,
+    ty: u32,
+    oob: Oob,
+) -> (u32, u32) {
     let all_solid = adjacency.iter().all(|&v| v == 1);
 
     let candidates = if all_solid {
@@ -92,7 +126,7 @@ fn pick(def: &TilesetDef, adjacency: [u8; 9], tiles: &Tileset, tx: u32, ty: u32)
         let far = [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)];
         let padded = far
             .iter()
-            .any(|&(dx, dy)| !neighbor_connects(tiles, tx as i32 + dx, ty as i32 + dy, def));
+            .any(|&(dx, dy)| !neighbor_connects(tiles, tx as i32 + dx, ty as i32 + dy, def, oob));
         if padded {
             &def.padding
         } else {
@@ -200,6 +234,35 @@ mod tests {
                 "tile ({x},2) should take the top-edge variant"
             );
         }
+    }
+
+    /// `GenerateBox`（`IntroCrusher` 的盒子）：越界 = 空，所以内块的
+    /// 2-away 探测碰到盒外 → padding；房间模式（外延）则全连 → center。
+    #[test]
+    fn box_mode_treats_outside_the_grid_as_empty() {
+        let tiles = full_grid();
+
+        let boxed = generate_with(&tiles, &defs(), Oob::Empty);
+        assert_eq!(
+            boxed[4],
+            (0, 3),
+            "center cell: 9 in-grid neighbors connect, but 2-away leaves the box -> padding"
+        );
+        assert_eq!(
+            boxed,
+            generate_with(&tiles, &defs(), Oob::Empty),
+            "box mode stays deterministic too"
+        );
+
+        let extended = generate(&tiles, &defs());
+        assert!(
+            extended.iter().all(|&c| c == (0, 2)),
+            "EdgesExtend (room tiles): every probe clamps to a solid edge cell -> center everywhere"
+        );
+        assert_ne!(
+            boxed[4], extended[4],
+            "box mode must not collapse onto the room-mode result"
+        );
     }
 
     #[test]
