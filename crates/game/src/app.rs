@@ -198,15 +198,20 @@ impl GameApp {
             return;
         };
         let down = event.state == ElementState::Pressed;
+        // 原版默认键位（pureCeleste.cs:101602-101651，SetDefaultKeyboardControls）：
+        // 方向键移动（**没有** WASD，Z 被抓攀占用）、C 跳、X 冲刺、
+        // Z/V/LeftShift 抓攀、Enter 暂停。`TranslateKeys`（101708）只做
+        // 扫描码本地化，不加新键 —— winit 的 `PhysicalKey` 就是扫描码，
+        // 语义一致。冲刺/抓攀尚未实现（ROADMAP Phase 4.1），不占键位。
         match code {
-            KeyCode::Escape if down => self.toggle_pause(),
-            KeyCode::ArrowLeft | KeyCode::KeyA => self.keys.left = down,
-            KeyCode::ArrowRight | KeyCode::KeyD => self.keys.right = down,
-            KeyCode::ArrowUp | KeyCode::KeyW => self.keys.up = down,
-            KeyCode::ArrowDown | KeyCode::KeyS => self.keys.down = down,
-            KeyCode::Space | KeyCode::KeyZ | KeyCode::KeyX | KeyCode::Enter => {
-                self.keys.jump = down
-            }
+            KeyCode::ArrowLeft => self.keys.left = down,
+            KeyCode::ArrowRight => self.keys.right = down,
+            KeyCode::ArrowUp => self.keys.up = down,
+            KeyCode::ArrowDown => self.keys.down = down,
+            KeyCode::KeyC => self.keys.jump = down,
+            // Enter = 原版 Pause（101642）；ESC = 原版菜单键
+            //（`Input.ESC`，110396），引擎沿用为暂停开关。
+            KeyCode::Escape | KeyCode::Enter if down => self.toggle_pause(),
             _ => {}
         }
     }
