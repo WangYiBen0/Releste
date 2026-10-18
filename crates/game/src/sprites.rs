@@ -47,6 +47,61 @@ pub const PLAYER_BANGS_SPRITE: &str = "characters\\player\\bangs00";
 /// hair00 纹理本体是白色，运行时染这个色。
 pub const PLAYER_HAIR_COLOR: [f32; 4] = [172.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0];
 
+/// 玩家身体 sprite 的**逻辑帧原点**（32×32 帧内的底中心）。
+///
+/// 出处：`Graphics/Sprites.xml:5` `<Origin x="16" y="32"/>`（`<player>`）。
+/// 图集里存的是裁剪后的子图，见 [`origin_in_trim`]。
+pub const PLAYER_BODY_FRAME_ORIGIN: (f32, f32) = (16.0, 32.0);
+
+/// 头发/刘海共用的**逻辑帧原点**。
+///
+/// 出处：`pureCeleste.cs:111182` `Vector2 origin = new Vector2(5f, 5f);`
+/// —— `PlayerHair.Render` 对 `bangs[hairFrame]` 和 `hair00` 用的是
+/// **同一个**原点，所以刘海自己的 XML `<Origin>` 与这里无关。
+pub const HAIR_FRAME_ORIGIN: (f32, f32) = (5.0, 5.0);
+
+/// 发片节数：`pureCeleste.cs:111321` `HairCount = 4`。
+///
+/// 节点 0 画刘海，1..4 画 `hair00`，**每节向尾部收窄**（`GetHairScale`）。
+pub const HAIR_COUNT: usize = 4;
+
+/// 逻辑帧原点 → **裁剪后子图内的原点**。
+///
+/// 图集的 `.meta` 只给出子图在逻辑帧里的位置（负值，Monocle 的
+/// `DrawOffset`），不含 XML 的 `<Origin>`；而 `MTexture.Draw(position, origin)`
+/// 真正传给 SpriteBatch 的是 `origin - DrawOffset`（`14544-14547`）。
+/// 所以「子图内的原点」= `frame_origin + offset` = `frame_origin - trim_pos`，
+/// 其中 `sprite.origin()` 存的正是 `trim_pos`（转换器取了 offset 的相反数）。
+///
+/// `1` 是图集 `--padding 1`：裁剪结果四周留了一圈透明，内容整体右下移了
+/// 1px，原点也要跟着移（见 `sprites.rs` 里 lamp 的同一条注释）。
+pub fn origin_in_trim(sprite: &Sprite, frame_origin: (f32, f32)) -> (f32, f32) {
+    (
+        frame_origin.0 - sprite.origin().0 + 1.0,
+        frame_origin.1 - sprite.origin().1 + 1.0,
+    )
+}
+
+/// 发片缩放：`pureCeleste.cs:111201-111205` `GetHairScale(index)`。
+///
+/// `num = 0.25 + (1 - index / HairCount) * 0.75`，越靠尾部越细：
+/// index 0 → 1.0，1 → 0.8125，2 → 0.625，3 → 0.4375。
+/// **index 0 的 x 缩放是 `Facing`**（刘海按朝向镜像），不是 `num`。
+pub fn hair_scale(index: usize, facing: f32) -> (f32, f32) {
+    let i = index as f32;
+    let num = 0.25 + (1.0 - i / HAIR_COUNT as f32) * 0.75;
+    (if index == 0 { facing } else { num }, num)
+}
+
+/// 一根发丝的 `HairOffset`：`Graphics/Sprites.xml:96` 的 `hair` 表。
+///
+/// idle 的 9 帧是 `0,-2|0,-2|0,-2|0,-2|0,-1|0,-1|0,-1|0,-1|0,-1`，
+/// 即帧 0-3 为 `(0,-2)`、帧 4-8 为 `(0,-1)`；乘以 `(Facing, 1)`
+/// （`pureCeleste.cs:111116`）后 x 分量仍是 0。
+///
+/// 我们的 idle 停在第 0 帧，所以取 `(0,-2)`。
+pub const PLAYER_HAIR_OFFSET: (f32, f32) = (0.0, -2.0);
+
 /// 路灯：原版按 `broken` 取左/右半 16×80 子图
 /// （`pureCeleste.cs:106451` `GetSubtexture(broken ? 16 : 0, 0, 16, 80)`），
 /// 图集里 30×77 的内容是完好/损坏两盏拼在一起的。

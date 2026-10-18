@@ -225,26 +225,32 @@ impl Session {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
 
-        let mut nodes = Vec::with_capacity(4);
-        nodes.push(anchor + Vec2::from_f32s(0.0, -9.0));
-        for i in 1..4 {
+        // `AfterUpdate`（111114-111139）：节点 0 = RenderPosition + (0,-9)
+        // + HairOffset*(Facing,1)；其后每节沿 `StepPerSegment (0,2)` 链接。
+        let mut nodes = Vec::with_capacity(sprites::HAIR_COUNT);
+        let hair_offset = sprites::PLAYER_HAIR_OFFSET;
+        nodes.push(anchor + Vec2::from_f32s(hair_offset.0 * facing, -9.0 + hair_offset.1));
+        for i in 1..sprites::HAIR_COUNT {
+            // 第 1 节多探出 1px（StepInFacingPerSegment*2 只作用于第 1 节）。
             let step_x = (0.0 - facing) * if i == 1 { 1.0 } else { 0.5 };
             nodes.push(nodes[i - 1] + Vec2::from_f32s(step_x, 2.0));
         }
 
-        let pieces: [(&str, &Vec2); 4] = [
+        let pieces: [(&str, &Vec2); sprites::HAIR_COUNT] = [
             (sprites::PLAYER_BANGS_SPRITE, &nodes[0]),
             (sprites::PLAYER_HAIR_SPRITE, &nodes[1]),
             (sprites::PLAYER_HAIR_SPRITE, &nodes[2]),
             (sprites::PLAYER_HAIR_SPRITE, &nodes[3]),
         ];
-        let origin = Vec2::from_f32s(5.0, 5.0);
         let border = [0.0, 0.0, 0.0, 1.0];
         let outline_offsets = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
 
         let mut out = Vec::new();
-        for (name, node) in &pieces {
-            let Some(base) = self.hair_piece(gpu, name, **node, origin, border) else {
+        // 先把每节的描边（4 个 ±1px）全画完，再从尾到头画本色
+        // （111179-111197）—— 两趟循环，不是逐节交替。
+        for (i, (name, node)) in pieces.iter().enumerate() {
+            let scale = sprites::hair_scale(i, facing);
+            let Some(base) = self.hair_piece(gpu, name, **node, scale, border) else {
                 continue;
             };
             for (dx, dy) in outline_offsets {
@@ -253,9 +259,10 @@ impl Session {
                 out.push(d);
             }
         }
-        for (name, node) in pieces.iter().rev() {
+        for (i, (name, node)) in pieces.iter().enumerate().rev() {
+            let scale = sprites::hair_scale(i, facing);
             if let Some(mut d) =
-                self.hair_piece(gpu, name, **node, origin, sprites::PLAYER_HAIR_COLOR)
+                self.hair_piece(gpu, name, **node, scale, sprites::PLAYER_HAIR_COLOR)
             {
                 d.layer = Layer::PlayerHair.value() + 1; // 本色压在描边之上
                 out.push(d);
@@ -267,14 +274,19 @@ impl Session {
         out
     }
 
-    /// 一片头发：`node − origin(5,5)` 为左上角（Monocle
-    /// `MTexture.Draw(position, origin)` 语义）。
+    /// 一片头发：左上角 = `node − 子图内原点 × scale`
+    /// （Monocle `MTexture.Draw(position, origin, color, scale)` →
+    /// `14534-14537` 把 `origin` 交给 SpriteBatch，缩放绕原点作用）。
+    ///
+    /// 原点必须**按每张图各算一次**：`hair00` 在 `.meta` 里裁掉了
+    /// `(1,1)`、`bangs00` 裁掉了 `(1,0)`，两者共用帧原点 (5,5)
+    /// （`HAIR_FRAME_ORIGIN`），落到裁剪后的子图里就不一样了。
     fn hair_piece(
         &self,
         gpu: &GpuRenderer,
         name: &str,
         node: Vec2,
-        origin: Vec2,
+        scale: (f32, f32),
         color: [f32; 4],
     ) -> Option<SpriteDraw> {
         let (group, sprite) = self.atlas.sprite(name)?;
@@ -282,24 +294,36 @@ impl Session {
         let (tw, th) = gpu.texture_size(id)?;
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
         let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+        let origin = sprites::origin_in_trim(sprite, sprites::HAIR_FRAME_ORIGIN);
         Some(
-            SpriteDraw::new(id, node - origin, Vec2::from_f32s(w, h), uv)
-                .with_layer(Layer::PlayerHair.value())
-                .with_color(color),
+            SpriteDraw::new(
+                id,
+                node - Vec2::from_f32s(origin.0 * scale.0, origin.1 * scale.1),
+                Vec2::from_f32s(w * scale.0, h * scale.1),
+                uv,
+            )
+            .with_layer(Layer::PlayerHair.value())
+            .with_color(color),
         )
     }
 
     /// 身体：底中心锚在脚下（脚 = hitbox 底边 = 地面）。
+    ///
+    /// 左上角不是 `anchor − 裁剪图的几何中心`：`Sprites.xml:5` 的
+    /// `<Origin x="16" y="32"/>` 才是原版 `Sprite.Position` 的语义，
+    /// 减掉 `.meta` 的裁剪位移后落到子图内（见 [`sprites::origin_in_trim`]）。
+    /// 原实现按 `w*0.5` 取，把身体往左挪了 1.5px。
     fn body_draw(&self, gpu: &GpuRenderer, anchor: Vec2, flip_x: bool) -> Option<SpriteDraw> {
         let (group, sprite) = self.atlas.sprite(sprites::PLAYER_SPRITE)?;
         let id = sprites::group_id(&self.atlas, group);
         let (tw, th) = gpu.texture_size(id)?;
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
         let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+        let origin = sprites::origin_in_trim(sprite, sprites::PLAYER_BODY_FRAME_ORIGIN);
         Some(
             SpriteDraw::new(
                 id,
-                anchor - Vec2::from_f32s(w * 0.5, h),
+                anchor - Vec2::from_f32s(origin.0, origin.1),
                 Vec2::from_f32s(w, h),
                 uv,
             )
