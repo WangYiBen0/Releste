@@ -113,6 +113,10 @@ pub struct GpuRenderer {
     sampler: wgpu::Sampler,
     /// 实际视口尺寸。
     viewport: (u32, u32),
+    /// 清屏色（原版 `Level` 的 `<Style color=...>` → `BackgroundColor`，
+    /// `MapData`/`Style` 解析见 `pureCeleste.cs:112430-112436`）。
+    /// 默认纯黑，与原版 `Level.BackgroundColor` 默认值一致。
+    clear_color: wgpu::Color,
 }
 
 impl GpuRenderer {
@@ -336,7 +340,21 @@ impl GpuRenderer {
             textures: HashMap::new(),
             sampler,
             viewport: (config.width.max(1), config.height.max(1)),
+            clear_color: wgpu::Color::BLACK,
         })
+    }
+
+    /// 设置清屏色（每帧 `LoadOp::Clear` 用）。
+    ///
+    /// 由地图样式的 `background_color` 驱动（`MapStyle::background_color`），
+    /// 见 `pureCeleste.cs:112434`（`Calc.HexToColor` → `BackgroundColor`）。
+    pub fn set_clear_color(&mut self, rgb: [u8; 3]) {
+        self.clear_color = wgpu::Color {
+            r: f64::from(rgb[0]) / 255.0,
+            g: f64::from(rgb[1]) / 255.0,
+            b: f64::from(rgb[2]) / 255.0,
+            a: 1.0,
+        };
     }
 
     /// 当前视口尺寸。
@@ -554,7 +572,7 @@ impl GpuRenderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(self.clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
