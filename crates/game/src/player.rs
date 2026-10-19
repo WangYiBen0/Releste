@@ -82,6 +82,45 @@ const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
 const VAR_JUMP_TICKS: u32 = 12;
 /// 碰撞解算的推进步长：1/2 px。
 const STEP: Fx = Fx::from_ratio(1, 2);
+/// 冲刺速度 240 px/s（4 px/tick）。`DashCoroutine`：`speed = value * 240f`
+/// （pureCeleste.cs:122768）。
+const DASH_SPEED: Fx = Fx::from_int(4);
+/// 冲刺末段速度 160 px/s（8/3 px/tick）：0.15s 后 `Speed = DashDir * 160f`
+/// （122822-122822，`DashDir.Y <= 0` 时）。
+const DASH_END_SPEED: Fx = Fx::from_ratio(8, 3);
+/// 冲刺时长 0.15s = 9 tick（`yield return 0.15f`，122812）。
+const DASH_TICKS: u16 = 9;
+/// 冲刺冷却 0.2s = 12 tick（`DashBegin`：`dashCooldownTimer = 0.2f`，122541）。
+const DASH_COOLDOWN_TICKS: u16 = 12;
+/// 地面回充后不可立刻再冲的冷却 0.1s = 6 tick（122545；原版只写不读，
+/// 一并移植保持字段齐全）。
+const DASH_REFILL_COOLDOWN_TICKS: u16 = 6;
+/// 冲刺攻击窗 0.3s = 18 tick（`dashAttackTimer = 0.3f`，122554）。
+const DASH_ATTACK_TICKS: u16 = 18;
+/// 蹬墙跳水平速度 130 px/s（13/6 px/tick，`WallJump`：`Speed.X = 130f*dir`，
+/// pureCeleste.cs:120840）。
+const WALLJUMP_X: Fx = Fx::from_ratio(13, 6);
+/// 蹬墙跳探测距离 5px：`CollideCheck<Solid>(Position + UnitX*dir*5)`
+/// （`WallJumpCheck`，120779-120804 的 `num = 5` 普通分支）。
+const WALLJUMP_PROBE: Fx = Fx::from_int(5);
+/// 蹬墙跳后强制 moveX 的时长 0.16s = 10 tick（120832
+/// `forceMoveXTimer = 0.16f`；按住方向的防再吸附窗）。
+const FORCE_MOVE_X_TICKS: u16 = 10;
+/// 蹬墙跳（超级版）水平速度 240 px/s（4 px/tick，`SuperWallJump`：
+/// `Speed.X = 240f*dir`，120947 附近）。
+const SUPER_WALLJUMP_X: Fx = Fx::from_int(4);
+/// 蹬墙跳（超级版）竖直速度 -140 px/s（-7/3 px/tick，`varJumpSpeed =
+/// (Speed.Y = -140f)`，120948）。
+const SUPER_WALLJUMP_Y: Fx = Fx::from_ratio(-7, 3);
+/// 超级跳（地面横冲刺中起跳）水平速度 260 px/s（13/3 px/tick，
+/// `SuperJump`：`Speed.X = 260f*Facing`，120748）。
+const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
+/// 头发白闪时长 0.12s = 7 tick（`UpdateHair`：`hairFlashTimer = 0.12f`，
+/// pureCeleste.cs:120284）。
+const HAIR_FLASH_TICKS: u8 = 7;
+/// 头发颜色渐入速率 6/s（`Lerp(Hair.Color, Used, 6f*dt)`，120258-120262；
+/// 每 tick lerp 系数 = 6/60 = 0.1）。
+const HAIR_LERP_PER_TICK: f32 = 0.1;
 
 /// 起跳输入缓冲：0.08s = 5 tick（含按下当帧）。
 ///
@@ -105,6 +144,9 @@ pub struct Input {
     pub up: bool,
     pub down: bool,
     pub jump: bool,
+    /// 冲刺键（原版 `Input.Dash`，默认 X，101632）。缓冲与跳跃相同
+    /// （`VirtualButton.BufferTime = 0.08f`，110376）。
+    pub dash: bool,
 }
 
 impl Input {
@@ -147,13 +189,61 @@ pub struct Player {
     /// 120590-120594：向上转场时自动跳一下，0.2s 内不管按键都钳住）。
     auto_jump: u32,
     /// 当前冲刺数（原版 `Player.Dashes`，118860 附近构造为 MaxDashes）。
-    /// dash 状态机落地前恒为库存值，头发颜色据此取 NORMAL。
     pub dashes: u8,
     /// 冲刺库存上限（原版 `Player.MaxDashes`；Prologue `Inventory.Prologue`
-    /// 无二段冲刺 → 1，见 118856 附近的构造与 119421）。
+    /// 无二段冲刺 → 1，119421）。
     pub max_dashes: u8,
+    /// 上一 tick 的冲刺数（原版 `lastDashes`，用于头发白闪判定，120295）。
+    last_dashes: u8,
     /// 头发白闪剩余时间（原版 `hairFlashTimer`，120284）。
     hair_flash: u8,
+    /// 头发颜色的**当前**值（`UpdateHair` 逐帧 lerp 的载体，120258-120262）。
+    hair_color_current: [f32; 4],
+    /// 状态机（原版 `StateMachine.State`，编号与原版一致：0 = Normal、
+    /// 2 = Dash，119397-119409；1/3/8 等未实现）。
+    state: u8,
+    /// 冲刺方向（原版 `DashDir`，八向单位向量，分量 ±1/0/±0.707）。
+    dash_dir: Vec2,
+    /// 冲刺协程相位：0 = 进入 tick（`yield return null`，速度未设），
+    /// 1..=9 = 0.15s 等待，第 10 tick 结束（`DashCoroutine` 122731-122831）。
+    dash_phase: u16,
+    /// 起跳/冲刺瞬间的速度存档（原版 `beforeDashSpeed`，122559）。
+    before_dash_speed: Vec2,
+    /// 冲刺冷却（原版 `dashCooldownTimer`，0.2s，122541）。
+    dash_cooldown: u16,
+    /// 冲刺回充冷却（原版 `dashRefillCooldownTimer`，0.1s，122545）。
+    dash_refill_cooldown: u16,
+    /// 冲刺攻击窗（原版 `dashAttackTimer`，0.3s，122554）。
+    dash_attack: u16,
+    /// varJump 钳制的目标速度（原版 `varJumpSpeed` 字段：`Jump()` 设
+    /// -105（120715），`WallJump` -105（120842），`BeforeUpTransition`
+    /// -105（120588），`Rebound` -120；钳制取 `min(Speed.Y, varJumpSpeed)`，
+    /// 122134）。
+    var_jump_speed: Fx,
+    /// 强制水平输入（原版 `forceMoveX` + `forceMoveXTimer`，119883-119889：
+    /// 蹬墙跳后 0.16s 内 moveX 被覆盖，防止立刻再贴墙）。
+    force_move_x: i32,
+    force_move_x_ticks: u16,
+    /// 本 tick 生效的水平输入（`moveX`：输入或 forceMoveX 覆盖，119883-119891）。
+    move_x: Fx,
+    /// 上一 tick 的冲刺键（缓冲边沿）。
+    prev_dash: bool,
+    /// 冲刺键缓冲（`Input.Dash` 的 VirtualButton.BufferTime = 0.08s，110376）。
+    dash_buffer: u16,
+    /// 冲刺起手的停帧请求（`Celeste.Freeze(0.05f)`，122540；service 消费）。
+    pub freeze_ticks: u8,
+}
+
+/// `Math.Sign(before.X) == Math.Sign(speed.X)`（122770）的 Fx 版。
+fn vel_x_same_dir(before: &Vec2, other_x: Fx) -> bool {
+    before.x != Fx::zero() && other_x != Fx::zero() && before.x.signum() == other_x.signum()
+}
+
+/// 逐通道线性插值（`Color.Lerp(a, b, amount)`；amount 为本 tick 系数）。
+fn lerp_color(current: &mut [f32; 4], target: [f32; 4], t: f32) {
+    for (c, t_target) in current.iter_mut().zip(target.iter()) {
+        *c += (t_target - *c) * t;
+    }
 }
 
 impl Player {
@@ -173,7 +263,23 @@ impl Player {
             auto_jump: 0,
             dashes: 1,
             max_dashes: 1,
+            last_dashes: 1,
             hair_flash: 0,
+            hair_color_current: crate::sprites::hair_color::NORMAL,
+            state: 0,
+            dash_dir: Vec2::ZERO,
+            dash_phase: 0,
+            before_dash_speed: Vec2::ZERO,
+            dash_cooldown: 0,
+            dash_refill_cooldown: 0,
+            dash_attack: 0,
+            var_jump_speed: JUMP_SPEED,
+            force_move_x: 0,
+            force_move_x_ticks: 0,
+            move_x: Fx::zero(),
+            prev_dash: false,
+            dash_buffer: 0,
+            freeze_ticks: 0,
         }
     }
 
@@ -183,12 +289,58 @@ impl Player {
         self.step(input, &session.doc.rooms);
     }
 
-    /// 单步仿真：物理（跨房间碰撞）→ 世界级兜底。
+    /// 单步仿真：公共计时头 → 状态机（Normal/Dash）→ 世界级兜底。
+    ///
+    /// 对照原版 `Player.Update`（pureCeleste.cs:119700-120168）的结构：
+    /// 计时/回充/朝向（119827-119921）→ `base.Update()` 进状态机
+    /// （119397-119409 注册：0 = NormalUpdate、2 = DashUpdate）→
+    /// MoveH/MoveV（120049-120056）→ EnforceBounds 由 service 负责。
     ///
     /// `rooms` 显式传入，单测可以直接构造房间几何，不必起整个 Session。
     pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
-        self.physics_in(input, rooms);
+        self.update_head(input);
+        match self.state {
+            2 => self.dash_update(input, rooms),
+            _ => self.normal_update(input, rooms),
+        }
         self.clamp_to_world(rooms);
+        self.update_hair_color();
+    }
+
+    /// 原版 `Player.Update` 头部的公共计时与回充（119827-119921）。
+    fn update_head(&mut self, input: &Input) {
+        // dashAttackTimer -= dt（119827-119830）。
+        self.dash_attack = self.dash_attack.saturating_sub(1);
+        // 地面回充（119855-119863）：state 3（游泳）分支不适用；站在
+        // 固体上（`on_ground` 即脚下有实心，与 `CollideCheck<Solid>(Position
+        // + UnitY)` 等价）→ RefillDash（121082-121090：只有未满时才写）。
+        if self.on_ground && self.dashes < self.max_dashes {
+            self.dashes = self.max_dashes;
+        }
+        // jumpGraceTimer（119830-119840）—— 已由 physics 末尾的
+        // coyote 计数承担（语义等价，见 COYOTE_FRAMES 文档）。
+        // varJumpTimer / AutoJumpTimer 递减（119864-119877）。
+        if self.var_jump > 0 {
+            self.var_jump -= 1;
+        }
+        if self.auto_jump > 0 {
+            self.auto_jump -= 1;
+        }
+        // dashCooldownTimer / dashRefillCooldownTimer（119843-119848）。
+        self.dash_cooldown = self.dash_cooldown.saturating_sub(1);
+        self.dash_refill_cooldown = self.dash_refill_cooldown.saturating_sub(1);
+        // moveX：forceMoveX 覆盖窗（119883-119891），否则读输入。
+        let move_x = if self.force_move_x_ticks > 0 {
+            self.force_move_x_ticks -= 1;
+            Fx::from_int(self.force_move_x)
+        } else {
+            input.axis_x()
+        };
+        self.move_x = move_x;
+        // 朝向跟随输入（119908-119917）。
+        if move_x != Fx::zero() {
+            self.facing = move_x.signum();
+        }
     }
 
     /// 头发颜色：原版 `Player.UpdateHair`（pureCeleste.cs:120244-120296）
@@ -200,17 +352,8 @@ impl Player {
     /// 时把本函数升级为带当前颜色的版本；现在返回离散状态，Prologue
     /// （库存 1 段且满）恒为 NORMAL —— 与原版一致。
     pub fn hair_color(&self) -> [f32; 4] {
-        let dashes = self.dashes;
-        let max = self.max_dashes;
-        if dashes == 0 && dashes < max {
-            crate::sprites::hair_color::USED
-        } else if self.hair_flash > 0 {
-            crate::sprites::hair_color::FLASH
-        } else if dashes == 2 {
-            crate::sprites::hair_color::TWO_DASHES
-        } else {
-            crate::sprites::hair_color::NORMAL
-        }
+        // 逐帧 lerp 的当前值（`UpdateHair` 写进 `Hair.Color`，渲染直读）。
+        self.hair_color_current
     }
 
     /// 向上转场的前置调整（原版 `BeforeUpTransition`，
@@ -231,29 +374,275 @@ impl Player {
         self.auto_jump = 0;
     }
 
-    /// 物理推进（不含世界夹取，夹取在 [`Player::step`] 尾部统一做）。
+    /// 原版 `Jump()`（pureCeleste.cs:120694-120716）：竖直 -105、
+    /// 水平 +40*moveX（JumpHBoost）、varJump 计满 0.2s、varJumpSpeed
+    /// 存档、土狼与缓冲清零。（`LiftBoost` 静态地面为 0，省略。）
+    fn jump(&mut self, move_x: Fx) {
+        self.jump_buffer = 0;
+        self.coyote = 0;
+        self.var_jump = VAR_JUMP_TICKS;
+        self.auto_jump = 0;
+        self.dash_attack = 0;
+        self.vel.x += move_x * JUMP_H_BOOST;
+        self.vel.y = JUMP_SPEED;
+        self.var_jump_speed = JUMP_SPEED;
+        self.on_ground = false;
+    }
+
+    /// 原版 `WallJumpCheck(dir)`（pureCeleste.cs:120779-120804）的普通
+    /// 分支（无尖刺/星羽修正，`num = 5`）：朝墙 5px 探测实心。
+    /// `ClimbBoundsCheck` / `ClimbBlocker.EdgeCheck`（120779 前置）在
+    /// 本引擎没有爬墙边界实体，恒 false/true（偏差声明：见模块文档）。
+    fn wall_jump_check(&self, rooms: &[Room], dir: i32) -> bool {
+        let dx = Fx::from_int(dir) * WALLJUMP_PROBE;
+        self.hits(rooms, self.pos.x + dx, self.pos.y)
+    }
+
+    /// 原版 `WallJump(dir)`（pureCeleste.cs:120806-120860）：水平
+    /// 130*dir、竖直 -105、varJump 计满、`forceMoveX = dir` 0.16s
+    /// （120832-120838）、消耗跳跃缓冲、土狼清零。
+    fn wall_jump(&mut self, rooms: &[Room], dir: i32) {
+        self.jump_buffer = 0;
+        self.coyote = 0;
+        self.var_jump = VAR_JUMP_TICKS;
+        self.auto_jump = 0;
+        self.dash_attack = 0;
+        if self.move_x != Fx::zero() {
+            // 120828-120838：按住方向时强制 moveX 防止立刻再贴墙。
+            self.force_move_x = dir;
+            self.force_move_x_ticks = FORCE_MOVE_X_TICKS;
+        }
+        self.vel.x = WALLJUMP_X * Fx::from_int(dir);
+        self.vel.y = JUMP_SPEED;
+        self.var_jump_speed = JUMP_SPEED;
+        self.on_ground = false;
+        let _ = rooms;
+    }
+
+    /// 原版 `StartDash()`（pureCeleste.cs:122469-122479）+ `DashBegin`
+    /// （122534-122565）：扣一次冲刺、进入 State 2、记 `beforeDashSpeed`
+    /// 后清零速度（当 tick 不动）、起冷却与攻击窗。
+    fn start_dash(&mut self) {
+        self.dashes = self.dashes.saturating_sub(1);
+        self.dash_buffer = 0; // Input.Dash.ConsumeBuffer()（122474）
+        self.state = 2;
+        self.dash_phase = 0;
+        self.dash_cooldown = DASH_COOLDOWN_TICKS;
+        self.dash_refill_cooldown = DASH_REFILL_COOLDOWN_TICKS;
+        self.dash_attack = DASH_ATTACK_TICKS;
+        self.before_dash_speed = self.vel;
+        self.vel = Vec2::ZERO;
+        self.dash_dir = Vec2::ZERO;
+        // 注意：原版 DashBegin **不改** onGround —— 地面冲刺保持接地，
+        // 下一 tick 的头部回充（119855-119863）照常工作。
+        // DashBegin 的 `Celeste.Freeze(0.05f)`（122540）：0.05s = 3 tick
+        // 全局停帧，由 service 消费（引擎的帧节奏里等价于跳过 3 个模拟 tick）。
+        self.freeze_ticks = 3;
+    }
+
+    /// 原版 `GetAimVector(Facing)`（Celeste.Input，pureCeleste.cs:110554-110600，
+    /// 无辅助模式分支）：方向键合成八向；角度在 ±π/8 内吸附到正交轴；
+    /// 无输入 → 朝向方向。
+    fn aim_dir(&self, input: &Input) -> Vec2 {
+        let (mx, my): (f32, f32) = (
+            input.axis_x().to_f32(),
+            match (input.up, input.down) {
+                (true, false) => -1.0,
+                (false, true) => 1.0,
+                _ => 0.0,
+            },
+        );
+        if mx == 0.0 && my == 0.0 {
+            return Vec2::from_f32s(self.facing as f32, 0.0);
+        }
+        // 角度吸附：原版对 0/π/±π/2 各留 π/8（正交轴下方）或
+        // π/8 − 0.05（斜向优先），等价实现：|x| 与 |y| 比 ≥ tan(π/8)
+        // 时取正交轴，否则取对角线。
+        let ax = mx.abs();
+        let ay = my.abs();
+        if ax >= 2.414 * ay {
+            Vec2::from_f32s(mx.signum(), 0.0)
+        } else if ay >= 2.414 * ax {
+            Vec2::from_f32s(0.0, my.signum())
+        } else {
+            // 对角线：`Math.Sign(value).SafeNormalize()`（110596）。
+            let inv = std::f32::consts::FRAC_1_SQRT_2;
+            Vec2::from_f32s(mx.signum() * inv, my.signum() * inv)
+        }
+    }
+
+    /// State 2：`DashUpdate`（pureCeleste.cs:122598-122727）+ `DashCoroutine`
+    /// （122731-122831）的显式相位版。
     ///
-    /// tick 内顺序对照原版（`pureCeleste.cs`）：varJump 递减（Update
-    /// 119864-119867，先于状态机）→ 跑动（122050-122074）→ maxFall
-    /// （122088-122106）→ 重力（122123-122146，仅空中）→ varJump 钳制
-    /// （122148-122156）→ 跳跃判定（122158-122163）→ 移动解算 →
-    /// 土狼/缓冲递减（119830-119840 的节奏）。
-    fn physics_in(&mut self, input: &Input, rooms: &[Room]) {
+    /// 一个 tick 的顺序与原版 `StateMachine.Update`（12185-12201）一致：
+    /// 先 `DashUpdate`（跳跃分支，122627-122676），再推进协程，最后统一
+    /// MoveH/MoveV（120049-120056）—— 墙跳/超级跳改写速度后当帧就按新
+    /// 速度移动。相位 0 执行协程首段（`yield return null` 之后的
+    /// 122756-122806：速度 = 瞄准 × 240、DashDir、朝向），相位 1..=9
+    /// 等待 0.15s，第 10 tick 执行末段（122812-122830）。冲刺期间无
+    /// 重力/跑动（`DashUpdate` 不含它们）。
+    fn dash_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // varJump 计时：原版在 Update 头部递减（119864-119867）。
-        // AutoJump 同理（119868-119877）。
-        if self.var_jump > 0 {
-            self.var_jump -= 1;
+        // ---- DashUpdate（122598-122727）----
+        // 冲刺中的跳跃分支（122627-122676）。横向冲刺（|DashDir.Y| < 0.1）
+        // 且在地面 → SuperJump（120740）；竖向冲刺（|DashDir.X| <= 0.2）
+        // → SuperWallJump（120865）；其余 → WallJump（ClimbJump 需要
+        // 抓攀，未实现，跳过 —— 偏差声明）。
+        let jump_pressed = input.jump && !self.prev_jump;
+        self.prev_jump = input.jump;
+        if jump_pressed {
+            self.jump_buffer = JUMP_BUFFER_FRAMES;
         }
-        if self.auto_jump > 0 {
-            self.auto_jump -= 1;
+        if self.dash_dir != Vec2::ZERO && self.jump_buffer > 0 {
+            let horizontal_dash = self.dash_dir.y.abs() < Fx::from_ratio(1, 10);
+            let vertical_dash = self.dash_dir.x.abs() <= Fx::from_ratio(1, 5);
+            if horizontal_dash && self.on_ground {
+                // 122632-122641 → `SuperJump`（120740-120778）。
+                self.super_jump();
+            } else if vertical_dash {
+                if self.wall_jump_check(rooms, 1) {
+                    self.super_wall_jump(-1);
+                } else if self.wall_jump_check(rooms, -1) {
+                    self.super_wall_jump(1);
+                }
+            } else if self.wall_jump_check(rooms, 1) {
+                self.wall_jump(rooms, -1);
+                self.state = 0;
+            } else if self.wall_jump_check(rooms, -1) {
+                self.wall_jump(rooms, 1);
+                self.state = 0;
+            }
+        }
+
+        // ---- DashCoroutine（122731-122831）----
+        if self.state == 2 {
+            if self.dash_phase == 0 {
+                // 协程首段（122756-122806）。
+                let aim = self.aim_dir(input);
+                let mut speed = aim * DASH_SPEED;
+                // 水平超速保留（122770-122774）：起冲前的横向速度更快且
+                // 同向时保留原值（`beforeDashSpeed` 的墙速语义）。
+                if vel_x_same_dir(&self.before_dash_speed, speed.x)
+                    && self.before_dash_speed.x.abs() > speed.x.abs()
+                {
+                    speed.x = self.before_dash_speed.x;
+                }
+                self.vel = speed;
+                self.dash_dir = aim;
+                if aim.x != Fx::zero() {
+                    self.facing = aim.x.signum(); // 122779-122782
+                }
+                self.dash_phase = 1;
+            } else {
+                self.dash_phase += 1;
+                if self.dash_phase > DASH_TICKS {
+                    // 末段（122812-122830）。
+                    self.auto_jump = 0; // AutoJumpTimer = 0f（122820）
+                    if self.dash_dir.y <= Fx::zero() {
+                        self.vel = self.dash_dir * DASH_END_SPEED;
+                        if self.vel.y < Fx::zero() {
+                            // 122826-122829：`if (Speed.Y < 0f) Speed.Y *= 0.75f`。
+                            self.vel.y *= Fx::from_ratio(3, 4);
+                        }
+                    }
+                    self.state = 0;
+                }
+            }
+        }
+
+        // ---- MoveH / MoveV（120049-120056）----
+        self.slide_x(rooms);
+        self.on_ground = false;
+        self.slide_y(rooms);
+        if !self.on_ground {
+            self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
+        }
+    }
+
+    /// 原版 `SuperJump()`（pureCeleste.cs:120740-120778，无滑铲/滑翔
+    /// 分支）：水平 260×Facing、竖直 -105、varJump 计满，回 State 0。
+    fn super_jump(&mut self) {
+        self.jump_buffer = 0;
+        self.coyote = 0;
+        self.var_jump = VAR_JUMP_TICKS;
+        self.auto_jump = 0;
+        self.dash_attack = 0;
+        self.vel.x = SUPER_JUMP_X * Fx::from_int(self.facing);
+        self.vel.y = JUMP_SPEED;
+        self.var_jump_speed = JUMP_SPEED;
+        self.on_ground = false;
+        self.state = 0;
+    }
+
+    /// 原版 `SuperWallJump(dir)`（pureCeleste.cs:120865-120960 的核心段）：
+    /// 水平 240*dir、竖直 -140（varJumpSpeed 同步）、AutoJump 钳制、
+    /// `forceMoveX` 0.3s（18 tick，120902）。
+    fn super_wall_jump(&mut self, dir: i32) {
+        self.jump_buffer = 0;
+        self.coyote = 0;
+        self.var_jump = VAR_JUMP_TICKS;
+        self.auto_jump = VAR_JUMP_TICKS;
+        self.dash_attack = 0;
+        self.force_move_x = dir;
+        self.force_move_x_ticks = 18;
+        self.vel.x = SUPER_WALLJUMP_X * Fx::from_int(dir);
+        self.vel.y = SUPER_WALLJUMP_Y;
+        self.var_jump_speed = SUPER_WALLJUMP_Y;
+        self.on_ground = false;
+        self.state = 0;
+    }
+
+    /// 原版 `UpdateHair`（pureCeleste.cs:120244-120296）：冲刺耗尽 → 以
+    /// 6/s 渐入 USED；回满瞬间（lastDashes ≠ Dashes）→ FLASH +
+    /// `hairFlashTimer` 0.12s；期间保持 FLASH；否则按段数取
+    /// TWO_DASHES/NORMAL。State 19（星羽）与 `OverrideHairColor` 未实现。
+    fn update_hair_color(&mut self) {
+        if self.dashes == 0 && self.dashes < self.max_dashes {
+            lerp_color(
+                &mut self.hair_color_current,
+                crate::sprites::hair_color::USED,
+                HAIR_LERP_PER_TICK,
+            );
+        } else if self.last_dashes != self.dashes {
+            self.hair_color_current = crate::sprites::hair_color::FLASH;
+            self.hair_flash = HAIR_FLASH_TICKS;
+        } else if self.hair_flash > 0 {
+            self.hair_flash -= 1;
+        } else if self.dashes == 2 {
+            self.hair_color_current = crate::sprites::hair_color::TWO_DASHES;
+        } else {
+            self.hair_color_current = crate::sprites::hair_color::NORMAL;
+        }
+        self.last_dashes = self.dashes; // 120295
+    }
+
+    /// State 0（NormalUpdate，pureCeleste.cs:121824-122101）。
+    ///
+    /// tick 内顺序对照原版：抓取/下蹲（未实现，见偏差声明）→ 冲刺触发
+    /// （121841-121843 `if (CanDash)`）→ 跑动（122050-122074）→ maxFall
+    /// （122088-122106）→ 重力（122123-122146，仅空中）→ varJump 钳制
+    /// （122148-122156）→ 跳跃判定（122158-122163，含蹬墙跳）→ 移动
+    /// 解算 → 土狼/缓冲递减。
+    fn normal_update(&mut self, input: &Input, rooms: &[Room]) {
+        self.prev_pos = self.pos;
+
+        // 冲刺触发（121841-121843 + `CanDash` 119325-119340）：冲刺键
+        // 按下（缓冲窗内）且冷却结束且还有冲刺次数。
+        let dash_pressed = input.dash && !self.prev_dash;
+        self.prev_dash = input.dash;
+        if dash_pressed {
+            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime 同 0.08s（110376）
+        }
+        if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
+            self.start_dash(); // StartDash（122469-122479）→ State 2
+            return; // 本 tick 速度为 0（DashBegin 清零），直接进入移动
         }
 
         // 水平：原版两分支（122068-122074）—— 同向超速（|vx| > 90 且与
         // 输入同号）用 400 回归；其余（无输入、反向刹车、起步）一律
         // 1000 全速档。空中两档都乘 0.65。
-        let move_x = input.axis_x();
+        let move_x = self.move_x;
         let mult = if self.on_ground { Fx::one() } else { AIR_MULT };
         let target = move_x * RUN;
         let overspeed = move_x != Fx::zero()
@@ -293,7 +682,8 @@ impl Player {
         // 没有额外的松手砍速。
         if self.var_jump > 0 {
             if input.jump || self.auto_jump > 0 {
-                self.vel.y = self.vel.y.min(JUMP_SPEED);
+                // 122134：`Speed.Y = Math.Min(Speed.Y, varJumpSpeed)`。
+                self.vel.y = self.vel.y.min(self.var_jump_speed);
             } else {
                 self.var_jump = 0;
             }
@@ -307,16 +697,18 @@ impl Player {
             self.jump_buffer = JUMP_BUFFER_FRAMES;
         }
 
-        // 起跳（122158-122163 → Jump() 120694-120716）：缓冲窗口内 +
-        // 接地/土狼 → 竖直 -105、水平 +40*moveX（JumpHBoost）、
-        // varJump 计满 0.2s、土狼与缓冲清零。
-        if self.jump_buffer > 0 && (self.on_ground || self.coyote > 0) {
-            self.vel.y = JUMP_SPEED;
-            self.vel.x += move_x * JUMP_H_BOOST;
-            self.var_jump = VAR_JUMP_TICKS;
-            self.jump_buffer = 0;
-            self.coyote = 0;
-            self.on_ground = false;
+        // 跳跃判定（122090-122101）：缓冲窗内 → 接地/土狼 → `Jump()`
+        // （120694-120716：竖直 -105、水平 +40*moveX（JumpHBoost）、
+        // varJump 计满 0.2s）；空中 → 蹬墙跳（122102-122130，
+        // `WallJumpCheck` 120779-120804 → `WallJump` 120806-120860）。
+        if self.jump_buffer > 0 {
+            if self.on_ground || self.coyote > 0 {
+                self.jump(move_x);
+            } else if self.wall_jump_check(rooms, 1) {
+                self.wall_jump(rooms, -1);
+            } else if self.wall_jump_check(rooms, -1) {
+                self.wall_jump(rooms, 1);
+            }
         }
 
         self.slide_x(rooms);
@@ -1052,6 +1444,215 @@ mod tests {
         );
         // 绝不允许被拽去 B（x ≥ 120）。
         assert!(p.pos.x.to_f32() < 100.0, "must not teleport across the map");
+    }
+
+    /// 冲刺：240 px/s（4 px/tick）跑 0.15s（9 tick），末段 160 px/s
+    /// （8/3 px/tick）；次数扣 1；落地回充；冷却 0.2s。
+    #[test]
+    fn dash_matches_vanilla_speeds_and_timing() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let dash = Input {
+            right: true,
+            dash: true,
+            ..Input::default()
+        };
+        let x0 = p.pos.x;
+        // tick 1：StartDash + DashBegin —— 速度清零、扣次数、请求停帧。
+        p.step(&dash, std::slice::from_ref(&room));
+        assert_eq!(p.state, 2, "dash enters vanilla state 2");
+        assert_eq!(p.vel, Vec2::ZERO, "DashBegin zeroes Speed (122560)");
+        assert_eq!(p.dashes, 0, "StartDash consumes one dash (122471)");
+        assert_eq!(
+            p.freeze_ticks, 3,
+            "Celeste.Freeze(0.05f) = 3 ticks (122540)"
+        );
+        // tick 2：协程首段 → 速度 = 4 px/tick。
+        p.step(&dash, std::slice::from_ref(&room));
+        assert_eq!(p.vel.x, DASH_SPEED, "Speed = aim * 240 px/s (122768)");
+        assert_eq!(p.dash_dir.x, Fx::one(), "DashDir snaps to the aim axis");
+        let after_first = p.pos.x;
+        // tick 3..10：匀速冲刺。
+        for _ in 0..8 {
+            p.step(&dash, std::slice::from_ref(&room));
+            assert_eq!(p.vel.x, DASH_SPEED);
+        }
+        assert_eq!(
+            (p.pos.x - after_first).to_f32(),
+            32.0,
+            "8 ticks at 4 px/tick"
+        );
+        // tick 11：协程结束 → 末段 8/3 px/tick，回 State 0。
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.state, 0, "the coroutine returns to Normal (122830)");
+        assert_eq!(p.vel.x, DASH_END_SPEED, "Speed = DashDir * 160 (122822)");
+        let _ = x0;
+    }
+
+    /// 冲刺次数：空中冲刺后耗尽 → 头发向 USED 渐入；落地回充 → 白闪
+    /// 0.12s 后回 NORMAL。
+    #[test]
+    fn dash_refill_and_hair_states_follow_update_hair() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        // 冲刺后立刻被地面回充（119855-119863 的地面分支在头 tick 生效）。
+        let dash = Input {
+            right: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room));
+        assert_eq!(p.dashes, 0);
+        // 落地后的头部回充（119855-119863）：冲刺速度生效的那一 tick
+        // 仍接地（地面横冲），下一 tick 头部回充。
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert_eq!(
+            p.dashes, 1,
+            "RefillDash refills on the ground (119855-119863)"
+        );
+        assert_eq!(
+            p.hair_color(),
+            crate::sprites::hair_color::FLASH,
+            "lastDashes != Dashes flashes white (120283-120284)"
+        );
+        // 冲刺 0.2s 冷却（122541）：起手在第 1 tick，协程第 10 tick 结束
+        // （phase 10 > DASH_TICKS），冷却第 12 tick 才清零。
+        // 协程相位：tick 2 = 首段（phase 1），第 11 tick 末段结束 ——
+        // 共 10 个状态 tick（1 个进入 + 9 个 0.15s 等待）。
+        for _ in 0..9 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert_eq!(p.state, 0, "the dash coroutine ended (122830)");
+        // 冷却门（`CanDash` 119325-119340 的 `dashCooldownTimer <= 0`）：
+        // 把冷却重置到刚起手的值，立即再按必须被挡；等它递减完才允许。
+        p.dash_cooldown = DASH_COOLDOWN_TICKS;
+        let again = Input {
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&again, std::slice::from_ref(&room));
+        assert_eq!(p.state, 0, "dashCooldownTimer blocks while > 0");
+        for _ in 0..DASH_COOLDOWN_TICKS {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        p.step(&again, std::slice::from_ref(&room));
+        assert_eq!(p.state, 2, "after the cooldown a fresh dash starts");
+        // 地面冲刺的下一 tick 头部又回充（119855-119863：站着就是站在
+        // 固体上）→ lastDashes(0) ≠ Dashes(1) 再次白闪 —— 这正是原版
+        // 地面冲刺的表现。
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.dashes, 1, "ground dash refills next tick");
+        assert_eq!(p.hair_color(), crate::sprites::hair_color::FLASH);
+        // 白闪 0.12s = 7 tick：计时器 > 0 的每一 tick 都显示 FLASH
+        // （120286-120290 的 else 分支），归零后的**下一** tick 走离散
+        // 分支回 NORMAL。
+        for _ in 0..8 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert_eq!(p.hair_color(), crate::sprites::hair_color::NORMAL);
+        // 空中耗尽 → 渐入 USED（120258-120262）：先在空中耗掉唯一一次冲刺。
+        let mut p2 = settled(&room, 40.0);
+        let jump_then_dash = Input {
+            jump: true,
+            ..Input::default()
+        };
+        p2.step(&jump_then_dash, std::slice::from_ref(&room));
+        let air_dash = Input {
+            dash: true,
+            ..Input::default()
+        };
+        p2.step(&air_dash, std::slice::from_ref(&room));
+        p2.step(&Input::default(), std::slice::from_ref(&room));
+        let before = p2.hair_color();
+        p2.step(&Input::default(), std::slice::from_ref(&room));
+        let after = p2.hair_color();
+        assert!(
+            after[0] < before[0] && after[1] > before[1],
+            "hair lerps toward Used 44B7FF at 6/s ({before:?} -> {after:?})"
+        );
+    }
+
+    /// 蹬墙跳：贴墙按跳 → 水平 130 px/s 反向、竖直 -105、forceMoveX
+    /// 0.16s 覆盖输入方向。
+    #[test]
+    fn wall_jump_off_a_wall_matches_vanilla_speeds() {
+        // 左侧一列墙 + 地板。
+        let mut tiles = Tileset::new("Gameplay", 10, 16);
+        for y in 0..16 {
+            tiles.set(0, y, 1);
+        }
+        for x in 0..10 {
+            tiles.set(x, 15, 1);
+        }
+        let room = Room {
+            name: "w".into(),
+            bounds: RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: 80.0,
+                h: 128.0,
+            },
+            tiles,
+            bg: Tileset::new("Gameplay", 10, 16),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            ..Default::default()
+        };
+        // 玩家贴墙悬空（x = 8 → hitbox [8,16]，墙右缘 8）。
+        let mut p = Player::new(Vec2::from_f32s(8.0, 100.0));
+        // 先落一 tick 贴稳（不接地也行：探针只看墙）。
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        // 按住朝墙方向起跳 —— 原版只在 moveX != 0 时设 forceMoveX
+        //（120828-120838 的 `else if (moveX != 0)`）。
+        let jump = Input {
+            left: true,
+            jump: true,
+            ..Input::default()
+        };
+        p.step(&jump, std::slice::from_ref(&room));
+        assert_eq!(
+            p.vel.x, WALLJUMP_X,
+            "WallJump: Speed.X = 130 * dir (120840)"
+        );
+        assert_eq!(p.vel.y, JUMP_SPEED, "WallJump: Speed.Y = -105 (120841)");
+        assert_eq!(
+            p.force_move_x, 1,
+            "WallJump forces moveX away from the wall (120828-120838)"
+        );
+        // forceMoveX 窗内反向输入被覆盖（119883-119891）。
+        let push_left = Input {
+            left: true,
+            ..Input::default()
+        };
+        p.step(&push_left, std::slice::from_ref(&room));
+        assert_eq!(p.move_x, Fx::one(), "forceMoveX overrides input for 0.16s");
+    }
+
+    /// 地面横冲刺中起跳 = 超级跳：260 px/s × Facing、-105（120740-120778）。
+    #[test]
+    fn jumping_during_a_ground_dash_is_a_super_jump() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let dash = Input {
+            right: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room)); // 进入 State 2
+        p.step(&dash, std::slice::from_ref(&room)); // 速度生效（仍在地面）
+        assert!(p.on_ground, "ground dash keeps the player grounded");
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        p.step(&jump, std::slice::from_ref(&room));
+        assert_eq!(p.state, 0, "SuperJump returns to Normal");
+        assert_eq!(
+            p.vel.x, SUPER_JUMP_X,
+            "SuperJump: Speed.X = 260 * Facing (120748)"
+        );
+        assert_eq!(p.vel.y, JUMP_SPEED, "SuperJump: Speed.Y = -105 (120749)");
     }
 
     /// 原点非 (0,0) 的房间：撞墙 / 落地 / 顶头都必须吸附到**世界**格边。

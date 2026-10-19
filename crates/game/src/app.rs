@@ -228,6 +228,9 @@ impl GameApp {
         if self.bindings.jump.contains(&code) {
             self.keys.jump = down;
         }
+        if self.bindings.dash.contains(&code) {
+            self.keys.dash = down;
+        }
     }
 
     fn toggle_pause(&mut self) {

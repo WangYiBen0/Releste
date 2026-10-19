@@ -26,6 +26,8 @@ pub struct KeyBindings {
     pub up: Vec<KeyCode>,
     pub down: Vec<KeyCode>,
     pub jump: Vec<KeyCode>,
+    /// 冲刺（原版默认 X，`pureCeleste.cs:101632`）。
+    pub dash: Vec<KeyCode>,
 }
 
 impl Default for KeyBindings {
@@ -38,6 +40,7 @@ impl Default for KeyBindings {
             up: vec![KeyCode::ArrowUp],
             down: vec![KeyCode::ArrowDown],
             jump: vec![KeyCode::KeyC],
+            dash: vec![KeyCode::KeyX],
         }
     }
 }
@@ -50,6 +53,7 @@ struct KeysToml {
     up: Option<Vec<String>>,
     down: Option<Vec<String>>,
     jump: Option<Vec<String>>,
+    dash: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -104,6 +108,7 @@ impl KeyBindings {
             up: map(&k.up, vec![KeyCode::ArrowUp], "up"),
             down: map(&k.down, vec![KeyCode::ArrowDown], "down"),
             jump: map(&k.jump, vec![KeyCode::KeyC], "jump"),
+            dash: map(&k.dash, vec![KeyCode::KeyX], "dash"),
         }
     }
 }

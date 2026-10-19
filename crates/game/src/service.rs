@@ -367,6 +367,12 @@ impl GameService {
     /// 一个模拟 tick：转场中只推进协程；否则物理 → 相机 → 转场判定 →
     /// backdrop 可见性刷新。
     fn simulate_tick(&mut self) {
+        // 原版 `Celeste.Freeze(0.05f)`（冲刺起手，122540）：整场景停帧
+        // 0.05s = 3 tick（`Engine.FreezeTimer`，期间 Update 不跑）。
+        if self.player.freeze_ticks > 0 {
+            self.player.freeze_ticks -= 1;
+            return;
+        }
         // 转场期间实体冻结（原版 `Level.Update` 的 Transitioning 分支，
         // 115659-115668 只跑转场协程），只有玩家滑动与相机平移。
         if self.transition.is_some() {
