@@ -45,7 +45,26 @@ pub const PLAYER_BANGS_SPRITE: &str = "characters\\player\\bangs00";
 
 /// 原版正常发色：`pureCeleste.cs` `Player.NormalHairColor = AC3232`。
 /// hair00 纹理本体是白色，运行时染这个色。
-pub const PLAYER_HAIR_COLOR: [f32; 4] = [172.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0];
+/// 头发颜色状态机（原版 `Player.UpdateHair`，`pureCeleste.cs:120244-120296`）。
+///
+/// - `NORMAL`：有冲刺可用时的本色（118874 `NormalHairColor = AC3232`）
+/// - `USED`：冲刺耗尽时的蓝色（118878 `UsedHairColor = 44B7FF`，以
+///   `Lerp(Hair.Color, Used, 6*dt)` 渐入，120258-120262）
+/// - `FLASH`：冲刺回满瞬间的白闪（118880 `FlashHairColor = White`，
+///   `hairFlashTimer = 0.12s`，120283-120286）
+/// - `TWO_DASHES`：二段冲刺库存的本色（118882 `TwoDashesHairColor =
+///   ff6def`，`Dashes == 2` 时取代 NORMAL，120289）
+///
+/// 各状态与仿真字段（`Player.dashes` 等）的接线在 dash 实现时激活；
+/// 当前无冲刺（库存 1 段且满）→ 恒为 NORMAL，与原版 Prologue 一致。
+/// 「以后提供选项改颜色」：这些常量就是默认值，设置文件按状态名覆盖
+/// 即可（见 `service::settings`）。
+pub mod hair_color {
+    pub const NORMAL: [f32; 4] = [172.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0];
+    pub const USED: [f32; 4] = [68.0 / 255.0, 183.0 / 255.0, 1.0, 1.0];
+    pub const FLASH: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+    pub const TWO_DASHES: [f32; 4] = [1.0, 109.0 / 255.0, 239.0 / 255.0, 1.0];
+}
 
 /// 玩家身体 sprite 的**逻辑帧原点**（32×32 帧内的底中心）。
 ///

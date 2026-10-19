@@ -301,7 +301,8 @@ impl GameService {
     fn player_draws(&self, gpu: &GpuRenderer, alpha: f32) -> Vec<SpriteDraw> {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
         let pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
-        self.session.player_draws(gpu, pos, self.player.facing < 0)
+        self.session
+            .player_draws(gpu, pos, self.player.facing < 0, self.player.hair_color())
     }
 
     /// 插值后的相机位置（视口**中心**）。
@@ -448,7 +449,7 @@ impl GameService {
             match self.room_at_point(probe) {
                 Some(next) => self.start_transition(next, (1.0, 0.0)),
                 None => {
-                    self.player.pos.x = Fx::from_f32(right - PLAYER_W as f32);
+                    self.player.pos.x = Fx::from_f32(right - PLAYER_W);
                     self.player.vel.x = Fx::zero();
                 }
             }
@@ -526,14 +527,14 @@ impl GameService {
             // 横向转场先把终点从地板里拔出来（115351-115355）。
             let nb_bottom = nb.y + nb.h;
             while player_to.y.to_f32() >= nb_bottom {
-                player_to.y = player_to.y - Fx::one();
+                player_to.y -= Fx::one();
             }
         }
         // 一直沿方向滑动，直到落进新房间（带 dirPad 的内缩判定，
         // `IsInBounds(Vector2, Vector2)` 116641-116657）。
         let mut guard = 0u32;
         while !Self::in_bounds_padded(player_to, dir_pad, &nb) {
-            player_to = player_to + dir;
+            player_to += dir;
             guard += 1;
             if guard > 4096 {
                 warn!(
@@ -857,7 +858,7 @@ mod tests {
             service.player.on_ground,
             "the player lands on lvl_b's floor"
         );
-        assert_eq!(service.player.pos.y.to_f32(), 176.0 - PLAYER_H as f32);
+        assert_eq!(service.player.pos.y.to_f32(), 176.0 - PLAYER_H);
         // 相机落位在新房间的钳制目标上（对玩家在新房间里的位置）。
         let anchor = service.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         assert_eq!(

@@ -544,10 +544,12 @@ impl Session {
             room,
             &room.tiles,
             &self.tilesets,
-            Layer::Tiles,
-            WHITE,
-            self,
-            gpu,
+            TileDrawCtx {
+                layer: Layer::Tiles,
+                tint: WHITE,
+                session: self,
+                gpu,
+            },
         );
         // 背景是**另一张**表（`BackgroundTiles.xml`），且原版不调色
         // （`TileGrid.Color` 默认 `Color.White`、`Alpha = 1`，11234/11242，
@@ -557,10 +559,12 @@ impl Session {
             room,
             &room.bg,
             &self.bg_tilesets,
-            Layer::BgTiles,
-            WHITE,
-            self,
-            gpu,
+            TileDrawCtx {
+                layer: Layer::BgTiles,
+                tint: WHITE,
+                session: self,
+                gpu,
+            },
         );
         self.push_entities(&mut out, room, gpu);
 
@@ -617,21 +621,27 @@ impl Session {
     ///
     /// 每一处都对照 `pureCeleste.cs`：
     /// - 锚点：`Player.Position` = hitbox 底中心（118856），即 `anchor`；
-    /// - 发根：`Nodes[0] = Sprite.RenderPosition + (0,-9) + HairOffset*Facing`
+    /// - 发根：`Nodes\[0\] = Sprite.RenderPosition + (0,-9) + HairOffset*Facing`
     ///   （111116）。idle 动画未定义 HairOffset → 取默认 (0,0)
     ///   （111477 只有 yaml 提供时才赋值）；RenderPosition 即玩家位置；
     /// - 后续节：`HairCount = 4`（111321）；`AfterUpdate`（111118-111135）
-    ///   的静态摆位 node[i] = node[i-1] + ((0-Facing)*step, +2)，step 在
+    ///   的静态摆位 node\[i\] = node\[i-1\] + ((0-Facing)*step, +2)，step 在
     ///   i==1 时为 2*StepInFacingPerSegment = 1，其余 0.5（StepPerSegment
     ///   = (0,2)，111074-111076）；节点间 ≤3px 的约束不触发（|(-1,2)|≈2.24）；
-    /// - 绘制（Render 111155+）：`origin = (5,5)`；node[0] 用 bangs[0]，
+    /// - 绘制（Render 111155+）：`origin = (5,5)`；node\[0\] 用 bangs\[0\]，
     ///   其余用 hair00；每片先画 4 个 ±1px 的黑描边（`Border = Black`，
     ///   111159），再按 HairCount-1..0 逆序画本色（`Color = AC3232`）。
     /// - 身体最后画（Layer::Player 高于 PlayerHair，层排序保证）。
     ///
     /// 尚未移植：发丝的运动模拟（SimulateMotion/StepApproach，随动画
     /// 系统一起）；身体四向描边（DrawPlayerSpriteOutline，idle 不开）。
-    pub fn player_draws(&self, gpu: &GpuRenderer, pos: Vec2, flip_x: bool) -> Vec<SpriteDraw> {
+    pub fn player_draws(
+        &self,
+        gpu: &GpuRenderer,
+        pos: Vec2,
+        flip_x: bool,
+        hair_color: [f32; 4],
+    ) -> Vec<SpriteDraw> {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
 
@@ -645,6 +655,9 @@ impl Session {
             let step_x = (0.0 - facing) * if i == 1 { 1.0 } else { 0.5 };
             nodes.push(nodes[i - 1] + Vec2::from_f32s(step_x, 2.0));
         }
+        // Render 开头 `Nodes[0] = Nodes[0].Floor()`（111179）：整条头发
+        // 吸附到整数像素 —— 缺了它，发根随玩家亚像素位置抖动/偏移。
+        nodes[0] = nodes[0].floor();
 
         let pieces: [(&str, &Vec2); sprites::HAIR_COUNT] = [
             (sprites::PLAYER_BANGS_SPRITE, &nodes[0]),
@@ -665,15 +678,13 @@ impl Session {
             };
             for (dx, dy) in outline_offsets {
                 let mut d = base;
-                d.position = d.position + Vec2::from_f32s(dx, dy);
+                d.position += Vec2::from_f32s(dx, dy);
                 out.push(d);
             }
         }
         for (i, (name, node)) in pieces.iter().enumerate().rev() {
             let scale = sprites::hair_scale(i, facing);
-            if let Some(mut d) =
-                self.hair_piece(gpu, name, **node, scale, sprites::PLAYER_HAIR_COLOR)
-            {
+            if let Some(mut d) = self.hair_piece(gpu, name, **node, scale, hair_color) {
                 d.layer = Layer::PlayerHair.value() + 1; // 本色压在描边之上
                 out.push(d);
             }
@@ -1125,15 +1136,21 @@ pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
 ///
 /// 一次房间可能混多种 tileset（如 `1` = dirt、`3` = snow），所以
 /// `(atlas_id, tex_size)` 是**每块瓦片**的，不是每层一份。
+/// `push_tiles` 的环境参数打包（clippy `too_many_arguments`：这五项总是
+/// 一起传，本来就该是一个上下文）。
+struct TileDrawCtx<'a> {
+    layer: Layer,
+    tint: [f32; 4],
+    session: &'a Session,
+    gpu: &'a GpuRenderer,
+}
+
 fn push_tiles(
     out: &mut Vec<SpriteDraw>,
     room: &Room,
     tiles: &releste_map::Tileset,
     defs: &releste_map::TilesetsDoc,
-    layer: Layer,
-    tint: [f32; 4],
-    session: &Session,
-    gpu: &GpuRenderer,
+    ctx: TileDrawCtx<'_>,
 ) {
     // 一次性算好每块瓦片的 (col, row)（位置哈希选变体，确定性）。
     let coords = releste_map::autotiler::generate(tiles, defs);
@@ -1146,13 +1163,16 @@ fn push_tiles(
             }
             let id = releste_map::tile_char(value);
             let Some(def) = defs.def(id) else {
-                if session.warn_once(&format!("no-tileset:{id}")) {
+                if ctx.session.warn_once(&format!("no-tileset:{id}")) {
                     warn!(tile = %id, "no tileset definition; skipping this tile id");
                 }
                 continue;
             };
-            let Some((group, sprite)) = session.atlas.sprite(&def.path) else {
-                if session.warn_once(&format!("missing-tileset:{}", def.path)) {
+            let Some((group, sprite)) = ctx.session.atlas.sprite(&def.path) else {
+                if ctx
+                    .session
+                    .warn_once(&format!("missing-tileset:{}", def.path))
+                {
                     warn!(
                         tile = %id,
                         path = %def.path,
@@ -1161,8 +1181,8 @@ fn push_tiles(
                 }
                 continue;
             };
-            let atlas_id = sprites::group_id(&session.atlas, group);
-            let Some((tw, th)) = gpu.texture_size(atlas_id) else {
+            let atlas_id = sprites::group_id(&ctx.session.atlas, group);
+            let Some((tw, th)) = ctx.gpu.texture_size(atlas_id) else {
                 continue; // 纹理没上传（未转码的 .data），load_atlas 已告警
             };
             let (col, row) = coords[(ty as usize) * (tiles.width as usize) + (tx as usize)];
@@ -1175,8 +1195,8 @@ fn push_tiles(
             );
             out.push(
                 SpriteDraw::new(atlas_id, pos, Vec2::from_f32s(TILE, TILE), uv)
-                    .with_layer(layer.value())
-                    .with_color(tint),
+                    .with_layer(ctx.layer.value())
+                    .with_color(ctx.tint),
             );
         }
     }
@@ -1570,7 +1590,7 @@ mod tests {
             "right half exists"
         );
         assert!(
-            cells.iter().any(|(_, .., v)| !*v),
+            cells.iter().any(|(.., v)| !*v),
             "the gap must skip at least one cell"
         );
 

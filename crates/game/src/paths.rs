@@ -27,7 +27,7 @@ impl Paths {
     /// 第一个长得像的，让后续加载带着**完整路径**报错。
     pub fn resolve(explicit: Option<&Path>) -> Self {
         if let Some(root) = explicit {
-            return Self::under(&root.to_path_buf());
+            return Self::under(root);
         }
         let mut candidates: Vec<PathBuf> = Vec::new();
         candidates.extend(Self::exe_root());

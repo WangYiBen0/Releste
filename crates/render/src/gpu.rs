@@ -758,7 +758,9 @@ fn unpack_rows(
     for r in 0..height as usize {
         let src = &padded[r * row..r * row + stride];
         if swap_rb {
-            for px in src.chunks_exact(4) {
+            // `as_chunks` 把每个 RGBA 像素变成 `&[u8; 4]`（clippy
+            // chunks_exact_to_as_chunks：块大小是常量时就该这么写）。
+            for px in src.as_chunks::<4>().0 {
                 out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
             }
         } else {

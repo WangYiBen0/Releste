@@ -90,6 +90,12 @@ impl Vec2 {
     }
 
     /// 取绝对值（每个分量）。
+    /// 各分量向下取整（XNA `Vector2.Floor()`；原版头发渲染用它把发根
+    /// 吸附到整数像素，`pureCeleste.cs:111179` `Nodes[0] = Nodes[0].Floor()`）。
+    pub fn floor(self) -> Vec2 {
+        Vec2::new(Fx::from_int(self.x.floor()), Fx::from_int(self.y.floor()))
+    }
+
     pub fn abs(self) -> Vec2 {
         Vec2 {
             x: self.x.abs(),

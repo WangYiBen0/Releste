@@ -136,6 +136,14 @@ pub struct Player {
     /// 强制 varJump 钳制的剩余 tick（原版 `AutoJump` + `AutoJumpTimer`，
     /// 120590-120594：向上转场时自动跳一下，0.2s 内不管按键都钳住）。
     auto_jump: u32,
+    /// 当前冲刺数（原版 `Player.Dashes`，118860 附近构造为 MaxDashes）。
+    /// dash 状态机落地前恒为库存值，头发颜色据此取 NORMAL。
+    pub dashes: u8,
+    /// 冲刺库存上限（原版 `Player.MaxDashes`；Prologue `Inventory.Prologue`
+    /// 无二段冲刺 → 1，见 118856 附近的构造与 119421）。
+    pub max_dashes: u8,
+    /// 头发白闪剩余时间（原版 `hairFlashTimer`，120284）。
+    hair_flash: u8,
 }
 
 impl Player {
@@ -153,6 +161,9 @@ impl Player {
             coyote: 0,
             var_jump: 0,
             auto_jump: 0,
+            dashes: 1,
+            max_dashes: 1,
+            hair_flash: 0,
         }
     }
 
@@ -168,6 +179,28 @@ impl Player {
     pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
         self.physics_in(input, rooms);
         self.clamp_to_world(rooms);
+    }
+
+    /// 头发颜色：原版 `Player.UpdateHair`（pureCeleste.cs:120244-120296）
+    /// 的非渐变部分 —— 冲刺耗尽取 USED，回满瞬间（上一 tick 数量不同或
+    /// 白闪未结束）取 FLASH，否则 `Dashes == 2 ? TWO_DASHES : NORMAL`。
+    ///
+    /// `used` 渐入（`Lerp(Hair.Color, Used, 6*dt)`，120258-120262）和
+    /// `hairFlashTimer = 0.12s`（120284）需要逐帧颜色状态，随 dash 落地
+    /// 时把本函数升级为带当前颜色的版本；现在返回离散状态，Prologue
+    /// （库存 1 段且满）恒为 NORMAL —— 与原版一致。
+    pub fn hair_color(&self) -> [f32; 4] {
+        let dashes = self.dashes;
+        let max = self.max_dashes;
+        if dashes == 0 && dashes < max {
+            crate::sprites::hair_color::USED
+        } else if self.hair_flash > 0 {
+            crate::sprites::hair_color::FLASH
+        } else if dashes == 2 {
+            crate::sprites::hair_color::TWO_DASHES
+        } else {
+            crate::sprites::hair_color::NORMAL
+        }
     }
 
     /// 向上转场的前置调整（原版 `BeforeUpTransition`，
