@@ -336,12 +336,25 @@ pub struct Session {
     pub spawn: Vec2,
     /// 出生点所在房间。
     pub spawn_room: String,
+    /// 动画表（`Gameplay.sprites.toml`；缺失 = 空表，玩家回落静态帧）。
+    pub anims: crate::sprites::AnimationTable,
     /// 每 backdrop 的可见性状态（原版 `Backdrop.Visible`，109366 起始
     /// 为 `true`；`Backdrop.Update` 每帧按 `IsVisible` + 转场规则刷新，
     /// `109468-109489`）。下标 = backgrounds + foregrounds 顺序拼接。
     backdrop_visible: RefCell<Vec<bool>>,
     /// 只告警一次的 key，避免每帧刷屏。
     warned: RefCell<HashSet<String>>,
+}
+
+/// 刘海帧名：`bangs + 动画帧号 mod 3`（原版 `HairFrame` 读帧元数据，
+/// `pureCeleste.cs:111351-111356`；本图集未存逐帧元数据，用动画帧号
+/// 取模等价：idle 单帧 → bangs00，walk 循环 → 三帧交替）。
+fn bangs_frame(anim_frame: usize) -> &'static str {
+    match anim_frame % 3 {
+        0 => sprites::PLAYER_BANGS_SPRITE,
+        1 => "characters\\player\\bangs01",
+        _ => "characters\\player\\bangs02",
+    }
 }
 
 impl Session {
@@ -457,10 +470,18 @@ impl Session {
             &spawn_room,
         );
 
+        let anims = match crate::sprites::AnimationTable::load(paths, &atlas_name) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "animation table failed to parse; falling back to static frames");
+                crate::sprites::AnimationTable::default()
+            }
+        };
         Ok(Session {
             doc,
             atlas_name,
             atlas,
+            anims,
             tilesets,
             bg_tilesets,
             spawn,
@@ -487,6 +508,7 @@ impl Session {
                 std::path::Path::new("/nonexistent"),
             ),
             atlas_name: atlas_name.to_string(),
+            anims: crate::sprites::AnimationTable::default(),
             tilesets: releste_map::TilesetsDoc::default(),
             bg_tilesets: releste_map::TilesetsDoc::default(),
             spawn,
@@ -641,6 +663,8 @@ impl Session {
         pos: Vec2,
         flip_x: bool,
         hair_color: [f32; 4],
+        body_sprite: Option<&str>,
+        anim_frame: usize,
     ) -> Vec<SpriteDraw> {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
@@ -660,7 +684,7 @@ impl Session {
         nodes[0] = nodes[0].floor();
 
         let pieces: [(&str, &Vec2); sprites::HAIR_COUNT] = [
-            (sprites::PLAYER_BANGS_SPRITE, &nodes[0]),
+            (bangs_frame(anim_frame), &nodes[0]),
             (sprites::PLAYER_HAIR_SPRITE, &nodes[1]),
             (sprites::PLAYER_HAIR_SPRITE, &nodes[2]),
             (sprites::PLAYER_HAIR_SPRITE, &nodes[3]),
@@ -689,7 +713,7 @@ impl Session {
                 out.push(d);
             }
         }
-        if let Some(d) = self.body_draw(gpu, anchor, flip_x) {
+        if let Some(d) = self.body_draw(gpu, anchor, flip_x, body_sprite) {
             out.push(d);
         }
         out
@@ -734,8 +758,16 @@ impl Session {
     /// `<Origin x="16" y="32"/>` 才是原版 `Sprite.Position` 的语义，
     /// 减掉 `.meta` 的裁剪位移后落到子图内（见 [`sprites::origin_in_trim`]）。
     /// 原实现按 `w*0.5` 取，把身体往左挪了 1.5px。
-    fn body_draw(&self, gpu: &GpuRenderer, anchor: Vec2, flip_x: bool) -> Option<SpriteDraw> {
-        let (group, sprite) = self.atlas.sprite(sprites::PLAYER_SPRITE)?;
+    fn body_draw(
+        &self,
+        gpu: &GpuRenderer,
+        anchor: Vec2,
+        flip_x: bool,
+        body_sprite_name: Option<&str>,
+    ) -> Option<SpriteDraw> {
+        let (group, sprite) = self
+            .atlas
+            .sprite(body_sprite_name.unwrap_or(sprites::PLAYER_SPRITE))?;
         let id = sprites::group_id(&self.atlas, group);
         let (tw, th) = gpu.texture_size(id)?;
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
@@ -1319,6 +1351,7 @@ mod tests {
                 Path::new("/nonexistent"),
             ),
             atlas_name: "Test".into(),
+            anims: crate::sprites::AnimationTable::default(),
             tilesets: releste_map::TilesetsDoc::default(),
             bg_tilesets: releste_map::TilesetsDoc::default(),
             spawn: Vec2::from_f32s(-56.0, 136.0),

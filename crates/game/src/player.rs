@@ -232,6 +232,13 @@ pub struct Player {
     dash_buffer: u16,
     /// 冲刺起手的停帧请求（`Celeste.Freeze(0.05f)`，122540；service 消费）。
     pub freeze_ticks: u8,
+    /// 动画状态（原版 `Sprite`：当前动画 id、帧、计时器、是否播放中）。
+    pub anim_id: String,
+    pub anim_frame: usize,
+    anim_timer: f32,
+    anim_playing: bool,
+    /// 快速跳跃/下落标志（`fastJump`，120437/120469）。
+    fast_jump: bool,
 }
 
 /// `Math.Sign(before.X) == Math.Sign(speed.X)`（122770）的 Fx 版。
@@ -280,6 +287,11 @@ impl Player {
             prev_dash: false,
             dash_buffer: 0,
             freeze_ticks: 0,
+            anim_id: String::new(),
+            anim_frame: 0,
+            anim_timer: 0.0,
+            anim_playing: false,
+            fast_jump: false,
         }
     }
 
@@ -305,6 +317,25 @@ impl Player {
         }
         self.clamp_to_world(rooms);
         self.update_hair_color();
+    }
+
+    /// 动画推进 + 状态映射（原版 `UpdateSprite` 在移动后调用，120068；
+    /// `Sprite.Update` 经 `base.Update` 每帧跑）。
+    pub fn update_visuals(
+        &mut self,
+        table: &crate::sprites::AnimationTable,
+        input: &Input,
+        rooms: &[Room],
+    ) {
+        // 从未播过动画 → 起始动画（sprite 元素的 `start`，10189 校验）。
+        if self.anim_id.is_empty() {
+            if let Some(def) = table.sprites.get("player") {
+                let start = def.start.clone();
+                self.play(table, &start);
+            }
+        }
+        self.update_animation(table);
+        self.update_sprite(table, input, rooms);
     }
 
     /// 原版 `Player.Update` 头部的公共计时与回充（119827-119921）。
@@ -615,6 +646,158 @@ impl Player {
             self.hair_color_current = crate::sprites::hair_color::NORMAL;
         }
         self.last_dashes = self.dashes; // 120295
+    }
+
+    /// 原版 `Sprite.Play(id)`：同 id 且在播 → 不重启；表缺失/未知 id 是
+    /// 无操作（渲染回落静态帧）。
+    pub fn play(&mut self, table: &crate::sprites::AnimationTable, id: &str) {
+        if self.anim_id == id && self.anim_playing {
+            return;
+        }
+        let Some(def) = table.sprites.get("player") else {
+            return;
+        };
+        let Some(anim) = def.anims.get(id) else {
+            return;
+        };
+        self.anim_id = id.to_string();
+        self.anim_frame = 0;
+        self.anim_timer = 0.0;
+        self.anim_playing = anim.delay > 0.0 && anim.frames.len() > 1;
+    }
+
+    /// 原版 `Sprite.Update`（10170-10308）：计时按帧间隔推进，循环回 0，
+    /// 非循环停在末帧并停止播放。
+    pub fn update_animation(&mut self, table: &crate::sprites::AnimationTable) {
+        let Some(def) = table.sprites.get("player") else {
+            return;
+        };
+        let Some(anim) = def.anims.get(&self.anim_id) else {
+            return;
+        };
+        if !self.anim_playing || anim.delay <= 0.0 {
+            return;
+        }
+        self.anim_timer += 1.0 / 60.0;
+        if self.anim_timer < anim.delay {
+            return;
+        }
+        self.anim_timer -= anim.delay;
+        self.anim_frame += 1;
+        if self.anim_frame >= anim.frames.len() {
+            if anim.looped {
+                self.anim_frame = 0;
+            } else {
+                self.anim_frame = anim.frames.len() - 1;
+                self.anim_playing = false;
+                self.anim_id.clear();
+            }
+        }
+    }
+
+    /// 当前帧的图集纹理名（缺表/缺帧 → `None`，渲染回落静态帧）。
+    pub fn anim_frame_texture(&self, table: &crate::sprites::AnimationTable) -> Option<String> {
+        let def = table.sprites.get("player")?;
+        let anim = def.anims.get(&self.anim_id)?;
+        anim.frames.get(self.anim_frame).cloned()
+    }
+
+    /// `Sprite.Running`：当前动画是否循环中。
+    fn anim_is_looping(&self, table: &crate::sprites::AnimationTable) -> bool {
+        table
+            .sprites
+            .get("player")
+            .and_then(|d| d.anims.get(&self.anim_id))
+            .is_some_and(|a| a.looped)
+            && self.anim_playing
+    }
+
+    /// 原版 `Player.UpdateSprite`（pureCeleste.cs:120298-120481）的可及
+    /// 分支（无持有物/风/攀爬/梦境/太空/下蹲 —— 偏差声明见模块文档）：
+    /// 冲刺攻击窗 → skid/dash；地面 → push/edge/edgeBack/lookUp/idle/
+    /// skid/flip/runSlow/runFast；空中 → jumpSlow/jumpFast/fallSlow/
+    /// fallFast。
+    pub fn update_sprite(
+        &mut self,
+        table: &crate::sprites::AnimationTable,
+        input: &Input,
+        rooms: &[Room],
+    ) {
+        let dash_attacking = self.dash_attack > 0;
+        if dash_attacking {
+            if self.on_ground
+                && self.dash_dir.y == Fx::zero()
+                && self.vel.x != Fx::zero()
+                && self.move_x == Fx::from_int(-self.vel.x.signum())
+            {
+                self.play(table, "skid");
+            } else {
+                self.play(table, "dash");
+            }
+        } else if self.state == 0 {
+            if self.on_ground {
+                self.fast_jump = false;
+                let run = self.vel.x.abs() > Fx::from_ratio(3, 4);
+                if self.move_x != Fx::zero()
+                    && self.hits(rooms, self.pos.x + self.move_x, self.pos.y)
+                {
+                    self.play(table, "push");
+                } else if !run && self.move_x == Fx::zero() {
+                    let front = self.hits(
+                        rooms,
+                        self.pos.x + Fx::from_int(self.facing),
+                        self.pos.y + Fx::from_int(2),
+                    ) || self.hits(
+                        rooms,
+                        self.pos.x + Fx::from_int(self.facing * 4),
+                        self.pos.y + Fx::from_int(2),
+                    );
+                    let back = self.hits(
+                        rooms,
+                        self.pos.x - Fx::from_int(self.facing),
+                        self.pos.y + Fx::from_int(2),
+                    ) || self.hits(
+                        rooms,
+                        self.pos.x - Fx::from_int(self.facing * 4),
+                        self.pos.y + Fx::from_int(2),
+                    );
+                    if !front {
+                        self.play(table, "edge");
+                    } else if !back {
+                        self.play(table, "edgeBack");
+                    } else if input.up {
+                        self.play(table, "lookUp");
+                    } else {
+                        self.play(table, "idle");
+                    }
+                } else if self.move_x != Fx::zero() && self.vel.x.signum() == -self.move_x.signum()
+                {
+                    if self.vel.x.abs() > Fx::from_ratio(3, 2) {
+                        self.play(table, "skid");
+                    } else {
+                        self.play(table, "flip");
+                    }
+                } else if !self.anim_is_looping(table) {
+                    if self.vel.x.abs() < Fx::from_ratio(3, 4) {
+                        self.play(table, "runSlow");
+                    } else {
+                        self.play(table, "runFast");
+                    }
+                }
+            } else if self.vel.y < Fx::zero() {
+                if self.fast_jump || self.vel.x.abs() > Fx::from_ratio(3, 2) {
+                    self.fast_jump = true;
+                    self.play(table, "jumpFast");
+                } else {
+                    self.play(table, "jumpSlow");
+                }
+            } else if self.fast_jump || self.vel.y >= Fx::from_ratio(8, 3) {
+                self.fast_jump = true;
+                self.play(table, "fallFast");
+            } else {
+                self.play(table, "fallSlow");
+            }
+        }
     }
 
     /// State 0（NormalUpdate，pureCeleste.cs:121824-122101）。

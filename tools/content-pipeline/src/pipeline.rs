@@ -77,6 +77,7 @@ impl Pipeline {
 
         if self.wants("atlas") {
             self.convert_atlases()?;
+            self.convert_sprites()?;
         }
         if self.wants("tilesets") {
             self.convert_tilesets()?;
@@ -175,6 +176,43 @@ impl Pipeline {
                 self.report.pending_textures
             ));
         }
+        Ok(())
+    }
+
+    /// `Graphics/Sprites.xml` → `atlas/Gameplay.sprites.toml`。
+    ///
+    /// 原版 `GFX.SpriteBank = new SpriteBank(GFX.Game, ...)`：所有动画
+    /// 都在 Game 图集（Gameplay.png，`pureCeleste.cs` 启动段的
+    /// `GFX.Load`）；本引擎的 Game 图集名就是 `Gameplay`。
+    /// 文件缺失只告警（不是每张图都有动画数据要转）。
+    fn convert_sprites(&mut self) -> Result<(), PipelineError> {
+        let src = self.config.source.join("Graphics/Sprites.xml");
+        let text = match std::fs::read_to_string(&src) {
+            Ok(t) => t,
+            Err(e) => {
+                self.report
+                    .warn(format!("Sprites.xml not found ({}): {}", src.display(), e));
+                return Ok(());
+            }
+        };
+        let defs = crate::sprites_xml::parse_sprites(&text).map_err(|e| {
+            PipelineError::io(
+                src.display(),
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+            )
+        })?;
+        let out_dir = self.safe_out(&PathBuf::from("atlas"))?;
+        std::fs::create_dir_all(&out_dir).map_err(|e| PipelineError::io(out_dir.display(), e))?;
+        let out_path = out_dir.join("Gameplay.sprites.toml");
+        let toml = toml::to_string_pretty(&SpritesToml { sprite: defs }).map_err(|e| {
+            PipelineError::Parse {
+                format: "sprites.toml",
+                path: out_path.display().to_string(),
+                message: e.to_string(),
+            }
+        })?;
+        std::fs::write(&out_path, &toml).map_err(|e| PipelineError::io(out_path.display(), e))?;
+        self.report.sprites += 0; // 动画表不是 sprite 数量；保持计数语义不变
         Ok(())
     }
 
@@ -1221,4 +1259,10 @@ pub fn example_sync_rule(kind: &str, flag: &str) -> SyncRule {
         mode: SyncMode::Flag,
         flag: Some(flag.to_string()),
     }
+}
+
+/// `Gameplay.sprites.toml` 的顶层结构。
+#[derive(serde::Serialize)]
+struct SpritesToml {
+    sprite: Vec<crate::sprites_xml::SpriteDef>,
 }

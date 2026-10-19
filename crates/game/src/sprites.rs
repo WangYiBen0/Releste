@@ -6,6 +6,8 @@
 //! （ROADMAP Phase 3）；这里是 0-Intro 能跑起来的最小内置表，
 //! 未命中的实体一律 `tracing::warn` + 跳过（§15.8 / §15.9）。
 
+use std::collections::HashMap;
+
 use releste_render::atlas::{Sprite, SpriteAtlas, TextureGroup};
 
 /// 一格瓦片的世界像素尺寸。房间 `lvl_-1` 宽 320 / 40 格 = 8px。
@@ -208,6 +210,105 @@ pub fn group_id(atlas: &SpriteAtlas, group: &TextureGroup) -> u32 {
         .iter()
         .position(|t| std::ptr::eq(t, group))
         .unwrap_or(0) as u32
+}
+
+// ---------------------------------------------------------------------------
+// 动画表（`Graphics/Sprites.xml` → `Gameplay.sprites.toml` 的运行时形态）。
+//
+// 原版 `SpriteBank`（pureCeleste.cs:15017-15042）+ `Sprite`（10136-10460）：
+// `Play(id)` 同 id 不重启（10181 附近），`Update` 按帧间隔推进、循环动画
+// 回到第 0 帧、非循环停在末帧并把 `CurrentAnimationID` 清空（10290-10305）。
+// ---------------------------------------------------------------------------
+
+/// 一条动画：帧名列表 + 间隔。
+#[derive(Debug, Clone)]
+pub struct AnimDef {
+    /// 帧序号（对图集里 `path` 前缀枚举序列取下标，解析时已展开成名字）。
+    pub frames: Vec<String>,
+    /// 帧间隔（秒）；0 = 不自动播放（原版 `Animating = Delay > 0f`）。
+    pub delay: f32,
+    /// `<Loop>` / 带 `goto` 的 `<Anim>` = 循环；否则播完即停。
+    pub looped: bool,
+}
+
+/// 一个 sprite（`player` / `badeline`…）的动画集。
+#[derive(Debug, Clone, Default)]
+pub struct SpriteDef {
+    pub start: String,
+    pub anims: HashMap<String, AnimDef>,
+}
+
+/// 整张动画表。
+#[derive(Debug, Clone, Default)]
+pub struct AnimationTable {
+    pub sprites: HashMap<String, SpriteDef>,
+}
+
+impl AnimationTable {
+    /// 从 `assets/atlas/<atlas>.sprites.toml` 读；文件缺失 → 空表（调用方
+    /// 用 `is_empty()` 决定是否回落静态帧，warn 一次）。
+    pub fn load(paths: &crate::paths::Paths, atlas_name: &str) -> anyhow::Result<Self> {
+        #[derive(serde::Deserialize)]
+        struct AnimToml {
+            id: String,
+            #[serde(default)]
+            delay: f32,
+            #[serde(default)]
+            frames: Vec<usize>,
+            #[serde(default)]
+            looped: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct SpriteToml {
+            name: String,
+            #[serde(default)]
+            path: String,
+            #[serde(default)]
+            start: String,
+            #[serde(default)]
+            anim: Vec<AnimToml>,
+        }
+        #[derive(serde::Deserialize)]
+        struct TableToml {
+            #[serde(default)]
+            sprite: Vec<SpriteToml>,
+        }
+
+        let path = paths.atlas_dir().join(format!("{atlas_name}.sprites.toml"));
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return Ok(AnimationTable::default()),
+        };
+        let parsed: TableToml = toml::from_str(&raw)?;
+        let mut sprites = HashMap::new();
+        for def in parsed.sprite {
+            let mut anims = HashMap::new();
+            for a in def.anim {
+                // 帧序号 → 名字：`path + 零填充两位`（运行时逐帧查图集，
+                // 缺帧只告警 —— 见 `AnimationTable::frame`）。
+                let frames = a
+                    .frames
+                    .iter()
+                    .map(|i| releste_render::atlas::frame_name(&def.path, *i))
+                    .collect();
+                anims.insert(
+                    a.id.clone(),
+                    AnimDef {
+                        frames,
+                        delay: a.delay,
+                        looped: a.looped,
+                    },
+                );
+            }
+            let start = if def.start.is_empty() {
+                anims.keys().next().cloned().unwrap_or_default()
+            } else {
+                def.start
+            };
+            sprites.insert(def.name, SpriteDef { start, anims });
+        }
+        Ok(AnimationTable { sprites })
+    }
 }
 
 #[cfg(test)]

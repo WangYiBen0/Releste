@@ -301,8 +301,16 @@ impl GameService {
     fn player_draws(&self, gpu: &GpuRenderer, alpha: f32) -> Vec<SpriteDraw> {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
         let pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
-        self.session
-            .player_draws(gpu, pos, self.player.facing < 0, self.player.hair_color())
+        self.session.player_draws(
+            gpu,
+            pos,
+            self.player.facing < 0,
+            self.player.hair_color(),
+            self.player
+                .anim_frame_texture(&self.session.anims)
+                .as_deref(),
+            self.player.anim_frame,
+        )
     }
 
     /// 插值后的相机位置（视口**中心**）。
@@ -379,6 +387,9 @@ impl GameService {
             self.advance_transition();
         } else {
             self.player.update(&self.input, &self.session);
+            // UpdateSprite + Sprite.Update（120068/119824：每帧动画推进）。
+            self.player
+                .update_visuals(&self.session.anims, &self.input, &self.session.doc.rooms);
             self.update_camera();
             // EnforceBounds：转场触发/边界钳制，在物理之后（120168）。
             self.check_room_transition();

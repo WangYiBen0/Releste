@@ -266,6 +266,13 @@ impl SpriteAtlas {
     }
 }
 
+/// 动画帧名：`前缀 + 零填充两位的序号`（Monocle
+/// `GetAtlasSubtextureFromAtlasAt` 的补零查找，14327-14343 —— 先试
+/// 无填充再逐级补零，本图集命名统一两位，`idle00`）。
+pub fn frame_name(prefix: &str, index: usize) -> String {
+    format!("{prefix}{:02}", index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

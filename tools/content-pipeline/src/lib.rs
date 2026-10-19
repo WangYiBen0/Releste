@@ -23,6 +23,7 @@ mod dialog;
 mod error;
 mod mapbin;
 mod pipeline;
+pub mod sprites_xml;
 mod tilesets;
 mod xml;
 
