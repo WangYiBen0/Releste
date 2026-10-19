@@ -100,6 +100,10 @@ pub struct GameService {
     host: Option<PluginHost>,
     watcher: Option<FileWatcher>,
     static_draws: Vec<SpriteDraw>,
+    /// 转场期间保留下来的**上一个房间**静态批次（原版转场结束时才
+    /// `UnloadEntities` 旧房间实体，115415/115432 —— 切屏动画进行中，
+    /// 旧房间的瓦片/实体必须继续渲染，不能提前变成虚无）。
+    transition_statics: Option<Vec<SpriteDraw>>,
     static_dirty: bool,
     /// 静态批次当前对应的房间（切房即重建 —— 原版一次只画一个房间）。
     built_room: String,
@@ -161,6 +165,7 @@ impl GameService {
             host,
             watcher,
             static_draws,
+            transition_statics: None,
             static_dirty: gpu.is_none(),
             built_room,
             current_room,
@@ -249,6 +254,20 @@ impl GameService {
         }
 
         batch.begin();
+        if let Some(prev) = &self.transition_statics {
+            for draw in prev {
+                if batch.push(*draw).is_err() {
+                    if !self.overflow_warned {
+                        self.overflow_warned = true;
+                        warn!(
+                            capacity = gpu.vertex_capacity(),
+                            "sprite batch full during transition; previous-room draws dropped"
+                        );
+                    }
+                    break;
+                }
+            }
+        }
         for draw in &self.static_draws {
             if batch.push(*draw).is_err() {
                 if !self.overflow_warned {
@@ -533,6 +552,9 @@ impl GameService {
             to = %next_room,
             "room transition"
         );
+        // 原版转场结束时才卸载旧房间的实体（`UnloadEntities(toRemove)`，
+        // 115415；`UnloadEntities` 115432）—— 动画进行中旧房间照常渲染。
+        self.transition_statics = Some(std::mem::take(&mut self.static_draws));
         self.current_room = next_room;
         // hitbox 左上角 = 底中心 − (W/2, H)。
         let player_to = player_to - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
@@ -598,6 +620,9 @@ impl GameService {
             self.player.prev_pos = self.player.pos;
             self.prev_camera = self.camera;
             self.transition = None;
+            // 转场结束：旧房间实体在这里才卸载（此时相机已整体在新房间，
+            // 丢弃旧批次与原版 UnloadEntities 一样是不可见的）。
+            self.transition_statics = None;
         }
     }
 }
