@@ -44,6 +44,8 @@ pub struct GameApp {
     kernel: Option<Kernel>,
     batch: SpriteBatch,
     keys: Input,
+    /// 用户按键绑定（`<root>/settings.toml`，缺省 = 原版默认）。
+    bindings: crate::settings::KeyBindings,
     accumulator: Duration,
     last: Instant,
     alpha: f32,
@@ -69,6 +71,7 @@ impl GameApp {
         screenshot: Option<PathBuf>,
         screenshot_after: u64,
     ) -> Self {
+        let bindings = crate::settings::KeyBindings::load(paths.root());
         let watcher = watch_maps(&paths);
         let now = Instant::now();
         GameApp {
@@ -81,6 +84,7 @@ impl GameApp {
             kernel: None,
             batch: SpriteBatch::default(),
             keys: Input::default(),
+            bindings,
             accumulator: Duration::ZERO,
             last: now,
             alpha: 0.0,
@@ -198,21 +202,31 @@ impl GameApp {
             return;
         };
         let down = event.state == ElementState::Pressed;
-        // 原版默认键位（pureCeleste.cs:101602-101651，SetDefaultKeyboardControls）：
-        // 方向键移动（**没有** WASD，Z 被抓攀占用）、C 跳、X 冲刺、
-        // Z/V/LeftShift 抓攀、Enter 暂停。`TranslateKeys`（101708）只做
-        // 扫描码本地化，不加新键 —— winit 的 `PhysicalKey` 就是扫描码，
-        // 语义一致。冲刺/抓攀尚未实现（ROADMAP Phase 4.1），不占键位。
-        match code {
-            KeyCode::ArrowLeft => self.keys.left = down,
-            KeyCode::ArrowRight => self.keys.right = down,
-            KeyCode::ArrowUp => self.keys.up = down,
-            KeyCode::ArrowDown => self.keys.down = down,
-            KeyCode::KeyC => self.keys.jump = down,
-            // Enter = 原版 Pause（101642）；ESC = 原版菜单键
-            //（`Input.ESC`，110396），引擎沿用为暂停开关。
-            KeyCode::Escape | KeyCode::Enter if down => self.toggle_pause(),
-            _ => {}
+        // 键位 = `settings.toml`（缺省即原版默认：方向键移动、C 跳 ——
+        // `SetDefaultKeyboardControls`，pureCeleste.cs:101602-101651；
+        // `TranslateKeys` 101708 的物理键语义 = winit `PhysicalKey`）。
+        // Enter = 原版 Pause（101642）；ESC = 原版菜单键（`Input.ESC`，
+        // 110396），引擎沿用为暂停开关。冲刺/抓攀等 Phase 4.1 后加入。
+        if code == KeyCode::Escape || code == KeyCode::Enter {
+            if down {
+                self.toggle_pause();
+            }
+            return;
+        }
+        if self.bindings.left.contains(&code) {
+            self.keys.left = down;
+        }
+        if self.bindings.right.contains(&code) {
+            self.keys.right = down;
+        }
+        if self.bindings.up.contains(&code) {
+            self.keys.up = down;
+        }
+        if self.bindings.down.contains(&code) {
+            self.keys.down = down;
+        }
+        if self.bindings.jump.contains(&code) {
+            self.keys.jump = down;
         }
     }
 
