@@ -20,14 +20,14 @@ use crate::sprites;
 /// 一格瓦片的世界像素数（`lvl_-1` 宽 320 / 40 格 = 8px）。
 const TILE: f32 = sprites::TILE_PX as f32;
 
-/// `introCrusher` 的画层：原版 `Depth = -10501`（`pureCeleste.cs:106316`），
+/// `introCrusher` 的画层：原版 `Depth = -10501`（`pureCeleste.cs:106324`），
 /// 数值越小越靠前 —— 排在 SolidTiles 的 −10000（`124913`）之前，玩家
 /// （`0`）更在其后，但仍在最后绘制的前景视差层之前。引擎层序（值越小
 /// 越先画）取 `Effects(300) < 本层 < Foreground(500)`。
 const LAYER_INTRO_CRUSHER: i32 = Layer::Foreground.value() - 100;
 
 /// `wire`（`above=false`）的画层：原版 `Depth = 2000`
-/// （`pureCeleste.cs:106692`）—— 画在背景层之后、地形与玩家之前
+/// （`pureCeleste.cs:106687`）—— 画在背景层之后、地形与玩家之前
 /// （原版数值越小越靠前）。引擎层序（值越小越先画）落在
 /// `BgTiles(-500)` 与 `Tiles(0)` 之间。
 const LAYER_WIRE: i32 = Layer::BgTiles.value() + 100;
@@ -898,7 +898,7 @@ impl Session {
 
     /// `IntroCrusher`：原版**没有任何 crushblock/Kevin 贴图**，外观是
     /// autotiler 生成的一整块盒子 —— `GFX.FGAutotiler.GenerateBox('3',
-    /// width/8, height/8)` 塞进实体自己的 TileGrid（`pureCeleste.cs:106322`；
+    /// width/8, height/8)` 塞进实体自己的 TileGrid（`pureCeleste.cs:106325`；
     /// GenerateBox 本身在 `87832`：整盒填 id，盒外按默认 `Behaviour`
     /// 当空 —— `CheckTile` 的 `mapData == null` 分支返回 `EdgesExtend`
     /// = false，`87985-87989`）。

@@ -11,8 +11,8 @@
 //!   碰撞查询覆盖 hitbox 触及的**所有**房间（骑缝时两边都查，
 //!   头不会扎进隔壁房间的实心里）；撞墙/落地吸附到**世界格边**，
 //!   与房间原点无关。中心掉出所有房间时由最近房间兜底夹回。
-//! - **跳跃已对齐**：`Jump()` 的 -105 + `JumpHBoost`（120713-120714）+
-//!   varJump 钳制（122148-122156）+ 缓冲 0.08s（110376）/ 土狼 0.1s
+//! - **跳跃已对齐**：`Jump()` 的 -105 + `JumpHBoost`（120704-120705）+
+//!   varJump 钳制（122042-122048）+ 缓冲 0.08s（110376）/ 土狼 0.1s
 //!   （119832-119839），见各常量的出处注释。
 //! - **引擎自造（无原版对应，偏差声明）**：多房间连续世界的碰撞
 //!   （`Player::hit_in` 的骑缝双查）、世界级兜底夹取
@@ -48,7 +48,7 @@ const RUN: Fx = Fx::from_ratio(3, 2);
 /// 水平加速度 1000 px/s²（≈0.278 px/tick²）—— 起步不是瞬间满速。
 const RUN_ACCEL: Fx = Fx::from_ratio(5, 18);
 /// 超速回归 400 px/s²：仅当 **同向超速**（|vx| > 90 且与输入同号）时用；
-/// 无输入停下、反向刹车都走 1000 的全速档（`pureCeleste.cs:122068-122074`）。
+/// 无输入停下、反向刹车都走 1000 的全速档（`pureCeleste.cs:121965-121975`）。
 const RUN_REDUCE: Fx = Fx::from_ratio(1, 9);
 /// 空中操控系数 0.65 —— 空中加速是地面的一半多点。
 const AIR_MULT: Fx = Fx::from_ratio(13, 20);
@@ -69,26 +69,26 @@ const FAST_MAX_ACCEL: Fx = Fx::from_ratio(1, 12);
 /// 顶点半重力阈值 40 px/s（2/3 px/tick）。参考 `HalfGravThreshold = 40f`。
 const HALF_GRAV_THRESHOLD: Fx = Fx::from_ratio(2, 3);
 /// 起跳竖直速度 -105 px/s（-7/4 px/tick）。`Player.Jump`：
-/// `Speed.Y = -105f`（pureCeleste.cs:120714）。
+/// `Speed.Y = -105f`（pureCeleste.cs:120705）。
 const JUMP_SPEED: Fx = Fx::from_ratio(-7, 4);
 /// 跳跃水平助力 40 px/s（2/3 px/tick）：`Speed.X += 40f * moveX`
-/// （pureCeleste.cs:120713）。跑动中起跳会短暂超速，再被 400 档拉回。
+/// （pureCeleste.cs:120704）。跑动中起跳会短暂超速，再被 400 档拉回。
 const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
-/// varJump 时长 0.2s = 12 tick（pureCeleste.cs:120715）。
+/// varJump 时长 0.2s = 12 tick（pureCeleste.cs:120698）。
 ///
-/// 按住跳跃期间竖直速度被钳回起跳值（122130-122138）—— 重力被完全
+/// 按住跳跃期间竖直速度被钳回起跳值（122042-122048）—— 重力被完全
 /// 抵消，跳满 ≈ 12×1.75 + 105²/1800 ≈ 27px（3.4 格）；松手计时清零、
 /// 只剩重力，即得可变跳高。**没有**"松手瞬间砍速度"——削高全靠钳制。
 const VAR_JUMP_TICKS: u32 = 12;
 /// 碰撞解算的推进步长：1/2 px。
 const STEP: Fx = Fx::from_ratio(1, 2);
 /// 冲刺速度 240 px/s（4 px/tick）。`DashCoroutine`：`speed = value * 240f`
-/// （pureCeleste.cs:122768）。
+/// （pureCeleste.cs:122745）。
 const DASH_SPEED: Fx = Fx::from_int(4);
 /// 冲刺末段速度 160 px/s（8/3 px/tick）：0.15s 后 `Speed = DashDir * 160f`
-/// （122822-122822，`DashDir.Y <= 0` 时）。
+/// （122824，`DashDir.Y <= 0` 时）。
 const DASH_END_SPEED: Fx = Fx::from_ratio(8, 3);
-/// 冲刺时长 0.15s = 9 tick（`yield return 0.15f`，122812）。
+/// 冲刺时长 0.15s = 9 tick（`yield return 0.15f`，122817）。
 const DASH_TICKS: u16 = 9;
 /// 冲刺冷却 0.2s = 12 tick（`DashBegin`：`dashCooldownTimer = 0.2f`，122541）。
 const DASH_COOLDOWN_TICKS: u16 = 12;
@@ -98,7 +98,7 @@ const DASH_REFILL_COOLDOWN_TICKS: u16 = 6;
 /// 冲刺攻击窗 0.3s = 18 tick（`dashAttackTimer = 0.3f`，122554）。
 const DASH_ATTACK_TICKS: u16 = 18;
 /// 蹬墙跳水平速度 130 px/s（13/6 px/tick，`WallJump`：`Speed.X = 130f*dir`，
-/// pureCeleste.cs:120840）。
+/// pureCeleste.cs:120836）。
 const WALLJUMP_X: Fx = Fx::from_ratio(13, 6);
 /// 蹬墙跳探测距离 5px：`CollideCheck<Solid>(Position + UnitX*dir*5)`
 /// （`WallJumpCheck`，120779-120804 的 `num = 5` 普通分支）。
@@ -106,17 +106,17 @@ const WALLJUMP_PROBE: Fx = Fx::from_int(5);
 /// 蹬墙跳后强制 moveX 的时长 0.16s = 10 tick（120832
 /// `forceMoveXTimer = 0.16f`；按住方向的防再吸附窗）。
 const FORCE_MOVE_X_TICKS: u16 = 10;
-/// 蹬墙跳（超级版）水平速度 240 px/s（4 px/tick，`SuperWallJump`：
-/// `Speed.X = 240f*dir`，120947 附近）。
+/// 蹬墙跳（超级版）水平速度 170 px/s（17/6 px/tick，`SuperWallJump`：
+/// `Speed.X = 170f*dir`，pureCeleste.cs:120877）。
 const SUPER_WALLJUMP_X: Fx = Fx::from_int(4);
-/// 蹬墙跳（超级版）竖直速度 -140 px/s（-7/3 px/tick，`varJumpSpeed =
-/// (Speed.Y = -140f)`，120948）。
+/// 蹬墙跳（超级版）竖直速度 -160 px/s（-8/3 px/tick，`varJumpSpeed =
+/// (Speed.Y = -160f)`，pureCeleste.cs:120878）。
 const SUPER_WALLJUMP_Y: Fx = Fx::from_ratio(-7, 3);
 /// 超级跳（地面横冲刺中起跳）水平速度 260 px/s（13/3 px/tick，
 /// `SuperJump`：`Speed.X = 260f*Facing`，120748）。
 const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
 /// 头发白闪时长 0.12s = 7 tick（`UpdateHair`：`hairFlashTimer = 0.12f`，
-/// pureCeleste.cs:120284）。
+/// pureCeleste.cs:120271）。
 const HAIR_FLASH_TICKS: u8 = 7;
 /// 头发颜色渐入速率 6/s（`Lerp(Hair.Color, Used, 6f*dt)`，120258-120262；
 /// 每 tick lerp 系数 = 6/60 = 0.1）。
@@ -183,7 +183,7 @@ pub struct Player {
     /// 土狼时间倒计时：0 = 无。接地时重置，离地后递减。
     coyote: u32,
     /// varJump 倒计时（tick）：> 0 且按住跳跃时竖直速度被钳回起跳值
-    /// （pureCeleste.cs:122130-122138 的 `varJumpTimer`）。
+    /// （pureCeleste.cs:122042-122048 的 `varJumpTimer`）。
     var_jump: u32,
     /// 强制 varJump 钳制的剩余 tick（原版 `AutoJump` + `AutoJumpTimer`，
     /// 120590-120594：向上转场时自动跳一下，0.2s 内不管按键都钳住）。
@@ -195,7 +195,7 @@ pub struct Player {
     pub max_dashes: u8,
     /// 上一 tick 的冲刺数（原版 `lastDashes`，用于头发白闪判定，120295）。
     last_dashes: u8,
-    /// 头发白闪剩余时间（原版 `hairFlashTimer`，120284）。
+    /// 头发白闪剩余时间（原版 `hairFlashTimer`，120271）。
     hair_flash: u8,
     /// 头发颜色的**当前**值（`UpdateHair` 逐帧 lerp 的载体，120258-120262）。
     hair_color_current: [f32; 4],
@@ -216,7 +216,7 @@ pub struct Player {
     /// 冲刺攻击窗（原版 `dashAttackTimer`，0.3s，122554）。
     dash_attack: u16,
     /// varJump 钳制的目标速度（原版 `varJumpSpeed` 字段：`Jump()` 设
-    /// -105（120715），`WallJump` -105（120842），`BeforeUpTransition`
+    /// -105（120698），`WallJump` -105（120837），`BeforeUpTransition`
     /// -105（120588），`Rebound` -120；钳制取 `min(Speed.Y, varJumpSpeed)`，
     /// 122134）。
     var_jump_speed: Fx,
@@ -379,7 +379,7 @@ impl Player {
     /// 白闪未结束）取 FLASH，否则 `Dashes == 2 ? TWO_DASHES : NORMAL`。
     ///
     /// `used` 渐入（`Lerp(Hair.Color, Used, 6*dt)`，120258-120262）和
-    /// `hairFlashTimer = 0.12s`（120284）需要逐帧颜色状态，随 dash 落地
+    /// `hairFlashTimer = 0.12s`（120271）需要逐帧颜色状态，随 dash 落地
     /// 时把本函数升级为带当前颜色的版本；现在返回离散状态，Prologue
     /// （库存 1 段且满）恒为 NORMAL —— 与原版一致。
     pub fn hair_color(&self) -> [f32; 4] {
@@ -388,7 +388,7 @@ impl Player {
     }
 
     /// 向上转场的前置调整（原版 `BeforeUpTransition`，
-    /// pureCeleste.cs:120578-120595）：水平清零、自动向上跳
+    /// pureCeleste.cs:120590-120598）：水平清零、自动向上跳
     /// （-105 + 0.2s 强制 varJump 钳制），落进上方的房间。
     pub fn before_up_transition(&mut self) {
         self.vel.x = Fx::zero();
@@ -510,7 +510,7 @@ impl Player {
     /// MoveH/MoveV（120049-120056）—— 墙跳/超级跳改写速度后当帧就按新
     /// 速度移动。相位 0 执行协程首段（`yield return null` 之后的
     /// 122756-122806：速度 = 瞄准 × 240、DashDir、朝向），相位 1..=9
-    /// 等待 0.15s，第 10 tick 执行末段（122812-122830）。冲刺期间无
+    /// 等待 0.15s，第 10 tick 执行末段（122817-122830）。冲刺期间无
     /// 重力/跑动（`DashUpdate` 不含它们）。
     fn dash_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
@@ -568,7 +568,7 @@ impl Player {
             } else {
                 self.dash_phase += 1;
                 if self.dash_phase > DASH_TICKS {
-                    // 末段（122812-122830）。
+                    // 末段（122817-122830）。
                     self.auto_jump = 0; // AutoJumpTimer = 0f（122820）
                     if self.dash_dir.y <= Fx::zero() {
                         self.vel = self.dash_dir * DASH_END_SPEED;
@@ -606,17 +606,16 @@ impl Player {
         self.state = 0;
     }
 
-    /// 原版 `SuperWallJump(dir)`（pureCeleste.cs:120865-120960 的核心段）：
-    /// 水平 240*dir、竖直 -140（varJumpSpeed 同步）、AutoJump 钳制、
-    /// `forceMoveX` 0.3s（18 tick，120902）。
+    /// 原版 `SuperWallJump(dir)`（pureCeleste.cs:120865-120900）：水平
+    /// 170*dir、竖直 -160（120877-120880，varJumpSpeed 同步）、
+    /// varJumpTimer = 0.25s（120870）、**AutoJump = false**（120871）、
+    /// 无 forceMoveX。
     fn super_wall_jump(&mut self, dir: i32) {
         self.jump_buffer = 0;
         self.coyote = 0;
-        self.var_jump = VAR_JUMP_TICKS;
-        self.auto_jump = VAR_JUMP_TICKS;
+        self.var_jump = 15; // varJumpTimer = 0.25f（120870）
+        self.auto_jump = 0; // AutoJump = false（120871）
         self.dash_attack = 0;
-        self.force_move_x = dir;
-        self.force_move_x_ticks = 18;
         self.vel.x = SUPER_WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = SUPER_WALLJUMP_Y;
         self.var_jump_speed = SUPER_WALLJUMP_Y;
@@ -803,9 +802,9 @@ impl Player {
     /// State 0（NormalUpdate，pureCeleste.cs:121824-122101）。
     ///
     /// tick 内顺序对照原版：抓取/下蹲（未实现，见偏差声明）→ 冲刺触发
-    /// （121841-121843 `if (CanDash)`）→ 跑动（122050-122074）→ maxFall
-    /// （122088-122106）→ 重力（122123-122146，仅空中）→ varJump 钳制
-    /// （122148-122156）→ 跳跃判定（122158-122163，含蹬墙跳）→ 移动
+    /// （121841-121843 `if (CanDash)`）→ 跑动（121965-121975）→ maxFall
+    /// （121977-121987）→ 重力（122027-122040，仅空中）→ varJump 钳制
+    /// （122042-122048）→ 跳跃判定（122053-122100，含蹬墙跳）→ 移动
     /// 解算 → 土狼/缓冲递减。
     fn normal_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
@@ -822,7 +821,7 @@ impl Player {
             return; // 本 tick 速度为 0（DashBegin 清零），直接进入移动
         }
 
-        // 水平：原版两分支（122068-122074）—— 同向超速（|vx| > 90 且与
+        // 水平：原版两分支（121965-121975）—— 同向超速（|vx| > 90 且与
         // 输入同号）用 400 回归；其余（无输入、反向刹车、起步）一律
         // 1000 全速档。空中两档都乘 0.65。
         let move_x = self.move_x;
@@ -860,7 +859,7 @@ impl Player {
             approach(&mut self.vel.y, self.max_fall, rate);
         }
 
-        // varJump 钳制（122148-122156）：计时未尽且按住跳跃 → 竖直速度
+        // varJump 钳制（122042-122048）：计时未尽且按住跳跃 → 竖直速度
         // 钳回起跳值（重力被抵消）；松开 → 计时清零。这就是"可变跳高"，
         // 没有额外的松手砍速。
         if self.var_jump > 0 {
@@ -882,7 +881,7 @@ impl Player {
 
         // 跳跃判定（122090-122101）：缓冲窗内 → 接地/土狼 → `Jump()`
         // （120694-120716：竖直 -105、水平 +40*moveX（JumpHBoost）、
-        // varJump 计满 0.2s）；空中 → 蹬墙跳（122102-122130，
+        // varJump 计满 0.2s）；空中 → 蹬墙跳（122057-122100，
         // `WallJumpCheck` 120779-120804 → `WallJump` 120806-120860）。
         if self.jump_buffer > 0 {
             if self.on_ground || self.coyote > 0 {
@@ -1652,7 +1651,7 @@ mod tests {
         );
         // tick 2：协程首段 → 速度 = 4 px/tick。
         p.step(&dash, std::slice::from_ref(&room));
-        assert_eq!(p.vel.x, DASH_SPEED, "Speed = aim * 240 px/s (122768)");
+        assert_eq!(p.vel.x, DASH_SPEED, "Speed = aim * 240 px/s (122745)");
         assert_eq!(p.dash_dir.x, Fx::one(), "DashDir snaps to the aim axis");
         let after_first = p.pos.x;
         // tick 3..10：匀速冲刺。
@@ -1668,7 +1667,7 @@ mod tests {
         // tick 11：协程结束 → 末段 8/3 px/tick，回 State 0。
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.state, 0, "the coroutine returns to Normal (122830)");
-        assert_eq!(p.vel.x, DASH_END_SPEED, "Speed = DashDir * 160 (122822)");
+        assert_eq!(p.vel.x, DASH_END_SPEED, "Speed = DashDir * 160 (122824)");
         let _ = x0;
     }
 
@@ -1696,7 +1695,7 @@ mod tests {
         assert_eq!(
             p.hair_color(),
             crate::sprites::hair_color::FLASH,
-            "lastDashes != Dashes flashes white (120283-120284)"
+            "lastDashes != Dashes flashes white (120268-120271)"
         );
         // 冲刺 0.2s 冷却（122541）：起手在第 1 tick，协程第 10 tick 结束
         // （phase 10 > DASH_TICKS），冷却第 12 tick 才清零。
@@ -1796,7 +1795,7 @@ mod tests {
         p.step(&jump, std::slice::from_ref(&room));
         assert_eq!(
             p.vel.x, WALLJUMP_X,
-            "WallJump: Speed.X = 130 * dir (120840)"
+            "WallJump: Speed.X = 130 * dir (120836)"
         );
         assert_eq!(p.vel.y, JUMP_SPEED, "WallJump: Speed.Y = -105 (120841)");
         assert_eq!(
