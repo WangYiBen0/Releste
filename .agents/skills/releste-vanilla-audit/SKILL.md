@@ -69,3 +69,73 @@ rustdoc intra-doc link（`node[0]` 这类方括号要转义）等本地看不见
 - 相机/转场/背景的"合理猜测"——原版全有出处（相机 120133-120146、
   转场 115282-115423、EnforceBounds 116517-116607、backdrops 112163-112906）。
 - HashMap 用于需要字节确定性的结构（应 BTreeMap，E.8）。
+
+## 6. 调试工具（LLM 友好，全部机器可读）
+
+四件套，都是仓库里的**受版本控制**的工具，不要再写一次性脚本：
+
+### 6.1 引用审计 `citation_audit`
+
+```bash
+# 只报问题（out_of_range / snippet_mismatch），没问题退出码 0
+cargo run -p releste-game --example citation_audit
+# 机器可读（每条引用 + 原版摘录 + 状态）
+cargo run -p releste-game --example citation_audit -- --json
+# 全部条目 + 每个文件的已校验比例
+cargo run -p releste-game --example citation_audit -- --all --coverage
+# 定位原版行号（写引用时用它，别凭记忆）+ 方法声明表
+cargo run -p releste-game --example citation_audit -- --find "private void ClimbHop"
+cargo run -p releste-game --example citation_audit -- --methods
+```
+
+**可校验引用写法**：引用后紧跟反引号片段，工具会核对片段是否真的出现在
+被引用行区间里（空白归一化）：
+
+```rust
+// pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`
+```
+
+没有片段的引用记为 `unchecked`（能列出来，但挡不住漂移）。裸行号
+（`（122042-122048）` 这种不带文件名的）工具看不见 —— 新写和改动的引用
+一律写全 `pureCeleste.cs:LINE` 并尽量带片段。
+
+### 6.2 逐 tick 轨迹 `--trace`
+
+```bash
+cargo run --bin releste -- --headless --frames 600 --trace .devtmp/run.jsonl
+```
+
+首行是自描述 banner（`releste.trace.v1`），之后每 tick 一行 JSON：
+`tick/room/x/y/vx/vy/vx_ps/vy_ps/on_ground/facing/state/dashes/stamina/ducking/
+anim/anim_frame/last_anim/move_x/var_jump/jump_buffer/coyote`。
+`*_ps` 是原版单位（px/s），对照 `pureCeleste.cs` 时直接读它。
+
+### 6.3 场景回放 `--script`
+
+```bash
+cargo run --bin releste -- --script crates/game/tests/scenarios/walk_and_stop.toml
+```
+
+确定性（无插件/无热重载），断言失败打印
+`tick=… field: expected … got … (Δ… > tol …)` 并退出 1。
+字段与写法见 `crates/game/tests/scenarios/README.md`。
+**期望值必须能从原版推出来**，注释写明出处行号。
+
+### 6.4 运行时地图快照 `--dump-map`
+
+```bash
+cargo run --bin releste -- --dump-map .devtmp/map.json
+```
+
+引擎**解析后**看到的东西（出生点、图集名、每个房间的 tile 行十六进制、
+实体与属性、sync 规则），与 `releste-map --example dump_rooms`（原始文件
+视图）互补。行为和地图数据对不上时，先比这两个视图。
+
+### 6.5 视觉对照 `--example walk_cycle_sheet`
+
+```bash
+cargo run -p releste-render --example walk_cycle_sheet -- .devtmp/walk-cycle.png
+```
+
+把图集里真实的帧拼成一张放大对照图 —— 判"动画是不是原版那几帧"用眼睛看
+最快，但结论仍要回到 `Sprites.xml` / `pureCeleste.cs` 的出处。

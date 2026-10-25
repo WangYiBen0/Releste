@@ -95,6 +95,30 @@ cargo run -p releste-content-pipeline -- --source references/Celeste/Content --o
 | `tools/content-pipeline` | vanilla assets -> engine formats                     | ✅                  |
 | `plugins-src/clock`      | sample standalone plugin (cdylib built against the ABI) | ✅               |
 
+## Debugging (LLM-friendly tools)
+
+Deterministic, machine-readable tools for chasing behaviour differences from
+vanilla Celeste. Full guide: `.agents/skills/releste-vanilla-audit` §6.
+
+```bash
+# Per-tick player trace (JSONL, self-describing banner, px/s alongside px/tick)
+cargo run --bin releste -- --headless --frames 600 --trace .devtmp/run.jsonl
+
+# Deterministic scenario replay with assertions (exit 1 on mismatch)
+cargo run --bin releste -- --script crates/game/tests/scenarios/walk_and_stop.toml
+
+# What the runtime actually parsed (spawn, atlas, tile rows, entities)
+cargo run --bin releste -- --dump-map .devtmp/map.json
+
+# Verify every `pureCeleste.cs:LINE` citation (range + optional snippet)
+cargo run -p releste-game --example citation_audit -- --coverage
+cargo run -p releste-game --example citation_audit -- --find "private void ClimbHop"
+```
+
+Scenarios live in `crates/game/tests/scenarios/` — expectations must be
+derivable from `references/pureCeleste.cs` (cite the line), not copied from
+whatever the engine currently prints.
+
 ## Measured results
 
 `releste-content-pipeline` runs end to end over **every vanilla Celeste asset**, and the
