@@ -28,6 +28,8 @@ pub struct KeyBindings {
     pub jump: Vec<KeyCode>,
     /// 冲刺（原版默认 X，`pureCeleste.cs:101632`）。
     pub dash: Vec<KeyCode>,
+    /// 抓攀（原版默认 Z/V/LeftShift，`pureCeleste.cs:101622`）。
+    pub grab: Vec<KeyCode>,
 }
 
 impl Default for KeyBindings {
@@ -41,6 +43,7 @@ impl Default for KeyBindings {
             down: vec![KeyCode::ArrowDown],
             jump: vec![KeyCode::KeyC],
             dash: vec![KeyCode::KeyX],
+            grab: vec![KeyCode::KeyZ, KeyCode::KeyV, KeyCode::ShiftLeft],
         }
     }
 }
@@ -54,6 +57,7 @@ struct KeysToml {
     down: Option<Vec<String>>,
     jump: Option<Vec<String>>,
     dash: Option<Vec<String>>,
+    grab: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -109,6 +113,11 @@ impl KeyBindings {
             down: map(&k.down, vec![KeyCode::ArrowDown], "down"),
             jump: map(&k.jump, vec![KeyCode::KeyC], "jump"),
             dash: map(&k.dash, vec![KeyCode::KeyX], "dash"),
+            grab: map(
+                &k.grab,
+                vec![KeyCode::KeyZ, KeyCode::KeyV, KeyCode::ShiftLeft],
+                "grab",
+            ),
         }
     }
 }

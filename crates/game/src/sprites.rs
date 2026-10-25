@@ -220,15 +220,19 @@ pub fn group_id(atlas: &SpriteAtlas, group: &TextureGroup) -> u32 {
 // 回到第 0 帧、非循环停在末帧并把 `CurrentAnimationID` 清空（10290-10305）。
 // ---------------------------------------------------------------------------
 
-/// 一条动画：帧名列表 + 间隔。
+/// 一条动画：帧名列表 + 间隔 + 跳转。
 #[derive(Debug, Clone)]
 pub struct AnimDef {
-    /// 帧序号（对图集里 `path` 前缀枚举序列取下标，解析时已展开成名字）。
+    /// 帧名（`path + 零填充两位序号`；`frames` 属性缺省时为**全部**帧，
+    /// 对图集逐序号探测展开，对应 Monocle `GetFrames(path, null)`，
+    /// pureCeleste.cs:10451-10464）。
     pub frames: Vec<String>,
     /// 帧间隔（秒）；0 = 不自动播放（原版 `Animating = Delay > 0f`）。
     pub delay: f32,
-    /// `<Loop>` / 带 `goto` 的 `<Anim>` = 循环；否则播完即停。
-    pub looped: bool,
+    /// 播完的跳转：`<Loop>` = 自身 id（`AddLoop` 的
+    /// `Goto = new Chooser<string>(id, 1f)`，10338-10345）；
+    /// `<Anim goto="...">` = 目标；`None` = 停在末帧（10296-10305）。
+    pub goto: Option<String>,
 }
 
 /// 一个 sprite（`player` / `badeline`…）的动画集。
@@ -246,17 +250,23 @@ pub struct AnimationTable {
 
 impl AnimationTable {
     /// 从 `assets/atlas/<atlas>.sprites.toml` 读；文件缺失 → 空表（调用方
-    /// 用 `is_empty()` 决定是否回落静态帧，warn 一次）。
-    pub fn load(paths: &crate::paths::Paths, atlas_name: &str) -> anyhow::Result<Self> {
+    /// 用 `is_empty()` 决定是否回落静态帧，warn 一次）。`atlas` 用于把
+    /// 「缺省 frames」展开成全部帧（逐序号探测，上限 256 防御）。
+    pub fn load(
+        paths: &crate::paths::Paths,
+        atlas_name: &str,
+        atlas: &SpriteAtlas,
+    ) -> anyhow::Result<Self> {
         #[derive(serde::Deserialize)]
         struct AnimToml {
             id: String,
             #[serde(default)]
             delay: f32,
+            frames: Option<Vec<usize>>,
             #[serde(default)]
-            frames: Vec<usize>,
+            goto: Option<String>,
             #[serde(default)]
-            looped: bool,
+            path: String,
         }
         #[derive(serde::Deserialize)]
         struct SpriteToml {
@@ -265,7 +275,7 @@ impl AnimationTable {
             path: String,
             #[serde(default)]
             start: String,
-            #[serde(default)]
+            #[serde(default, rename = "anims")]
             anim: Vec<AnimToml>,
         }
         #[derive(serde::Deserialize)]
@@ -284,19 +294,34 @@ impl AnimationTable {
         for def in parsed.sprite {
             let mut anims = HashMap::new();
             for a in def.anim {
-                // 帧序号 → 名字：`path + 零填充两位`（运行时逐帧查图集，
-                // 缺帧只告警 —— 见 `AnimationTable::frame`）。
-                let frames = a
-                    .frames
-                    .iter()
-                    .map(|i| releste_render::atlas::frame_name(&def.path, *i))
-                    .collect();
+                // 帧名 = sprite path + 动画子路径 + 零填充序号
+                //（`GetFrames` 的 `Path + path` 拼接，10454-10462）。
+                let prefix = format!("{}{}", def.path, a.path);
+                let frames: Vec<String> = match a.frames {
+                    Some(list) => list
+                        .iter()
+                        .map(|i| releste_render::atlas::frame_name(&prefix, *i))
+                        .collect(),
+                    None => {
+                        // 全帧枚举：`GetFrames(path, null)` 逐序号取直到缺帧。
+                        let mut names = Vec::new();
+                        for i in 0..256usize {
+                            let name = releste_render::atlas::frame_name(&prefix, i);
+                            if atlas.sprite(&name).is_none() {
+                                break;
+                            }
+                            names.push(name);
+                        }
+                        names
+                    }
+                };
+                // 键忽略大小写（Monocle `OrdinalIgnoreCase`，10206）。
                 anims.insert(
-                    a.id.clone(),
+                    a.id.to_ascii_lowercase(),
                     AnimDef {
                         frames,
                         delay: a.delay,
-                        looped: a.looped,
+                        goto: a.goto,
                     },
                 );
             }

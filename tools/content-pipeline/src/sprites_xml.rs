@@ -22,10 +22,17 @@ pub struct AnimDef {
     pub id: String,
     /// 帧间隔（秒）。0 = 不自动播放（`Animating = Delay > 0f`，10196）。
     pub delay: f32,
-    /// 帧序号（对 `path` 前缀的枚举序列取下标）。
-    pub frames: Vec<usize>,
-    /// `<Anim>` 且带 `goto` → 跳转目标；`<Loop>` → 自循环。
-    pub looped: bool,
+    /// 帧序号（对 `path` 前缀的枚举序列取下标）。`None` = 属性缺省，
+    /// 取**全部**帧（Monocle `GetFrames(path, null)` 按序枚举直到缺帧，
+    /// pureCeleste.cs:10451-10464）—— 运行时对着图集展开。
+    pub frames: Option<Vec<usize>>,
+    /// `<Anim goto="...">` 的跳转目标；`<Loop>` = 自循环（own id）；
+    /// `None` = 播完停在末帧（10296-10305）。
+    pub goto: Option<String>,
+    /// 动画子路径（`<Anim path="idle">`）：帧名 = sprite 的 `path` +
+    /// 这里 + 零填充序号（`GetFrames` 的 `Path + path` 拼接，
+    /// pureCeleste.cs:10454-10462）。缺省 = ""。
+    pub path: String,
 }
 
 /// 一个 sprite 的动画集。
@@ -51,7 +58,11 @@ pub enum SpritesXmlError {
 }
 
 /// 解析 `Graphics/Sprites.xml` 全部内容。
+///
+/// 真实文件以 UTF-8 BOM（`\u{feff}`）开头 —— 先剥掉，否则字节扫描器
+/// 会在非字符边界切片（panic）。
 pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
+    let xml = xml.strip_prefix('\u{feff}').unwrap_or(xml);
     let bytes = xml.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -120,16 +131,22 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
                     .get("delay")
                     .and_then(|d| d.parse().ok())
                     .unwrap_or(default_delay);
-                let frames = cattrs
-                    .get("frames")
-                    .map(|f| read_csv_int_with_tricks(f))
-                    .unwrap_or_default();
-                let looped = cname.eq_ignore_ascii_case("Loop") || cattrs.contains_key("goto");
+                // `<Loop>` = 自循环（Monocle `AddLoop`：
+                // `Goto = new Chooser<string>(id, 1f)`，10338-10345）；
+                // `<Anim goto="...">` = 跳转到目标动画。
+                let goto = if cname.eq_ignore_ascii_case("Loop") {
+                    Some(id.clone())
+                } else {
+                    cattrs.get("goto").cloned()
+                };
+                let frames = cattrs.get("frames").map(|f| read_csv_int_with_tricks(f));
+                let anim_path = cattrs.get("path").cloned().unwrap_or_default();
                 anims.push(AnimDef {
                     id,
                     delay,
                     frames,
-                    looped,
+                    goto,
+                    path: anim_path,
                 });
                 let _ = cself;
             }
@@ -271,13 +288,13 @@ mod tests {
         assert_eq!(p.start, "idle");
         assert_eq!(p.anims.len(), 3);
         let walk = p.anims.iter().find(|a| a.id == "walk").unwrap();
-        assert_eq!(walk.frames, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(walk.frames, Some(vec![1, 2, 3, 4, 5, 6]));
         assert_eq!(walk.delay, 0.1, "falls back to the sprite default delay");
-        assert!(walk.looped);
+        assert_eq!(walk.goto.as_deref(), Some("walk"), "<Loop> self-loops");
         let dash = p.anims.iter().find(|a| a.id == "dash").unwrap();
         assert_eq!(dash.delay, 0.08, "per-anim delay wins");
-        assert!(!dash.looped, "<Anim> without goto is one-shot");
+        assert_eq!(dash.goto, None, "<Anim> without goto is one-shot");
         let idle = p.anims.iter().find(|a| a.id == "idle").unwrap();
-        assert_eq!(idle.frames, vec![0]);
+        assert_eq!(idle.frames, Some(vec![0]));
     }
 }

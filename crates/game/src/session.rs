@@ -470,7 +470,7 @@ impl Session {
             &spawn_room,
         );
 
-        let anims = match crate::sprites::AnimationTable::load(paths, &atlas_name) {
+        let anims = match crate::sprites::AnimationTable::load(paths, &atlas_name, &atlas) {
             Ok(t) => t,
             Err(e) => {
                 warn!(error = %e, "animation table failed to parse; falling back to static frames");

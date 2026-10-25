@@ -120,6 +120,43 @@ const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
 const HAIR_FLASH_TICKS: u8 = 7;
 /// 头发颜色渐入速率 6/s（`Lerp(Hair.Color, Used, 6f*dt)`，120258-120262；
 /// 每 tick lerp 系数 = 6/60 = 0.1）。
+/// 攀爬最大体力 110（`ClimbMaxStamina`，pureCeleste.cs:118504；出生即满，
+/// 118680 `Stamina = 110f`）。
+const CLIMB_MAX_STAMINA: Fx = Fx::from_ratio(110, 1);
+/// 向上攀爬的体力消耗：原版字面量 `45.454544f`/s（122266-122268，
+/// 约 2.42s 耗尽 110）按 tick 折算 ÷60。
+const CLIMB_UP_DRAIN_PER_TICK: Fx = Fx::from_ratio(45454544, 60000000);
+/// 抓着不动的体力消耗 10/s（122278-122280）。
+const CLIMB_IDLE_DRAIN_PER_TICK: Fx = Fx::from_ratio(1, 6);
+/// 攀爬跳（未离地）的体力消耗 27.5（120904-120906）。
+const CLIMBJUMP_DRAIN: Fx = Fx::from_ratio(55, 2);
+/// 向上攀爬速度 -45 px/s（-3/4 px/tick，122220-122222）。
+const CLIMB_UP_SPEED: Fx = Fx::from_ratio(-3, 4);
+/// 向下攀爬速度 80 px/s（4/3 px/tick，122228-122230）。
+const CLIMB_DOWN_SPEED: Fx = Fx::from_ratio(4, 3);
+/// 抓着松手下滑 30 px/s（1/2 px/tick，122246-122248 的 `num = 30f`）。
+const CLIMB_SLIP_SPEED: Fx = Fx::from_ratio(1, 2);
+/// 爬到墙顶的蹬跃：水平 100 px/s（5/3 px/tick，`ClimbHop` 122368），
+/// 竖直钳到 ≤ -120 px/s（-2 px/tick，122372）。
+const CLIMB_HOP_X: Fx = Fx::from_ratio(5, 3);
+const CLIMB_HOP_Y: Fx = Fx::from_int(-2);
+/// 下蹲 hitbox：8×6，偏移 (-4,-6)（`duckHitbox`，pureCeleste.cs:118858；
+/// 底边与常规 hitbox 对齐 → 引擎左上角 y 偏移 = 11-6 = 5）。
+const DUCK_H: i32 = 6;
+const DUCK_Y_OFF: i32 = 5;
+/// 下蹲时地面减速 500 px/s²（122047-122049：`Approach(Speed.X, 0, 500*dt)`；
+/// 每 tick² 500/3600 = 5/36 px/tick²）。
+const DUCK_DECEL: Fx = Fx::from_ratio(5, 36);
+/// 墙滑速度从 160 缓到 20 px/s（122240：`Lerp(160, 20, wallSlideTimer/1.2)`）。
+const WALLSLIDE_FAST: Fx = Fx::from_ratio(8, 3);
+const WALLSLIDE_SLOW: Fx = Fx::from_ratio(1, 3);
+/// 墙滑计时满值 1.2s = 72 tick（`wallSlideTimer = 1.2f`，118760）。
+const WALLSLIDE_TICKS: u16 = 72;
+/// 攀爬起步的僵直 0.1s = 6 tick（`climbNoMoveTimer = 0.1f`，122146）。
+const CLIMB_NO_MOVE_TICKS: u16 = 6;
+/// 攀爬跳后朝墙方向的助推窗 0.2s = 12 tick（`ClimbJump`：
+/// `wallBoostTimer = 0.2f`，120910-120913）。
+const WALL_BOOST_TICKS: u16 = 12;
 const HAIR_LERP_PER_TICK: f32 = 0.1;
 
 /// 起跳输入缓冲：0.08s = 5 tick（含按下当帧）。
@@ -147,12 +184,24 @@ pub struct Input {
     /// 冲刺键（原版 `Input.Dash`，默认 X，101632）。缓冲与跳跃相同
     /// （`VirtualButton.BufferTime = 0.08f`，110376）。
     pub dash: bool,
+    /// 抓攀键（原版 `Input.Grab`，默认 Z/V/LeftShift，101622）。
+    pub grab: bool,
 }
 
 impl Input {
     /// 水平轴：-1 / 0 / +1（同时按左右则不移动）。
     pub fn axis_x(self) -> Fx {
         match (self.left, self.right) {
+            (true, false) => -Fx::one(),
+            (false, true) => Fx::one(),
+            _ => Fx::zero(),
+        }
+    }
+
+    /// 竖直轴：-1（上）/ 0 / +1（下）。原版 `Input.MoveY.Value`
+    /// （`Axis(bool, bool, bothValue)`，16705-16714：同按返回 0）。
+    pub fn axis_y(self) -> Fx {
+        match (self.up, self.down) {
             (true, false) => -Fx::one(),
             (false, true) => Fx::one(),
             _ => Fx::zero(),
@@ -239,6 +288,20 @@ pub struct Player {
     anim_playing: bool,
     /// 快速跳跃/下落标志（`fastJump`，120437/120469）。
     fast_jump: bool,
+    /// 体力（`Stamina`，118680 出生 110；攀爬消耗、落地回满 119818-119823）。
+    pub stamina: Fx,
+    /// 下蹲（`Ducking`；hitbox 8×6，118858）。
+    pub ducking: bool,
+    /// 攀爬起步僵直（`climbNoMoveTimer`，0.1s，122146）。
+    climb_no_move_ticks: u16,
+    /// 上一 tick 的攀爬移动方向（`lastClimbMove`，122251）。
+    last_climb_move: i32,
+    /// 墙滑方向/计时（`wallSlideDir`/`wallSlideTimer`，118758-118760）。
+    wall_slide_dir: i32,
+    wall_slide_ticks: u16,
+    /// 攀爬跳助推（`wallBoostDir`/`wallBoostTimer`，119119-119820）。
+    wall_boost_dir: i32,
+    wall_boost_ticks: u16,
 }
 
 /// `Math.Sign(before.X) == Math.Sign(speed.X)`（122770）的 Fx 版。
@@ -292,6 +355,14 @@ impl Player {
             anim_timer: 0.0,
             anim_playing: false,
             fast_jump: false,
+            stamina: CLIMB_MAX_STAMINA,
+            ducking: false,
+            climb_no_move_ticks: 0,
+            last_climb_move: 0,
+            wall_slide_dir: 0,
+            wall_slide_ticks: WALLSLIDE_TICKS,
+            wall_boost_dir: 0,
+            wall_boost_ticks: 0,
         }
     }
 
@@ -312,6 +383,7 @@ impl Player {
     pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
         self.update_head(input);
         match self.state {
+            1 => self.climb_update(input, rooms),
             2 => self.dash_update(input, rooms),
             _ => self.normal_update(input, rooms),
         }
@@ -360,6 +432,28 @@ impl Player {
         // dashCooldownTimer / dashRefillCooldownTimer（119843-119848）。
         self.dash_cooldown = self.dash_cooldown.saturating_sub(1);
         self.dash_refill_cooldown = self.dash_refill_cooldown.saturating_sub(1);
+        // 攀爬跳助推（119811-119820）：向 wallBoostDir 推 → 横速 130 +
+        // 体力 +27.5，一次性。
+        if self.wall_boost_ticks > 0 {
+            self.wall_boost_ticks -= 1;
+            if self.move_x == Fx::from_int(self.wall_boost_dir) {
+                self.vel.x = WALLJUMP_X * self.move_x;
+                self.stamina += CLIMBJUMP_DRAIN;
+                self.wall_boost_ticks = 0;
+            }
+        }
+        // 墙滑计时（119808-119812）：方向每 tick 末清零、计时递减，
+        // NormalUpdate 条件仍满足时重新置位。
+        if self.wall_slide_dir != 0 {
+            self.wall_slide_ticks = self.wall_slide_ticks.saturating_sub(1);
+            self.wall_slide_dir = 0;
+        }
+        // 落地回满体力 + 重置墙滑（119818-119823）。
+        if self.on_ground && self.state != 1 {
+            self.auto_jump = 0;
+            self.stamina = CLIMB_MAX_STAMINA;
+            self.wall_slide_ticks = WALLSLIDE_TICKS;
+        }
         // moveX：forceMoveX 覆盖窗（119883-119891），否则读输入。
         let move_x = if self.force_move_x_ticks > 0 {
             self.force_move_x_ticks -= 1;
@@ -403,6 +497,114 @@ impl Player {
         self.vel.y = self.vel.y.max(Fx::zero());
         self.var_jump = 0;
         self.auto_jump = 0;
+    }
+
+    /// 世界坐标点是否在任何触及房间的实心瓦片内（Monocle
+    /// `Scene.CollideCheck<Solid>(point)` 的点语义，`SlipCheck` 用）。
+    fn solid_at(rooms: &[Room], x: Fx, y: Fx) -> bool {
+        let (cx, cy) = (cell(x), cell(y));
+        for room in rooms {
+            let (ox, oy) = (room.bounds.x.round() as i32, room.bounds.y.round() as i32);
+            let cols = (room.bounds.w.round() as i32).div_euclid(8);
+            let rows = (room.bounds.h.round() as i32).div_euclid(8);
+            let (gx0, gy0) = (ox.div_euclid(8), oy.div_euclid(8));
+            if cx < gx0 || cy < gy0 || cx >= gx0 + cols || cy >= gy0 + rows {
+                continue;
+            }
+            if Session::solid_cell(room, cx, cy) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 原版 `CanUnDuck`（119281-119291）：换回常规 hitbox 无碰撞即可。
+    fn can_unduck(&self, rooms: &[Room]) -> bool {
+        !self.ducking || !self.hits(rooms, self.pos.x, self.pos.y)
+    }
+
+    /// 原版 `CanUnDuckAt(position)`：常规 hitbox 平移 x 后无碰撞。
+    fn can_unduck_at(&self, rooms: &[Room], x: Fx) -> bool {
+        !self.hits(rooms, x, self.pos.y)
+    }
+
+    /// 原版 `SlipCheck(addY)`（122395-122407）：朝向侧的 hitbox 顶角
+    /// 下方 4px 的点无实心、且其上方 4px 也无实心 → 墙到顶了。
+    fn slip_check(&self, rooms: &[Room], add_y: Fx) -> bool {
+        let top = self.pos.y + Fx::from_int(self.box_dims().2 - PLAYER_H_PX);
+        let (px, py) = if self.facing > 0 {
+            (
+                self.pos.x + Fx::from_int(PLAYER_W_PX),
+                top + Fx::from_int(4) + add_y,
+            )
+        } else {
+            (self.pos.x - Fx::one(), top + Fx::from_int(4) + add_y)
+        };
+        if !Self::solid_at(rooms, px, py) {
+            return !Self::solid_at(rooms, px, py - Fx::from_int(4) + add_y);
+        }
+        false
+    }
+
+    /// 原版 `ClimbCheck(dir, yAdd)`（121815-121822）的普通分支：朝墙
+    /// 2px 探测实心（ClimbBlocker 无实体 → EdgeCheck 恒 false）。
+    /// `ClimbBoundsCheck`（121799-121806）用房间边界。
+    fn climb_check(&self, rooms: &[Room], dir: i32, y_add: i32) -> bool {
+        let Some(room) = crate::session::room_containing(rooms, self.pos) else {
+            return false;
+        };
+        let b = &room.bounds;
+        let left_ok = (self.pos.x.to_f32() + ((dir * 2) as f32)) >= b.x;
+        let right_ok = self.pos.x.to_f32() + PLAYER_W + ((dir * 2) as f32) < b.x + b.w;
+        if !(left_ok && right_ok) {
+            return false;
+        }
+        self.hits(
+            rooms,
+            self.pos.x + Fx::from_int(dir * 2),
+            self.pos.y + Fx::from_int(y_add),
+        )
+    }
+
+    /// 进入攀爬（原版 `StateMachine.State = 1` + `ClimbBegin`，
+    /// pureCeleste.cs:122140-122164）：横速清零、竖速 ×0.2、贴墙 2px。
+    fn enter_climb(&mut self, rooms: &[Room]) {
+        self.state = 1;
+        self.auto_jump = 0;
+        self.vel.x = Fx::zero();
+        self.vel.y *= Fx::from_ratio(1, 5); // Speed.Y *= 0.2f（122146）
+        self.wall_slide_ticks = WALLSLIDE_TICKS;
+        self.climb_no_move_ticks = CLIMB_NO_MOVE_TICKS;
+        self.last_climb_move = 0;
+        for _ in 0..2 {
+            if self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
+                break;
+            }
+            self.pos.x += Fx::from_int(self.facing); // 122153-122160 贴墙
+        }
+    }
+
+    /// 原版 `ClimbJump()`（pureCeleste.cs:120902-120928）：未接地扣
+    /// 27.5 体力；常规 Jump；无横输入时给 0.2s 助推窗（120910-120913）。
+    fn climb_jump(&mut self) {
+        if !self.on_ground {
+            self.stamina -= CLIMBJUMP_DRAIN;
+        }
+        self.jump(Fx::zero()); // Jump(particles: false, playSfx: false)
+        if self.move_x == Fx::zero() {
+            self.wall_boost_dir = -self.facing;
+            self.wall_boost_ticks = WALL_BOOST_TICKS;
+        }
+    }
+
+    /// 原版 `ClimbHop()`（pureCeleste.cs:122358-122382，无移动平台分支）：
+    /// 朝墙侧蹬出 100 px/s，竖直钳到 ≤ -120 px/s，清 forceMoveX。
+    fn climb_hop(&mut self) {
+        self.vel.x = CLIMB_HOP_X * Fx::from_int(self.facing);
+        self.vel.y = self.vel.y.min(CLIMB_HOP_Y);
+        self.force_move_x = 0;
+        self.force_move_x_ticks = 12; // 0.2s（122377）
+        self.fast_jump = false;
     }
 
     /// 原版 `Jump()`（pureCeleste.cs:120694-120716）：竖直 -105、
@@ -453,7 +655,7 @@ impl Player {
     /// 原版 `StartDash()`（pureCeleste.cs:122469-122479）+ `DashBegin`
     /// （122534-122565）：扣一次冲刺、进入 State 2、记 `beforeDashSpeed`
     /// 后清零速度（当 tick 不动）、起冷却与攻击窗。
-    fn start_dash(&mut self) {
+    fn start_dash(&mut self, input: &Input, rooms: &[Room]) {
         self.dashes = self.dashes.saturating_sub(1);
         self.dash_buffer = 0; // Input.Dash.ConsumeBuffer()（122474）
         self.state = 2;
@@ -464,6 +666,12 @@ impl Player {
         self.before_dash_speed = self.vel;
         self.vel = Vec2::ZERO;
         self.dash_dir = Vec2::ZERO;
+        // 122566-122573：空中下蹲冲刺起身；地面下推冲刺入蹲。
+        if !self.on_ground && self.ducking && self.can_unduck(rooms) {
+            self.ducking = false;
+        } else if !self.ducking && input.down {
+            self.ducking = true;
+        }
         // 注意：原版 DashBegin **不改** onGround —— 地面冲刺保持接地，
         // 下一 tick 的头部回充（119855-119863）照常工作。
         // DashBegin 的 `Celeste.Freeze(0.05f)`（122540）：0.05s = 3 tick
@@ -530,7 +738,7 @@ impl Player {
             let vertical_dash = self.dash_dir.x.abs() <= Fx::from_ratio(1, 5);
             if horizontal_dash && self.on_ground {
                 // 122632-122641 → `SuperJump`（120740-120778）。
-                self.super_jump();
+                self.super_jump(rooms);
             } else if vertical_dash {
                 if self.wall_jump_check(rooms, 1) {
                     self.super_wall_jump(-1);
@@ -564,6 +772,17 @@ impl Player {
                 if aim.x != Fx::zero() {
                     self.facing = aim.x.signum(); // 122779-122782
                 }
+                // 122796-122802：地面下向冲刺 → 蹲滑（横速 ×1.2）。
+                if self.on_ground
+                    && self.dash_dir.x != Fx::zero()
+                    && self.dash_dir.y > Fx::zero()
+                    && self.vel.y > Fx::zero()
+                {
+                    self.dash_dir = Vec2::new(Fx::from_int(self.dash_dir.x.signum()), Fx::zero());
+                    self.vel.y = Fx::zero();
+                    self.vel.x *= Fx::from_ratio(6, 5);
+                    self.ducking = true;
+                }
                 self.dash_phase = 1;
             } else {
                 self.dash_phase += 1;
@@ -593,7 +812,7 @@ impl Player {
 
     /// 原版 `SuperJump()`（pureCeleste.cs:120740-120778，无滑铲/滑翔
     /// 分支）：水平 260×Facing、竖直 -105、varJump 计满，回 State 0。
-    fn super_jump(&mut self) {
+    fn super_jump(&mut self, rooms: &[Room]) {
         self.jump_buffer = 0;
         self.coyote = 0;
         self.var_jump = VAR_JUMP_TICKS;
@@ -602,8 +821,15 @@ impl Player {
         self.vel.x = SUPER_JUMP_X * Fx::from_int(self.facing);
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
+        // 120753-120760：下蹲超级跳 —— 横速 ×1.25、竖速 ×0.5。
+        if self.ducking {
+            self.ducking = false;
+            self.vel.x *= Fx::from_ratio(5, 4);
+            self.vel.y *= Fx::from_ratio(1, 2);
+        }
         self.on_ground = false;
         self.state = 0;
+        let _ = rooms;
     }
 
     /// 原版 `SuperWallJump(dir)`（pureCeleste.cs:120865-120900）：水平
@@ -621,6 +847,124 @@ impl Player {
         self.var_jump_speed = SUPER_WALLJUMP_Y;
         self.on_ground = false;
         self.state = 0;
+    }
+
+    /// State 1：`ClimbUpdate`（pureCeleste.cs:122184-122330）。顺序：
+    /// 僵直递减 → 接地回体力 → 跳跃分支（反向蹬墙 / ClimbJump）→ 冲刺
+    /// → 松抓落地 → 离墙（顶点 ClimbHop / let-go）→ 竖直攀爬（上 -45、
+    /// 下 80、贴顶 SlipCheck 滑落 30）→ 体力消耗（上 45.45/s、静止
+    /// 10/s）→ 耗尽脱手。WallBooster/精灵汗效未移植（声明）。
+    fn climb_update(&mut self, input: &Input, rooms: &[Room]) {
+        self.prev_pos = self.pos;
+        self.climb_no_move_ticks = self.climb_no_move_ticks.saturating_sub(1);
+        if self.on_ground {
+            self.stamina = CLIMB_MAX_STAMINA; // 122188-122191
+        }
+        // 跳跃分支（122193-122205）：反向推 → 蹬墙跳；否则沿墙跳。
+        if self.jump_buffer > 0 && self.can_unduck(rooms) {
+            if self.move_x == Fx::from_int(-self.facing) {
+                self.wall_jump(rooms, -self.facing);
+            } else {
+                self.climb_jump();
+            }
+            self.state = 0;
+            return;
+        }
+        // 冲刺（122206-122209）。
+        if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
+            self.start_dash(input, rooms);
+            return;
+        }
+        // 松开抓键（122211-122216）。
+        if !input.grab {
+            self.state = 0;
+            return;
+        }
+        // 已越过墙顶（122218-122231）：上升中 → ClimbHop；否则脱手。
+        if !self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
+            if self.vel.y < Fx::zero() {
+                self.climb_hop(); // 122226-122230（wallBoosting 恒 false）
+            }
+            self.state = 0;
+            return;
+        }
+        // WallBooster 恒 null（无 Core 传送墙实体）→ 直接走攀爬分支。
+        {
+            let mut num = Fx::zero();
+            let mut flag = false;
+            if self.climb_no_move_ticks == 0 {
+                // 122224-122240 的 ClimbBlocker 分支无实体，恒 false。
+                if input.axis_y() == -Fx::one() {
+                    num = CLIMB_UP_SPEED; // -45 px/s（122220-122222）
+                    if self.hits(rooms, self.pos.x, self.pos.y - Fx::one())
+                        || (self.climb_hop_blocked(rooms) && self.slip_check(rooms, -Fx::one()))
+                    {
+                        if self.vel.y < Fx::zero() {
+                            self.vel.y = Fx::zero();
+                        }
+                        num = Fx::zero();
+                        flag = true;
+                    } else if self.slip_check(rooms, Fx::zero()) {
+                        self.climb_hop(); // 122232-122236：墙顶蹬跃
+                        self.state = 0;
+                        return;
+                    }
+                } else if input.axis_y() == Fx::one() {
+                    num = CLIMB_DOWN_SPEED; // 80 px/s（122228-122230）
+                    if self.on_ground {
+                        if self.vel.y > Fx::zero() {
+                            self.vel.y = Fx::zero();
+                        }
+                        num = Fx::zero();
+                    }
+                } else {
+                    flag = true; // 122243-122245：无竖直输入
+                }
+            } else {
+                flag = true; // 僵直期不移动
+            }
+            self.last_climb_move = num.signum(); // 122251
+            if flag && self.slip_check(rooms, Fx::zero()) {
+                num = CLIMB_SLIP_SPEED; // 122252-122255：墙顶悬垂缓降 30
+            }
+            // 122257：`Approach(Speed.Y, num, 900*dt)`。
+            approach(&mut self.vel.y, num, GRAVITY);
+        }
+        // 122260-122264：不再下推且墙已到身前下方 → 停住。
+        if input.axis_y() != Fx::one()
+            && self.vel.y > Fx::zero()
+            && !self.hits(
+                rooms,
+                self.pos.x + Fx::from_int(self.facing),
+                self.pos.y + Fx::one(),
+            )
+        {
+            self.vel.y = Fx::zero();
+        }
+        // 体力（122266-122300）：向上 45.454544/s、静止 10/s；耗尽脱手。
+        if self.climb_no_move_ticks == 0 {
+            if self.last_climb_move == -1 {
+                self.stamina -= CLIMB_UP_DRAIN_PER_TICK;
+            } else if self.last_climb_move == 0 {
+                self.stamina -= CLIMB_IDLE_DRAIN_PER_TICK;
+            }
+        }
+        if self.stamina <= Fx::zero() {
+            self.state = 0; // 122302-122306
+            return;
+        }
+        self.slide_x(rooms);
+        self.on_ground = false;
+        self.slide_y(rooms);
+        if !self.on_ground {
+            self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
+        }
+    }
+
+    /// 原版 `ClimbHopBlockedCheck()`（122409-122424）的可达部分：头顶
+    /// 6px 有实心 → 蹬跃会被挡（Follower/LedgeBlocker 无实体）。
+    fn climb_hop_blocked(&self, rooms: &[Room]) -> bool {
+        self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(6))
     }
 
     /// 原版 `UpdateHair`（pureCeleste.cs:120244-120296）：冲刺耗尽 → 以
@@ -656,7 +1000,10 @@ impl Player {
         let Some(def) = table.sprites.get("player") else {
             return;
         };
-        let Some(anim) = def.anims.get(id) else {
+        // 字典键忽略大小写（Monocle `OrdinalIgnoreCase`，10206；XML 里是
+        // `climbup` 而 `UpdateSprite` 播 `climbUp`）；但 CurrentAnimationID
+        // 存的是**实参**（120274 行为），所以 no-op 比较用原样字符串。
+        let Some(anim) = def.anims.get(&id.to_ascii_lowercase()) else {
             return;
         };
         self.anim_id = id.to_string();
@@ -671,7 +1018,7 @@ impl Player {
         let Some(def) = table.sprites.get("player") else {
             return;
         };
-        let Some(anim) = def.anims.get(&self.anim_id) else {
+        let Some(anim) = def.anims.get(&self.anim_id.to_ascii_lowercase()) else {
             return;
         };
         if !self.anim_playing || anim.delay <= 0.0 {
@@ -684,12 +1031,18 @@ impl Player {
         self.anim_timer -= anim.delay;
         self.anim_frame += 1;
         if self.anim_frame >= anim.frames.len() {
-            if anim.looped {
-                self.anim_frame = 0;
-            } else {
-                self.anim_frame = anim.frames.len() - 1;
-                self.anim_playing = false;
-                self.anim_id.clear();
+            // 10290-10305：Goto 非空 → 跳到目标动画首帧；否则停在末帧并
+            // 清空 CurrentAnimationID（`Animating = false`）。
+            match &anim.goto {
+                Some(next) => {
+                    let next = next.clone();
+                    self.play(table, &next);
+                }
+                None => {
+                    self.anim_frame = anim.frames.len() - 1;
+                    self.anim_playing = false;
+                    self.anim_id.clear();
+                }
             }
         }
     }
@@ -697,18 +1050,18 @@ impl Player {
     /// 当前帧的图集纹理名（缺表/缺帧 → `None`，渲染回落静态帧）。
     pub fn anim_frame_texture(&self, table: &crate::sprites::AnimationTable) -> Option<String> {
         let def = table.sprites.get("player")?;
-        let anim = def.anims.get(&self.anim_id)?;
+        let anim = def.anims.get(&self.anim_id.to_ascii_lowercase())?;
         anim.frames.get(self.anim_frame).cloned()
     }
 
-    /// `Sprite.Running`：当前动画是否循环中。
+    /// `Sprite.Running`：当前动画 Goto 非空（循环或链式跳转；120466 的
+    /// `!Sprite.Running` 守卫即指这个）。
     fn anim_is_looping(&self, table: &crate::sprites::AnimationTable) -> bool {
         table
             .sprites
             .get("player")
-            .and_then(|d| d.anims.get(&self.anim_id))
-            .is_some_and(|a| a.looped)
-            && self.anim_playing
+            .and_then(|d| d.anims.get(&self.anim_id.to_ascii_lowercase()))
+            .is_some_and(|a| a.goto.is_some())
     }
 
     /// 原版 `Player.UpdateSprite`（pureCeleste.cs:120298-120481）的可及
@@ -733,6 +1086,25 @@ impl Player {
             } else {
                 self.play(table, "dash");
             }
+        } else if self.state == 1 {
+            // 120365-120383：攀爬动画（lastClimbMove / 悬垂 / 回望）。
+            if self.last_climb_move < 0 {
+                self.play(table, "climbUp"); // XML id `climbup`，大小写不敏感
+            } else if self.last_climb_move > 0 {
+                self.play(table, "wallslide");
+            } else if !self.hits(
+                rooms,
+                self.pos.x + Fx::from_int(self.facing * 6),
+                self.pos.y,
+            ) {
+                self.play(table, "dangling"); // 120371-120373：(Facing, 6) 探测
+            } else if self.move_x == Fx::from_int(-self.facing) {
+                self.play(table, "climbLookBackStart");
+            } else {
+                self.play(table, "wallslide");
+            }
+        } else if self.ducking && self.state == 0 {
+            self.play(table, "duck"); // 120408-120412
         } else if self.state == 0 {
             if self.on_ground {
                 self.fast_jump = false;
@@ -809,6 +1181,56 @@ impl Player {
     fn normal_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
+        // 抓墙（121832-121864 的 GrabCheck 分支，无拾取物）：横速非背向
+        // 且竖速 >= 0 时探测；差 1-2px 够到时原版直接 MoveVExact 上提。
+        // `ClimbTrigger` 在原版是只写字段（118714/119688/121267，无消费
+        // 点），跳过。下蹲时不抓（121832 `!Ducking`）。
+        if input.grab && !self.ducking && self.vel.y >= Fx::zero() {
+            let behind = self.vel.x.signum() == -self.facing && self.vel.x != Fx::zero();
+            if !behind {
+                if self.climb_check(rooms, self.facing, 0) {
+                    self.ducking = false;
+                    self.enter_climb(rooms);
+                    return;
+                }
+                for i in 1..=2i32 {
+                    // 121854-121862：差 1-2px 时上提再抓。
+                    if !self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(i))
+                        && self.climb_check(rooms, self.facing, -i)
+                    {
+                        self.pos.y -= Fx::from_int(i);
+                        self.ducking = false;
+                        self.enter_climb(rooms);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 下蹲的进入/退出（121996-122008）：地面按下蹲；起身需
+        // CanUnDuck，被顶住且横速为零时按原版 4px 匍匐探位（122001）。
+        if self.ducking {
+            if self.on_ground && input.axis_y() != Fx::one() {
+                if self.can_unduck(rooms) {
+                    self.ducking = false;
+                } else if self.vel.x == Fx::zero() {
+                    for i in (1..=4i32).rev() {
+                        let px = Fx::from_int(i);
+                        if self.can_unduck_at(rooms, self.pos.x + px) {
+                            self.pos.x += Fx::from_ratio(5, 6); // MoveH(50*dt)（122004）
+                            break;
+                        }
+                        if self.can_unduck_at(rooms, self.pos.x - px) {
+                            self.pos.x -= Fx::from_ratio(5, 6);
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if self.on_ground && input.axis_y() == Fx::one() && self.vel.y >= Fx::zero() {
+            self.ducking = true; // 122004-122008
+        }
+
         // 冲刺触发（121841-121843 + `CanDash` 119325-119340）：冲刺键
         // 按下（缓冲窗内）且冷却结束且还有冲刺次数。
         let dash_pressed = input.dash && !self.prev_dash;
@@ -817,7 +1239,7 @@ impl Player {
             self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime 同 0.08s（110376）
         }
         if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
-            self.start_dash(); // StartDash（122469-122479）→ State 2
+            self.start_dash(input, rooms); // StartDash（122469-122479）→ State 2
             return; // 本 tick 速度为 0（DashBegin 清零），直接进入移动
         }
 
@@ -841,6 +1263,10 @@ impl Player {
         if move_x != Fx::zero() {
             self.facing = move_x.signum();
         }
+        // 下蹲贴地刹车（122047-122049）：`Approach(Speed.X, 0, 500*dt)`。
+        if self.ducking && self.on_ground {
+            approach(&mut self.vel.x, Fx::zero(), DUCK_DECEL);
+        }
 
         // 落速上限是**缓动状态**：按住"下"且已在加速下落 → 上限爬向
         // 快落；否则回落到普通落速。速率 300 px/s²。
@@ -851,12 +1277,31 @@ impl Player {
             approach(&mut self.max_fall, MAX_FALL, FAST_MAX_ACCEL);
         }
 
-        // 重力：只在空中施加（122123）。靠近顶点（|vy| < 40 px/s）且
-        // 按住跳跃（或 AutoJump，向上转场）→ 重力减半（122140-122142）。
+        // 重力：只在空中施加（122040）。靠近顶点（|vy| < 40 px/s）且
+        // 按住跳跃（或 AutoJump）→ 重力减半（122031 的 num7）。
+        // 墙滑（122105-122139）：朝墙推（或无横输入按抓）且下落 → 目标
+        // 速度从 160 缓到 20（`Lerp(160, 20, wallSlideTimer/1.2)`，
+        // WALLSLIDE_FAST/SLOW）。墙滑方向每 tick 由条件重新置位。
         if !self.on_ground {
+            let mut target = self.max_fall;
+            let wall_ahead = self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y);
+            if (self.move_x == Fx::from_int(self.facing)
+                || (self.move_x == Fx::zero() && input.grab))
+                && input.axis_y() != Fx::one()
+                && self.vel.y >= Fx::zero()
+                && self.wall_slide_ticks > 0
+                && wall_ahead
+            {
+                self.wall_slide_dir = self.facing;
+            }
+            if self.wall_slide_dir != 0 {
+                let t = self.wall_slide_ticks as f32 / WALLSLIDE_TICKS as f32;
+                let lerp = WALLSLIDE_FAST + (WALLSLIDE_SLOW - WALLSLIDE_FAST) * Fx::from_f32(t);
+                target = lerp;
+            }
             let half = (input.jump || self.auto_jump > 0) && self.vel.y.abs() < HALF_GRAV_THRESHOLD;
             let rate = if half { HALF_GRAVITY } else { GRAVITY };
-            approach(&mut self.vel.y, self.max_fall, rate);
+            approach(&mut self.vel.y, target, rate);
         }
 
         // varJump 钳制（122042-122048）：计时未尽且按住跳跃 → 竖直速度
@@ -899,6 +1344,11 @@ impl Player {
         if !self.on_ground {
             self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
         }
+        // 空中站起（120058-120060）：下落且头顶无阻碍 → 取消下蹲。
+        if !self.on_ground && self.vel.y > Fx::zero() && self.coyote == 0 && self.can_unduck(rooms)
+        {
+            self.ducking = false;
+        }
         // 土狼时间 + 跳跃缓冲的过期：接地就刷新土狼；离地则两者一起递减。
         // 缓冲要到"着陆的下一帧"才可能触发（接地状态是本 tick 尾才更新），
         // 所以接地那一帧不递减，避免把落地的余量吃掉。
@@ -921,9 +1371,23 @@ impl Player {
     ///
     /// 房间按各自原点把世界格换算回局部格；矩形与 hitbox 格范围
     /// 不相交的房间直接跳过（贴边接触不算相交）。
+    /// 当前 hitbox 尺寸：下蹲时 8×6 且左上角下移 5px（底边与常规 8×11
+    /// 对齐；`duckHitbox = new Hitbox(8f, 6f, -4f, -6f)`，118858）。
+    fn box_dims(&self) -> (i32, i32, i32) {
+        if self.ducking {
+            (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF)
+        } else {
+            (PLAYER_W_PX, PLAYER_H_PX, 0)
+        }
+    }
+
+    /// 以**当前** hitbox 在 `(x, y)` 处是否与固体相交。`y` 是常规 hitbox
+    /// 左上角 y；下蹲时探测框下移 5px（底边对齐）。
     fn hit_in<'r>(&self, rooms: &'r [Room], x: Fx, y: Fx) -> Option<&'r Room> {
-        let right = x + Fx::from_int(PLAYER_W_PX) - Fx::from_bits(1);
-        let bottom = y + Fx::from_int(PLAYER_H_PX) - Fx::from_bits(1);
+        let (w, h, y_off) = self.box_dims();
+        let y = y + Fx::from_int(y_off);
+        let right = x + Fx::from_int(w) - Fx::from_bits(1);
+        let bottom = y + Fx::from_int(h) - Fx::from_bits(1);
         let (cx0, cx1) = (cell(x), cell(right));
         let (cy0, cy1) = (cell(y), cell(bottom));
         for room in rooms {
@@ -977,7 +1441,7 @@ impl Player {
             let step = clamp_step(dy);
             let ny = self.pos.y + step;
             if self.hits(rooms, self.pos.x, ny) {
-                self.pos.y = edge_y(ny, step);
+                self.pos.y = edge_y(ny, step, self.box_dims().2);
                 if step > Fx::zero() {
                     self.on_ground = true;
                 }
@@ -1066,12 +1530,15 @@ fn edge_x(nx: Fx, step: Fx) -> Fx {
 }
 
 /// 撞地 / 撞天花板后把 hitbox 贴到刚进入那一行的外沿（世界格边）。
-fn edge_y(ny: Fx, step: Fx) -> Fx {
+/// `y_off` 是下蹲时探测框的下移量：底边不变（5+6 = 11），顶边要按
+/// 框顶（ny + y_off）贴，否则下蹲上跳会穿进天花板格。
+fn edge_y(ny: Fx, step: Fx, y_off: i32) -> Fx {
     if step > Fx::zero() {
-        let bottom = ny + Fx::from_int(PLAYER_H_PX) - Fx::from_bits(1);
+        let bottom = ny + Fx::from_int(y_off + PLAYER_H_PX) - Fx::from_bits(1);
         Fx::from_int(cell(bottom) * 8 - PLAYER_H_PX)
     } else {
-        Fx::from_int(cell(ny) * 8 + 8)
+        let top = ny + Fx::from_int(y_off);
+        Fx::from_int(cell(top) * 8 + 8) - Fx::from_int(y_off)
     }
 }
 
@@ -2085,5 +2552,73 @@ mod tests {
             held.vel.y,
             idle.vel.y
         );
+    }
+    /// 下蹲：地面按下蹲进入（122004-122008）、hitbox 换 8×6 且底边
+    /// 对齐（118858）、松开后站起（121996-122003）。
+    #[test]
+    fn ducking_enters_exits_and_shrinks_the_hitbox() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let down = Input {
+            down: true,
+            ..Input::default()
+        };
+        p.step(&down, std::slice::from_ref(&room));
+        assert!(
+            p.ducking,
+            "crouch on the ground with down held (122004-122008)"
+        );
+        assert_eq!(p.box_dims(), (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF));
+        assert!(p.on_ground, "duck hitbox keeps the bottom edge aligned");
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert!(!p.ducking, "release down to stand back up (121996-122003)");
+    }
+
+    /// 攀爬：贴墙按抓 → State 1；悬挂持续耗体力（静止 10/s，122278）；
+    /// 落地回满（119818-119823）；松抓落地（122211-122216）。
+    #[test]
+    fn climb_grabs_drains_stamina_and_lets_go() {
+        let mut tiles = Tileset::new("Gameplay", 10, 16);
+        for y in 0..16 {
+            tiles.set(0, y, 1);
+        }
+        for x in 0..10 {
+            tiles.set(x, 15, 1);
+        }
+        let room = Room {
+            name: "w".into(),
+            bounds: RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: 80.0,
+                h: 128.0,
+            },
+            tiles,
+            bg: Tileset::new("Gameplay", 10, 16),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            ..Default::default()
+        };
+        let mut p = settled(&room, 8.0);
+        assert_eq!(p.stamina, CLIMB_MAX_STAMINA);
+        let grab = Input {
+            left: true,
+            grab: true,
+            ..Input::default()
+        };
+        p.step(&grab, std::slice::from_ref(&room));
+        assert_eq!(p.state, 1, "grabbing a wall enters Climb (121843-121849)");
+        let before = p.stamina;
+        for _ in 0..12 {
+            p.step(&grab, std::slice::from_ref(&room));
+        }
+        assert!(
+            p.stamina < before,
+            "hanging drains stamina at 10/s (122278-122280)"
+        );
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "ground refills stamina");
+        assert_eq!(p.state, 0, "releasing grab leaves Climb (122211-122216)");
     }
 }
