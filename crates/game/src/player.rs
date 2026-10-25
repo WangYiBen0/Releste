@@ -20,10 +20,14 @@
 //!   原版是**一张地图一份**瓦片网格（77231-77233）+ 单房间边界，
 //!   碰撞天然全图；引擎按房间存储瓦片，只能显式骑缝查。各函数
 //!   文档都注明了这一点。
-//! - **尚未实现**：dash（State 2，119398-119409 的状态机全家）、
-//!   爬墙/体力（State 1）、游泳（State 3）、拾取（State 8）等；
-//!   ROADMAP Phase 4.1。头发颜色的 USED/FLASH/TWO_DASHES 状态已在
-//!   `sprites::hair_color` 备好，随 dash 落地激活。
+//! - **已实现的状态**：0 Normal（119397）、1 Climb 含体力（119398）、
+//!   2 Dash 含八向/回充/冷却（119399）；`Player::step` 按 `state` 分派。
+//! - **尚未实现的状态**（原版 `StateMachine.SetCallbacks` 119397-119411）：
+//!   3 Swim、4 Boost、5 RedDash、6 HitSquash、7 Launch、8 Pickup、
+//!   9 DreamDash、10 SummitLaunch、11 Dummy 与 12-15 的 intro 协程；
+//!   这些 `state` 值目前都会落回 Normal。ROADMAP Phase 4.1。
+//!   头发颜色的 USED/FLASH/TWO_DASHES 状态已在 `sprites::hair_color`
+//!   备好，随 dash 落地激活。
 
 use releste_map::Room;
 use releste_math::{Fx, Vec2};
@@ -43,30 +47,48 @@ pub const PLAYER_W: f32 = PLAYER_W_PX as f32;
 /// hitbox 高（f32 视图，供渲染使用）。
 pub const PLAYER_H: f32 = PLAYER_H_PX as f32;
 
-/// 水平跑速 90 px/s（1.5 px/tick @ 60Hz）。
+/// 水平跑速 90 px/s（1.5 px/tick @ 60Hz）。原版 `MaxRun = 90f`
+/// （pureCeleste.cs:118386 `MaxRun = 90f`）。
 const RUN: Fx = Fx::from_ratio(3, 2);
+/// 待机/贴边分支的速度上限 25 px/s（5/12 px/tick）：原版
+/// `Math.Abs(Speed.X) <= 25f && moveX == 0`
+/// （pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`）。
+///
+/// **它与 [`RUN`] 不是同一个阈值**：runSlow/runFast 的分界是 45 px/s
+/// （pureCeleste.cs:120449 `Math.Abs(Speed.X) < 45f`），25 px/s 只管
+/// 「走完了没有」。混用会让减速中的
+/// 帧选错（本引擎此前就用了 45）。
+const IDLE_SPEED: Fx = Fx::from_ratio(5, 12);
 /// 水平加速度 1000 px/s²（≈0.278 px/tick²）—— 起步不是瞬间满速。
+/// 原版 `RunAccel = 1000f`（pureCeleste.cs:118388 `RunAccel = 1000f`）。
 const RUN_ACCEL: Fx = Fx::from_ratio(5, 18);
 /// 超速回归 400 px/s²：仅当 **同向超速**（|vx| > 90 且与输入同号）时用；
-/// 无输入停下、反向刹车都走 1000 的全速档（`pureCeleste.cs:121965-121975`）。
+/// 无输入停下、反向刹车都走 1000 的全速档（pureCeleste.cs:121965-121975）。
+/// 定义：`RunReduce = 400f`（pureCeleste.cs:118390 `RunReduce = 400f`）。
 const RUN_REDUCE: Fx = Fx::from_ratio(1, 9);
 /// 空中操控系数 0.65 —— 空中加速是地面的一半多点。
+/// 原版 `AirMult = 0.65f`（pureCeleste.cs:118392 `AirMult = 0.65f`）。
 const AIR_MULT: Fx = Fx::from_ratio(13, 20);
 /// 重力 900 px/s²（0.25 px/tick²）。
+/// 原版 `Gravity = 900f`（pureCeleste.cs:118378 `Gravity = 900f`）。
 const GRAVITY: Fx = Fx::from_ratio(1, 4);
 /// 顶点半重力：上升/下落都很慢且按住跳跃时重力减半（450 px/s²）。
+/// 原版把重力乘 0.5（pureCeleste.cs:122031 `? 0.5f : 1f`）。
 const HALF_GRAVITY: Fx = Fx::from_ratio(1, 8);
 /// 普通落速上限 160 px/s（8/3 px/tick）。
 ///
-/// **参考值**：`pureCeleste.cs` Player 的 `MaxFall = 160f`。它是一个
+/// **参考值**：`MaxFall = 160f`（pureCeleste.cs:118376 `MaxFall = 160f`）。它是一个
 /// **缓动状态**（见 [`Player::max_fall`]），按住"下"时上限爬向
 /// [`FAST_MAX_FALL`]，松开再缓回来 —— 不是硬截断。
 const MAX_FALL: Fx = Fx::from_ratio(8, 3);
-/// 快落上限 240 px/s（4 px/tick）。参考 `FastMaxFall = 240f`。
+/// 快落上限 240 px/s（4 px/tick）。参考 `FastMaxFall = 240f`
+/// （pureCeleste.cs:118382 `FastMaxFall = 240f`）。
 const FAST_MAX_FALL: Fx = Fx::from_int(4);
-/// 落速上限的缓动速率 300 px/s²（1/12 px/tick²）。参考 `FastMaxAccel = 300f`。
+/// 落速上限的缓动速率 300 px/s²（1/12 px/tick²）。参考 `FastMaxAccel = 300f`
+/// （pureCeleste.cs:118384 `FastMaxAccel = 300f`）。
 const FAST_MAX_ACCEL: Fx = Fx::from_ratio(1, 12);
-/// 顶点半重力阈值 40 px/s（2/3 px/tick）。参考 `HalfGravThreshold = 40f`。
+/// 顶点半重力阈值 40 px/s（2/3 px/tick）。参考 `HalfGravThreshold = 40f`
+/// （pureCeleste.cs:118380 `HalfGravThreshold = 40f`）。
 const HALF_GRAV_THRESHOLD: Fx = Fx::from_ratio(2, 3);
 /// 起跳竖直速度 -105 px/s（-7/4 px/tick）。`Player.Jump`：
 /// `Speed.Y = -105f`（pureCeleste.cs:120705）。
@@ -81,6 +103,11 @@ const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
 /// 只剩重力，即得可变跳高。**没有**"松手瞬间砍速度"——削高全靠钳制。
 const VAR_JUMP_TICKS: u32 = 12;
 /// 碰撞解算的推进步长：1/2 px。
+///
+/// **引擎自造（偏差声明）**：原版 `Actor.MoveH/MoveV` 在整数像素网格上
+/// 用 `Collider` 逐像素推进，没有"亚像素步长"这个概念。这里为了 240 px/s
+/// （4 px/tick）的冲刺也能逐格查碰撞，固定按 1/2px 分步推进 ——
+/// 行为等价于逐像素，代价是每 tick 多几次查询。
 const STEP: Fx = Fx::from_ratio(1, 2);
 /// 冲刺速度 240 px/s（4 px/tick）。`DashCoroutine`：`speed = value * 240f`
 /// （pureCeleste.cs:122745）。
@@ -108,10 +135,13 @@ const WALLJUMP_PROBE: Fx = Fx::from_int(5);
 const FORCE_MOVE_X_TICKS: u16 = 10;
 /// 蹬墙跳（超级版）水平速度 170 px/s（17/6 px/tick，`SuperWallJump`：
 /// `Speed.X = 170f*dir`，pureCeleste.cs:120877）。
-const SUPER_WALLJUMP_X: Fx = Fx::from_int(4);
+///
+/// 注：数值曾错写作 240（4 px/tick）—— 段注释改对了、常量没跟着改。
+/// `super_wall_jump_pins_vanilla_speeds` 现在钉住这两个值。
+const SUPER_WALLJUMP_X: Fx = Fx::from_ratio(17, 6);
 /// 蹬墙跳（超级版）竖直速度 -160 px/s（-8/3 px/tick，`varJumpSpeed =
 /// (Speed.Y = -160f)`，pureCeleste.cs:120878）。
-const SUPER_WALLJUMP_Y: Fx = Fx::from_ratio(-7, 3);
+const SUPER_WALLJUMP_Y: Fx = Fx::from_ratio(-8, 3);
 /// 超级跳（地面横冲刺中起跳）水平速度 260 px/s（13/3 px/tick，
 /// `SuperJump`：`Speed.X = 260f*Facing`，120748）。
 const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
@@ -195,6 +225,22 @@ impl Input {
             (true, false) => -Fx::one(),
             (false, true) => Fx::one(),
             _ => Fx::zero(),
+        }
+    }
+
+    /// 两个输入状态的并集：同一个键任一为真即为真。
+    ///
+    /// 脚本里重叠的输入段按这个规则合并（`devtools::input_at`）——
+    /// 左右同按是允许的，`axis_x` 会判 0（原版 `Axis` 语义，16705-16714）。
+    pub fn merge(self, other: Input) -> Input {
+        Input {
+            left: self.left || other.left,
+            right: self.right || other.right,
+            up: self.up || other.up,
+            down: self.down || other.down,
+            jump: self.jump || other.jump,
+            dash: self.dash || other.dash,
+            grab: self.grab || other.grab,
         }
     }
 
@@ -286,6 +332,11 @@ pub struct Player {
     pub anim_frame: usize,
     anim_timer: f32,
     anim_playing: bool,
+    /// 上一条动画 id（原版 `Sprite.LastAnimationID`，pureCeleste.cs:10181）。
+    /// `PlayerSprite.Running`（111374-111388）与 `UpdateSprite` 的跑动守卫
+    /// （120461）读的都是它 —— 「是不是正在跑」**不等于**「当前动画有没有
+    /// goto」（`idle`/`edge`/`walk` 都带 `<Loop>`）。
+    last_anim_id: String,
     /// 快速跳跃/下落标志（`fastJump`，120437/120469）。
     fast_jump: bool,
     /// 体力（`Stamina`，118680 出生 110；攀爬消耗、落地回满 119818-119823）。
@@ -354,6 +405,7 @@ impl Player {
             anim_frame: 0,
             anim_timer: 0.0,
             anim_playing: false,
+            last_anim_id: String::new(),
             fast_jump: false,
             stamina: CLIMB_MAX_STAMINA,
             ducking: false,
@@ -370,6 +422,37 @@ impl Player {
     /// [`Session::room_at`] 决定；物理不选房间 —— 见 [`Player::hit_in`]。
     pub fn update(&mut self, input: &Input, session: &Session) {
         self.step(input, &session.doc.rooms);
+    }
+
+    /// 一 tick 的可序列化状态快照（`--trace` / `--script` 用）。
+    ///
+    /// `tick` 由调用方给（1-based，第几次 `kernel.tick()` 之后），
+    /// `room` 是该 tick 的房间名。字段单位写在字段名里：位置 px、
+    /// 速度 px/tick，并附 px/s 的换算值方便与原版逐行对照。
+    pub fn snapshot<'a>(&'a self, tick: u64, room: &'a str) -> crate::devtools::Snapshot<'a> {
+        crate::devtools::Snapshot {
+            tick,
+            room,
+            x: self.pos.x.to_f32(),
+            y: self.pos.y.to_f32(),
+            vx: self.vel.x.to_f32(),
+            vy: self.vel.y.to_f32(),
+            vx_ps: self.vel.x.to_f32() * 60.0,
+            vy_ps: self.vel.y.to_f32() * 60.0,
+            on_ground: self.on_ground,
+            facing: self.facing,
+            state: self.state,
+            dashes: self.dashes,
+            stamina: self.stamina.to_f32(),
+            ducking: self.ducking,
+            anim: &self.anim_id,
+            anim_frame: self.anim_frame,
+            last_anim: &self.last_anim_id,
+            move_x: self.move_x.to_f32(),
+            var_jump: self.var_jump,
+            jump_buffer: self.jump_buffer,
+            coyote: self.coyote,
+        }
     }
 
     /// 单步仿真：公共计时头 → 状态机（Normal/Dash）→ 世界级兜底。
@@ -597,7 +680,7 @@ impl Player {
         }
     }
 
-    /// 原版 `ClimbHop()`（pureCeleste.cs:122358-122382，无移动平台分支）：
+    /// 原版 `ClimbHop()`（pureCeleste.cs:122380-122402，无移动平台分支）：
     /// 朝墙侧蹬出 100 px/s，竖直钳到 ≤ -120 px/s，清 forceMoveX。
     fn climb_hop(&mut self) {
         self.vel.x = CLIMB_HOP_X * Fx::from_int(self.facing);
@@ -810,7 +893,7 @@ impl Player {
         }
     }
 
-    /// 原版 `SuperJump()`（pureCeleste.cs:120740-120778，无滑铲/滑翔
+    /// 原版 `SuperJump()`（pureCeleste.cs:120738-120777，无滑铲/滑翔
     /// 分支）：水平 260×Facing、竖直 -105、varJump 计满，回 State 0。
     fn super_jump(&mut self, rooms: &[Room]) {
         self.jump_buffer = 0;
@@ -849,7 +932,7 @@ impl Player {
         self.state = 0;
     }
 
-    /// State 1：`ClimbUpdate`（pureCeleste.cs:122184-122330）。顺序：
+    /// State 1：`ClimbUpdate`（pureCeleste.cs:122184-122362）。顺序：
     /// 僵直递减 → 接地回体力 → 跳跃分支（反向蹬墙 / ClimbJump）→ 冲刺
     /// → 松抓落地 → 离墙（顶点 ClimbHop / let-go）→ 竖直攀爬（上 -45、
     /// 下 80、贴顶 SlipCheck 滑落 30）→ 体力消耗（上 45.45/s、静止
@@ -967,7 +1050,7 @@ impl Player {
         self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(6))
     }
 
-    /// 原版 `UpdateHair`（pureCeleste.cs:120244-120296）：冲刺耗尽 → 以
+    /// 原版 `UpdateHair`（pureCeleste.cs:120247-120298）：冲刺耗尽 → 以
     /// 6/s 渐入 USED；回满瞬间（lastDashes ≠ Dashes）→ FLASH +
     /// `hairFlashTimer` 0.12s；期间保持 FLASH；否则按段数取
     /// TWO_DASHES/NORMAL。State 19（星羽）与 `OverrideHairColor` 未实现。
@@ -991,10 +1074,15 @@ impl Player {
         self.last_dashes = self.dashes; // 120295
     }
 
-    /// 原版 `Sprite.Play(id)`：同 id 且在播 → 不重启；表缺失/未知 id 是
-    /// 无操作（渲染回落静态帧）。
+    /// 原版 `Sprite.Play(id, restart = false)`（pureCeleste.cs:10483-10503）：
+    /// 同 id 即无操作（pureCeleste.cs:10485 `(CurrentAnimationID != id) | restart`）；
+    /// 切换时 `LastAnimationID` 记下**旧** id
+    /// （pureCeleste.cs:10491-10492 `LastAnimationID = lastAnimationID`）、
+    /// `Animating = Delay > 0f`
+    /// （pureCeleste.cs:10494 `Animating = currentAnimation.Delay > 0f`）、
+    /// 计时与帧归零。表缺失/未知 id 仍是无操作（渲染回落静态帧）。
     pub fn play(&mut self, table: &crate::sprites::AnimationTable, id: &str) {
-        if self.anim_id == id && self.anim_playing {
+        if self.anim_id == id {
             return;
         }
         let Some(def) = table.sprites.get("player") else {
@@ -1006,10 +1094,11 @@ impl Player {
         let Some(anim) = def.anims.get(&id.to_ascii_lowercase()) else {
             return;
         };
+        self.last_anim_id = std::mem::take(&mut self.anim_id); // pureCeleste.cs:10491-10492
         self.anim_id = id.to_string();
         self.anim_frame = 0;
         self.anim_timer = 0.0;
-        self.anim_playing = anim.delay > 0.0 && anim.frames.len() > 1;
+        self.anim_playing = anim.delay > 0.0; // 10493 `Animating = Delay > 0f`
     }
 
     /// 原版 `Sprite.Update`（10170-10308）：计时按帧间隔推进，循环回 0，
@@ -1024,6 +1113,8 @@ impl Player {
         if !self.anim_playing || anim.delay <= 0.0 {
             return;
         }
+        // 10234-10243：`animationTimer += DeltaTime`（Rate = 1）；
+        // `|timer| >= Delay` 才翻一帧，翻完把 Delay 从计时里减掉。
         self.anim_timer += 1.0 / 60.0;
         if self.anim_timer < anim.delay {
             return;
@@ -1031,14 +1122,30 @@ impl Player {
         self.anim_timer -= anim.delay;
         self.anim_frame += 1;
         if self.anim_frame >= anim.frames.len() {
-            // 10290-10305：Goto 非空 → 跳到目标动画首帧；否则停在末帧并
-            // 清空 CurrentAnimationID（`Animating = false`）。
+            // 10278-10305。
             match &anim.goto {
                 Some(next) => {
-                    let next = next.clone();
-                    self.play(table, &next);
+                    // Goto 分支（pureCeleste.cs:10260-10282）：
+                    // `CurrentAnimationID = currentAnimation.Goto.Choose()`（10262），
+                    // 并把**新** id 写进 `LastAnimationID`
+                    // （pureCeleste.cs:10267 `LastAnimationID = CurrentAnimationID`
+                    // —— 与 `play` 的「记旧 id」规则**不同**）；帧归 0（10275），
+                    // 计时与 `Animating` 都不动。
+                    let key = next.to_ascii_lowercase();
+                    if !table
+                        .sprites
+                        .get("player")
+                        .is_some_and(|d| d.anims.contains_key(&key))
+                    {
+                        return;
+                    }
+                    self.anim_frame = 0;
+                    self.anim_id = next.clone();
+                    self.last_anim_id = next.clone();
                 }
                 None => {
+                    // pureCeleste.cs:10283-10302：`Animating = false`、帧停在末帧、
+                    // `CurrentAnimationID` 清空（纹理不重置）。
                     self.anim_frame = anim.frames.len() - 1;
                     self.anim_playing = false;
                     self.anim_id.clear();
@@ -1054,17 +1161,17 @@ impl Player {
         anim.frames.get(self.anim_frame).cloned()
     }
 
-    /// `Sprite.Running`：当前动画 Goto 非空（循环或链式跳转；120466 的
-    /// `!Sprite.Running` 守卫即指这个）。
-    fn anim_is_looping(&self, table: &crate::sprites::AnimationTable) -> bool {
-        table
-            .sprites
-            .get("player")
-            .and_then(|d| d.anims.get(&self.anim_id.to_ascii_lowercase()))
-            .is_some_and(|a| a.goto.is_some())
+    /// 原版 `PlayerSprite.Running`（pureCeleste.cs:111375-111388）：
+    /// **上一条**动画（`LastAnimationID`）以 `run` 开头，或正好是 `flip`。
+    ///
+    /// 它**不是**「当前动画有 goto」——`idle`/`edge`/`walk` 全都带 `<Loop>`，
+    /// 那样判会把「已经在跑」误判成 true，于是从 idle 起步时 `runSlow` /
+    /// `runFast` 永远播不出来，角色就只是**平移**（走路没有腿部动画）。
+    fn running(&self) -> bool {
+        self.last_anim_id == "flip" || self.last_anim_id.starts_with("run")
     }
 
-    /// 原版 `Player.UpdateSprite`（pureCeleste.cs:120298-120481）的可及
+    /// 原版 `Player.UpdateSprite`（pureCeleste.cs:120300-120508）的可及
     /// 分支（无持有物/风/攀爬/梦境/太空/下蹲 —— 偏差声明见模块文档）：
     /// 冲刺攻击窗 → skid/dash；地面 → push/edge/edgeBack/lookUp/idle/
     /// skid/flip/runSlow/runFast；空中 → jumpSlow/jumpFast/fallSlow/
@@ -1108,12 +1215,15 @@ impl Player {
         } else if self.state == 0 {
             if self.on_ground {
                 self.fast_jump = false;
-                let run = self.vel.x.abs() > Fx::from_ratio(3, 4);
+                // pureCeleste.cs:120398-120400：贴墙推（`Holding == null && moveX != 0 &&
+                // CollideCheck<Solid>(Position + UnitX * moveX)`；原版还有
+                // `ClimbBlocker.EdgeCheck`，本引擎暂无 ClimbBlocker）。
                 if self.move_x != Fx::zero()
                     && self.hits(rooms, self.pos.x + self.move_x, self.pos.y)
                 {
                     self.play(table, "push");
-                } else if !run && self.move_x == Fx::zero() {
+                } else if self.vel.x.abs() <= IDLE_SPEED && self.move_x == Fx::zero() {
+                    // pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`。
                     let front = self.hits(
                         rooms,
                         self.pos.x + Fx::from_int(self.facing),
@@ -1133,22 +1243,36 @@ impl Player {
                         self.pos.y + Fx::from_int(2),
                     );
                     if !front {
-                        self.play(table, "edge");
+                        self.play(table, "edge"); // pureCeleste.cs:120408-120410
                     } else if !back {
-                        self.play(table, "edgeBack");
+                        self.play(table, "edgeBack"); // pureCeleste.cs:120412-120414
                     } else if input.up {
-                        self.play(table, "lookUp");
-                    } else {
+                        // pureCeleste.cs:120418 `Sprite.LastAnimationID != "lookUp"`
+                        // —— 原版只在此时才重播（lookUp 非循环，播完会清空
+                        // CurrentAnimationID；无条件重播会永远停在第 0 帧）。
+                        if self.last_anim_id != "lookUp" {
+                            self.play(table, "lookUp");
+                        }
+                    } else if !self.anim_id.is_empty() && !self.anim_id.contains("idle") {
+                        // pureCeleste.cs:120423 `Sprite.CurrentAnimationID.Contains("idle")`
+                        // —— 完整条件：`CurrentAnimationID != null && (!Contains("idle")
+                        // || (== "idle_carry" && Holding == null))`（120423-120425）。
                         self.play(table, "idle");
                     }
                 } else if self.move_x != Fx::zero() && self.vel.x.signum() == -self.move_x.signum()
                 {
-                    if self.vel.x.abs() > Fx::from_ratio(3, 2) {
+                    // pureCeleste.cs:120432-120440：与输入反向且还在滑
+                    // （`Math.Sign(Speed.X) == -moveX && moveX != 0`，120432）。
+                    if self.vel.x.abs() > RUN {
                         self.play(table, "skid");
-                    } else {
+                    } else if self.anim_id != "skid" {
                         self.play(table, "flip");
                     }
-                } else if !self.anim_is_looping(table) {
+                } else if !self.running() {
+                    // pureCeleste.cs:120447 `!Sprite.Running` —— 完整条件还有
+                    // `CurrentAnimationID == "runWind" || (== "runSlow_carry" &&
+                    // Holding == null)`，后两项是风/持有物，本引擎未实现
+                    // （120447-120455）。
                     if self.vel.x.abs() < Fx::from_ratio(3, 4) {
                         self.play(table, "runSlow");
                     } else {
@@ -1164,7 +1288,10 @@ impl Player {
                 }
             } else if self.fast_jump || self.vel.y >= Fx::from_ratio(8, 3) {
                 self.fast_jump = true;
-                self.play(table, "fallFast");
+                // pureCeleste.cs:120486 `Sprite.LastAnimationID != "fallFast"`。
+                if self.last_anim_id != "fallFast" {
+                    self.play(table, "fallFast");
+                }
             } else {
                 self.play(table, "fallSlow");
             }
@@ -2620,5 +2747,279 @@ mod tests {
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "ground refills stamina");
         assert_eq!(p.state, 0, "releasing grab leaves Climb (122211-122216)");
+    }
+
+    // -----------------------------------------------------------------
+    // 精灵动画（`Sprite` 状态机）—— 回归：走路看起来只是「平移」。
+    // -----------------------------------------------------------------
+
+    /// 一份就够用的动画表：只关心 id/帧数/间隔/goto，帧名随便起。
+    ///
+    /// 键必须小写（Monocle 字典 `OrdinalIgnoreCase`，10206）；`goto` 保留
+    /// XML 里的原样大小写（原版 `CurrentAnimationID = Goto`，10279-10284）。
+    fn anim_table() -> crate::sprites::AnimationTable {
+        use crate::sprites::{AnimDef, AnimationTable, SpriteDef};
+        use std::collections::HashMap;
+
+        fn a(frames: &[&str], delay: f32, goto: Option<&str>) -> AnimDef {
+            AnimDef {
+                frames: frames.iter().map(|f| (*f).to_string()).collect(),
+                delay,
+                goto: goto.map(|g| g.to_string()),
+            }
+        }
+
+        let mut anims = HashMap::new();
+        // 对照真实 Sprites.xml：idle/edge/push 都是带 `<Loop>` 的
+        // `goto=自身`，runSlow 播完 goto runFast，runFast 自循环，
+        // flip 播完 goto runFast（references/Celeste/Content/Graphics/Sprites.xml）。
+        anims.insert("idle".into(), a(&["idle00", "idle01"], 0.1, Some("idle")));
+        anims.insert(
+            "runslow".into(),
+            a(
+                &["runSlow00", "runSlow01", "runSlow02"],
+                0.07,
+                Some("runFast"),
+            ),
+        );
+        anims.insert(
+            "runfast".into(),
+            a(
+                &["runFast00", "runFast01", "runFast02"],
+                0.05,
+                Some("runFast"),
+            ),
+        );
+        anims.insert("edge".into(), a(&["edge00"], 0.1, Some("edge")));
+        anims.insert("edgeback".into(), a(&["edgeBack00"], 0.1, Some("edgeBack")));
+        anims.insert("push".into(), a(&["push00"], 0.1, Some("push")));
+        anims.insert(
+            "flip".into(),
+            a(&["flip00", "flip01"], 0.04, Some("runFast")),
+        );
+        anims.insert("skid".into(), a(&["skid00"], 0.04, Some("skid")));
+        anims.insert("duck".into(), a(&["duck00"], 0.0, Some("duck")));
+        anims.insert("lookup".into(), a(&["lookUp00"], 0.1, None));
+
+        let mut sprites = HashMap::new();
+        sprites.insert(
+            "player".into(),
+            SpriteDef {
+                start: "idle".into(),
+                anims,
+            },
+        );
+        AnimationTable { sprites }
+    }
+
+    /// 往右走两步再往左走两步：必须真的播跑动动画（帧在动），而不是
+    /// 保持 idle 姿势滑过去。
+    ///
+    /// 回归点：`PlayerSprite.Running`（pureCeleste.cs:111374-111388）读的是
+    /// **上一条**动画（`LastAnimationID`）。曾经把它写成「当前动画有 goto」，
+    /// 而 `idle` 自带 `<Loop>`（goto=idle）→ `!Sprite.Running` 恒假 →
+    /// 120461-120470 的 `runSlow`/`runFast` 永远播不出来，角色看起来只是平移。
+    #[test]
+    fn walking_left_and_right_animates_instead_of_sliding() {
+        use std::collections::BTreeSet;
+
+        let room = wide_room();
+        let table = anim_table();
+        let mut p = settled(&room, 100.0);
+        let right = Input {
+            right: true,
+            ..Input::default()
+        };
+        let left = Input {
+            left: true,
+            ..Input::default()
+        };
+
+        // 站稳：起始动画是 idle（sprite 的 start，10189）。
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.anim_id, "idle");
+        assert!(!p.running(), "刚从 idle 起手，LastAnimationID 不是 run*");
+
+        // ---- 往右两步（20 tick ≈ 1/3 秒）----
+        let x0 = p.pos.x;
+        let mut seen = BTreeSet::new();
+        for _ in 0..20 {
+            p.step(&right, std::slice::from_ref(&room));
+            p.update_visuals(&table, &right, std::slice::from_ref(&room));
+            assert!(
+                matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
+                "往右走却播 {:?}（120464-120470）",
+                p.anim_id
+            );
+            seen.insert((p.anim_id.clone(), p.anim_frame));
+        }
+        assert!(
+            seen.len() >= 3,
+            "右走 20 tick 只出现 {} 种 (动画, 帧) —— 帧没在推进，就是在平移",
+            seen.len()
+        );
+        assert!(p.pos.x > x0, "往右走必须真的往右移动");
+
+        // ---- 转身往左：先 flip（120455-120459），flip 播完 goto runFast ----
+        p.step(&left, std::slice::from_ref(&room));
+        p.update_visuals(&table, &left, std::slice::from_ref(&room));
+        assert!(
+            matches!(p.anim_id.as_str(), "flip" | "skid"),
+            "高速反向应当先播 flip/skid（120441-120459），实际 {:?}",
+            p.anim_id
+        );
+
+        let x1 = p.pos.x;
+        let mut seen = BTreeSet::new();
+        for _ in 0..40 {
+            p.step(&left, std::slice::from_ref(&room));
+            p.update_visuals(&table, &left, std::slice::from_ref(&room));
+            seen.insert((p.anim_id.clone(), p.anim_frame));
+        }
+        assert!(
+            matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
+            "转身后必须回到跑动动画（flip 的 goto=runFast），实际 {:?}",
+            p.anim_id
+        );
+        assert!(seen.len() >= 3, "往左同样不能是静止帧");
+        assert!(p.pos.x < x1, "往左走必须真的往左移动");
+    }
+
+    /// `PlayerSprite.Running` 的完整语义（pureCeleste.cs:111374-111388）：
+    /// 「上一条动画」以 `run` 开头、或者正好是 `flip`。
+    #[test]
+    fn running_tracks_the_previous_animation_like_vanilla() {
+        let table = anim_table();
+        let room = floor_room();
+        let mut p = Player::new(Vec2::from_f32s(8.0, 13.0));
+
+        // 起手播 start（idle）：Play 记下的旧 id 是空串 → 不在跑。
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.anim_id, "idle");
+        assert!(!p.running());
+
+        // idle → runSlow：Play 把**旧** id（idle）写进 LastAnimationID，
+        // 所以这一刻「还不是在跑」——正是这点让从 idle 起手的跑动动画能播
+        // （10487-10489 + 120461）。
+        p.play(&table, "runSlow");
+        assert_eq!(p.last_anim_id, "idle");
+        assert!(!p.running());
+
+        // flip 特例：`if (LastAnimationID == "flip") return true`（111381-111384）。
+        p.play(&table, "flip");
+        assert!(p.running());
+        // flip → runFast：旧 id 仍是 flip → 正在跑。
+        p.play(&table, "runFast");
+        assert!(p.running());
+
+        // runFast → idle：旧 id 是 run* → 这一刻仍算「在跑」。
+        p.play(&table, "idle");
+        assert!(p.running());
+        // idle → runSlow：旧 id 变成 idle → 可以重播跑动动画。
+        p.play(&table, "runSlow");
+        assert!(!p.running());
+    }
+
+    /// Goto 分支（pureCeleste.cs:10260-10282）把**新** id 写进
+    /// `LastAnimationID`，与 Play 的「记旧 id」规则不同。
+    #[test]
+    fn animation_goto_writes_the_target_into_last_anim_id() {
+        let table = anim_table();
+        let mut p = Player::new(Vec2::ZERO);
+        // runSlow：3 帧 × 0.07s ≈ 15 tick 走完，然后 goto runFast。
+        p.play(&table, "runSlow");
+        for _ in 0..20 {
+            p.update_animation(&table);
+        }
+        assert_eq!(p.anim_id, "runFast", "runSlow 播完应当 goto runFast");
+        assert_eq!(
+            p.last_anim_id, "runFast",
+            "Goto 分支写的是新 id（pureCeleste.cs:10267）"
+        );
+        assert!(p.running());
+    }
+
+    /// 待机分支的速度分界是 25 px/s，**不是** runSlow/runFast 的 45 px/s
+    /// （pureCeleste.cs:120402 vs pureCeleste.cs:120449）。
+    #[test]
+    fn idle_branch_uses_the_vanilla_25px_s_threshold() {
+        let room = wide_room();
+        let table = anim_table();
+        let mut p = settled(&room, 100.0);
+        // 30 px/s：> 25（不该进 idle/edge 分支）、< 45（该是 runSlow）。
+        p.vel.x = Fx::from_ratio(1, 2);
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert!(
+            matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
+            "30 px/s 落在 idle 阈值之上、runSlow 阈值之下 → 应走跑动分支，实际 {:?}",
+            p.anim_id
+        );
+
+        // 20 px/s：< 25 → 进 idle/edge 分支（这里前面没有边缘，落 idle）。
+        p.vel.x = Fx::from_ratio(1, 3);
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.anim_id, "idle");
+    }
+
+    /// 蹬墙跳（超级版）钉住原版数值（pureCeleste.cs:120877-120880）。
+    #[test]
+    fn super_wall_jump_pins_vanilla_speeds() {
+        let mut p = Player::new(Vec2::ZERO);
+        p.super_wall_jump(1);
+        assert_eq!(p.vel.x, Fx::from_ratio(17, 6), "Speed.X = 170f * dir");
+        assert_eq!(p.vel.y, Fx::from_ratio(-8, 3), "Speed.Y = -160f");
+        assert_eq!(p.var_jump_speed, p.vel.y, "varJumpSpeed = Speed.Y");
+        assert_eq!(p.var_jump, 15, "varJumpTimer = 0.25s（120870）");
+        assert_eq!(p.auto_jump, 0, "AutoJump = false（120871）");
+        assert_eq!(p.state, 0);
+    }
+
+    /// 走左右两步的逐 tick 精灵轨迹（排查"看起来只是平移"用的手动清单）：
+    ///
+    /// ```text
+    /// cargo test -p releste-game print_walk_cycle_trace -- --ignored --nocapture
+    /// ```
+    ///
+    /// 只打印、不断言，所以 `#[ignore]`（AGENTS.md §9：纯渲染代码免测试、
+    /// 但要有手动清单）。修复前这里会是一路 `idle`，位置在动、腿不动。
+    #[test]
+    #[ignore = "diagnostic print; run with --nocapture"]
+    fn print_walk_cycle_trace() {
+        let room = wide_room();
+        let table = anim_table();
+        let mut p = settled(&room, 100.0);
+        let right = Input {
+            right: true,
+            ..Input::default()
+        };
+        let left = Input {
+            left: true,
+            ..Input::default()
+        };
+        println!("tick  dir   pos.x   vel.x(px/s)  anim      frame  texture");
+        for tick in 0..80 {
+            let (dir, input) = if tick < 40 {
+                ("→", &right)
+            } else {
+                ("←", &left)
+            };
+            p.step(input, std::slice::from_ref(&room));
+            p.update_visuals(&table, input, std::slice::from_ref(&room));
+            if tick % 2 == 0 {
+                let tex = p
+                    .anim_frame_texture(&table)
+                    .unwrap_or_else(|| "<static>".into());
+                println!(
+                    "{:>4}  {:>3}  {:>7.2}  {:>10.1}  {:<9} {:>5}  {}",
+                    tick,
+                    dir,
+                    p.pos.x.to_f32(),
+                    p.vel.x.to_f32() * 60.0,
+                    p.anim_id,
+                    p.anim_frame,
+                    tex
+                );
+            }
+        }
     }
 }
