@@ -1,0 +1,44 @@
+# 地面冲刺：240 px/s 持续 0.15s，末段交还 160 px/s，冲刺数扣 1。
+#
+#   DashSpeed 240f   (pureCeleste.cs:122745) → 4 px/tick
+#   DashEnd 160f     (pureCeleste.cs:122824) → 8/3 px/tick
+#   0.15s = 9 tick   (pureCeleste.cs:122817)
+#   dashes 1 → 0     (DashBegin，pureCeleste.cs:122534 一带)
+[scenario]
+ticks = 40
+map = "0-Intro.map"
+note = "先向右走 2 tick，第 6 tick 按冲刺"
+
+[[input]]
+from = 5
+to = 8
+right = true
+
+[[input]]
+from = 6
+to = 6
+dash = true
+
+[[expect]]
+tick = 6
+state = 2              # Dash 状态
+dashes = 0
+
+[[expect]]
+tick = 12
+state = 2
+vx = 4.0               # 240 px/s
+
+[[expect]]
+tick = 16
+vx = 4.0
+
+[[expect]]
+tick = 20
+state = 0              # 冲刺结束回到 Normal
+vx = 2.389             # 末段 160 px/s 已被 1000 档拉低一格
+
+[[expect]]
+tick = 30
+vx = 0.0
+anim = "idle"

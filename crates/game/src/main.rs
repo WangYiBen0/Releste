@@ -8,6 +8,7 @@
 #![deny(warnings)]
 
 mod app;
+mod devtools;
 mod logging;
 mod paths;
 mod player;
@@ -68,6 +69,27 @@ struct Args {
     /// the actual renderer output from scripts and CI.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
+
+    /// Write a per-tick player trace (JSONL) to this path. Needs `--headless`.
+    ///
+    /// First line is a self-describing schema banner (`releste.trace.v1`),
+    /// then one object per tick. Deterministic for a given map + no input.
+    #[arg(long, value_name = "PATH")]
+    trace: Option<PathBuf>,
+
+    /// Replay a TOML scenario (inputs + assertions) and exit.
+    ///
+    /// Deterministic: no plugins, no hot reload. Assertion failures print
+    /// `tick=… field: expected … got …` and exit 1. See `tests/scenarios/`.
+    #[arg(long, value_name = "PATH")]
+    script: Option<PathBuf>,
+
+    /// Dump the map as the runtime parsed it (JSON) and exit.
+    ///
+    /// Complements `releste-map --example dump_rooms` (raw file view):
+    /// this is what the engine actually loaded — spawn, atlas, tile rows.
+    #[arg(long, value_name = "PATH")]
+    dump_map: Option<PathBuf>,
 
     /// Raise verbosity: `-v` = debug, `-vv` = trace. Ignored when `--log`/`RUST_LOG` is set.
     #[arg(short, long, action = ArgAction::Count, global = true)]
@@ -142,7 +164,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// 唯一的 `run`：加载地图后分流到 headless 或窗口。
+/// 唯一的 `run`：加载地图后分流到 headless / 窗口 / 调试工具。
 fn run(args: &Args) -> anyhow::Result<()> {
     if args.headless && args.screenshot.is_some() {
         anyhow::bail!(
@@ -150,10 +172,55 @@ fn run(args: &Args) -> anyhow::Result<()> {
              Drop --headless (and optionally set --frames N to choose the capture moment)."
         );
     }
+    if args.trace.is_some() && !args.headless {
+        anyhow::bail!(
+            "--trace needs --headless: the windowed loop ticks in real time, so its \
+             per-tick trace is not reproducible. Use `--headless --frames N --trace out.jsonl`."
+        );
+    }
+    if args.script.is_some() && (args.headless || args.screenshot.is_some() || args.trace.is_some())
+    {
+        anyhow::bail!(
+            "--script drives its own deterministic tick loop: drop --headless/--screenshot/\
+             --trace and put the trace path in the scenario (`[scenario] trace = \"out.jsonl\"`)."
+        );
+    }
+    if args.dump_map.is_some()
+        && (args.script.is_some() || args.headless || args.screenshot.is_some())
+    {
+        anyhow::bail!("--dump-map only loads and dumps the map; drop the simulation flags.");
+    }
+
     let paths = Paths::resolve(args.root.as_deref());
     info_paths(&paths);
 
     let session = Session::load(&args.map, None, &paths)?;
+
+    if let Some(out) = &args.dump_map {
+        devtools::dump_session_json(&session, out)?;
+        println!("ok: map dump written to {}", out.display());
+        return Ok(());
+    }
+
+    if let Some(path) = &args.script {
+        let script = devtools::load_script(path)?;
+        if let Some(note) = &script.scenario.note {
+            tracing::info!(note = %note, "scenario");
+        }
+        let outcome = devtools::run_script(&script, session, &paths, &args.map)?;
+        for failure in &outcome.failures {
+            println!("FAIL {failure}");
+        }
+        println!("{}", outcome.summary());
+        if !outcome.failures.is_empty() {
+            anyhow::bail!(
+                "scenario {}: {} failed check(s) — see the FAIL lines above",
+                path.display(),
+                outcome.failures.len()
+            );
+        }
+        return Ok(());
+    }
 
     if args.headless {
         return run_headless(args, &paths, session);
@@ -181,12 +248,36 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
     let service = GameService::new(session, host, watcher, None);
 
     let mut kernel = Kernel::new().with(service);
+    let mut trace = match &args.trace {
+        Some(path) => Some(devtools::TraceWriter::create(
+            path,
+            &args.map,
+            paths.root(),
+        )?),
+        None => None,
+    };
     let started = Instant::now();
     let frames = args.frame_count();
-    for _ in 0..frames {
+    for tick in 1..=frames {
         kernel.tick();
+        if let Some(trace) = trace.as_mut() {
+            if let Some(svc) = kernel.resolve::<GameService>() {
+                let room = svc.room_name();
+                let snap = svc.player.snapshot(tick, room);
+                // `-v` 时同时给人一条时间线；JSONL 始终是第一手数据。
+                tracing::debug!("{}", snap.to_line());
+                trace.write(&snap)?;
+            }
+        }
     }
     let elapsed = started.elapsed();
+    let traced = trace
+        .as_ref()
+        .map(devtools::TraceWriter::ticks)
+        .unwrap_or(0);
+    if let Some(trace) = trace {
+        trace.finish()?;
+    }
     // 报表数据在跑完之后取：运行中可能发生热重载（文档被换掉、
     // reloads 增加），tick 前的快照会把它们全部报成 0。
     let (rooms, entities, room, plugins, reloads) = kernel
@@ -205,7 +296,7 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
     };
     println!(
         "ok: {} ticks in {:.2?} ({us_per_tick} us/tick); {rooms} rooms, {entities} entities; \
-         spawn room {room}; {plugins} plugins; {reloads} hot reloads",
+         spawn room {room}; {plugins} plugins; {reloads} hot reloads; {traced} traced",
         frames, elapsed,
     );
     Ok(())

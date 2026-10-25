@@ -28,3 +28,5 @@ image.workspace = true
 # 用户设置（settings.toml）：按键绑定持久化（栈规范 §2：配置用 toml）。
 serde.workspace = true
 toml.workspace = true
+# `--trace` / `--script` / `--dump-map` 的机器可读输出（调试工具）。
+serde_json.workspace = true

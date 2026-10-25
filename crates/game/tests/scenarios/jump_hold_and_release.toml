@@ -1,0 +1,40 @@
+# 跳跃：按住期间竖直速度被钉在起跳值，松手立刻交还重力。
+#
+#   JumpSpeed = -105f                      (pureCeleste.cs:120705) → -1.75 px/tick
+#   varJumpTimer 内 Speed.Y = min(Y, varJumpSpeed) (pureCeleste.cs:122042-122048)
+#   MaxFall = 160f                         (pureCeleste.cs:118376) → 2.667 px/tick
+#   fallFast 阈值为 Speed.Y >= 160f        (pureCeleste.cs:120483)
+[scenario]
+ticks = 45
+map = "0-Intro.map"
+note = "第 5 tick 按住跳跃、第 12 tick 松开（8 tick 的短按）"
+
+[[input]]
+from = 5
+to = 12
+jump = true
+
+[[expect]]
+tick = 5
+vy = -1.75             # 起跳瞬间就是原版 -105 px/s
+anim = "jumpSlow"
+
+[[expect]]
+tick = 11
+vy = -1.75             # 按住期间被 varJump 钳住，重力不生效
+
+[[expect]]
+tick = 15
+dy = -17.75            # 松手后重力接手：位移不再线性
+vy = -1.0
+
+[[expect]]
+tick = 30
+vy = 2.667             # 落速收尾 = MaxFall 160 px/s
+anim = "fallFast"
+
+[[expect]]
+tick = 45
+dy = 0.0               # 已落回地面
+vy = 0.0
+on_ground = true

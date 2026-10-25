@@ -1,0 +1,39 @@
+# 走路：加速 → 满速 → 松手减速 → 停下（+ 动画链）。
+#
+# 期望值全部来自原版常量，不是"跑一遍抄下来的"：
+#   MaxRun = 90f      (pureCeleste.cs:118386) → 1.5 px/tick
+#   RunAccel = 1000f  (pureCeleste.cs:118388) → 1/60×1000 = 0.27778 px/tick²
+#   无输入停下走 1000 档（pureCeleste.cs:121965-121975；400 档只用于同向超速）
+#
+# 位移用 dx（相对 tick 1），这样换地图/改出生点也不会误报。
+[scenario]
+ticks = 60
+map = "0-Intro.map"
+note = "从出生点向右走 36 tick，松手再等 20 tick"
+
+[[input]]
+from = 5
+to = 40
+right = true
+
+[[expect]]
+tick = 5
+vx = 0.2778            # 起步第一 tick 只加速 1/60×1000
+anim = "runSlow"
+
+[[expect]]
+tick = 10
+vx = 1.5               # 已到满速 90 px/s
+anim = "runFast"
+
+[[expect]]
+tick = 40
+vx = 1.5
+dx = 50.667             # 加速段 + 满速段的总位移
+
+[[expect]]
+tick = 50
+vx = 0.0
+dx = 54.0
+anim = "idle"
+on_ground = true
