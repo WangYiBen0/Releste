@@ -1,4 +1,4 @@
-# 开发 shell（flake-parts 模块）。
+# Development shell (flake-parts module).
 { ... }:
 {
   perSystem =
@@ -9,17 +9,17 @@
       ...
     }:
     let
-      # 复用 rust.nix 里定义的构建参数。
-      inherit (config._module.args) commonArgs;
-      # 模块把钩子配置挂在 pre-commit.settings 下；
-      # shellHook 与 enabledPackages 由它派生（readOnly）。
+      # Reuse the build arguments defined in rust.nix.
+      inherit (config._module.args) commonArgs rustToolchain;
+      # The module hangs the hook configuration under pre-commit.settings;
+      # shellHook and enabledPackages are derived from it (read-only).
       hooks = config.pre-commit.settings;
       shellHookText = config.pre-commit.shellHook;
 
-      # `buildInputs` 只在**链接期**可见；运行期的 dlopen 只认
-      # `LD_LIBRARY_PATH`，而 NixOS 上没有 /usr/lib —— 不导出它的话
-      # winit 的 wayland / x11 / xkbcommon 库一个都找不到，窗口起不来。
-      # 这里把它们全部变成 `LD_LIBRARY_PATH`。
+      # `buildInputs` are visible at link time only. Runtime dlopen looks at
+      # `LD_LIBRARY_PATH`, and NixOS has no /usr/lib — without exporting it,
+      # none of winit's wayland / X11 / xkbcommon libraries can be found and
+      # the window never opens. So make them all part of `LD_LIBRARY_PATH`.
       guiLibDirs = lib.makeLibraryPath commonArgs.buildInputs;
     in
     {
@@ -29,61 +29,58 @@
         inputsFrom = [ config.packages.default ];
 
         packages =
-          (with pkgs; [
-            # Rust 工具链（含 rustfmt / clippy / rust-analyzer）
-            cargo
-            rustc
-            rustfmt
-            clippy
-            rust-analyzer
-
-            # 内容管线需要的图像工具（手工核对图集时用）
+          # The very toolchain the builds use (fenix, from rust-toolchain.toml) —
+          # not nixpkgs' separate cargo/rustc/rustfmt/clippy, which would drift
+          # from `nix build`.
+          [ rustToolchain ]
+          ++ (with pkgs; [
+            # Image tooling for the content pipeline (manual atlas checks).
             imagemagick
 
-            # 调试 / 性能
+            # Debugging / benchmarking.
             cargo-flamegraph
             hyperfine
             jq
           ])
-          # git-hooks 提供的工具（pre-commit 本体等）
+          # Tools provided by git-hooks (pre-commit itself, ...).
           ++ hooks.enabledPackages;
 
-        # vendored LuaJIT 与 gilrs 需要的构建工具。
+        # Build tools for vendored LuaJIT and gilrs.
         nativeBuildInputs = commonArgs.nativeBuildInputs;
         buildInputs = commonArgs.buildInputs;
 
         RELESTE_DEV_SHELL = "1";
 
         shellHook = shellHookText + ''
-          # 运行期 dlopen 需要 LD_LIBRARY_PATH（见上面的 guiLibDirs）；
-          # 已有值时追加，不覆盖。
+          # Runtime dlopen needs LD_LIBRARY_PATH (see guiLibDirs above);
+          # append to an existing value instead of clobbering it.
           export LD_LIBRARY_PATH=${guiLibDirs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
           echo ""
           echo "Releste dev shell"
           echo ""
-          echo "构建 / 测试（与 CI 完全一致）："
+          echo "Build / test (exactly what CI runs):"
           echo "  nix build .#checks.\$system.fmt          # rustfmt + nixfmt"
           echo "  nix build .#checks.\$system.clippy       # -D warnings"
-          echo "  nix build .#checks.\$system.unit-tests   # 254 个测试"
-          echo "  nix build .#checks.\$system.pre-commit   # 钩子"
-          echo "  nix build                               # 全部二进制"
+          echo "  nix build .#checks.\$system.unit-tests   # whole workspace suite"
+          echo "  nix build .#checks.\$system.pre-commit   # git hooks"
+          echo "  nix build                               # every binary"
           echo ""
-          echo "启动游戏（两个入口点是同一个二进制）："
-          echo "  cargo r                                  # 快速迭代"
-          echo "  nix run .                                # flake 入口"
+          echo "Run the game (both entry points are the same binary):"
+          echo "  cargo r                                  # fast iteration"
+          echo "  nix run .                                # flake entry point"
           echo ""
-          echo "直接用 cargo（快速迭代）："
+          echo "Plain cargo (fast iteration):"
           echo "  cargo test --workspace"
           echo "  cargo run -p releste-editor"
           echo ""
-          echo "可选 feature（本 shell 已提供 make / udev / pkg-config）："
+          echo "Optional features (this shell provides make / udev / pkg-config):"
           echo "  cargo test -p releste-script --features lua"
           echo "  cargo test -p releste-input  --features gamepad"
           echo ""
-          echo "GUI：wayland / libX11 / libxkbcommon / vulkan-loader 已在 LD_LIBRARY_PATH，"
-          echo "  窗口直接 cargo run -p releste-game 就能起。"
+          echo "GUI: wayland / libX11 / libxkbcommon / vulkan-loader are on LD_LIBRARY_PATH,"
+          echo "  so \`cargo run -p releste-game\` opens a window as-is."
           echo ""
-          echo "FMOD：本仓库不含 libfmod.so，需自备并指向它："
+          echo "FMOD: this repository ships no libfmod.so — provide your own:"
           echo "  RELESTE_FMOD_ALLOW_MISSING=1 RELESTE_FMOD_LIB=/path/to/libfmod.so \\"
           echo "    cargo test -p releste-audio --features fmod -- --nocapture"
         '';

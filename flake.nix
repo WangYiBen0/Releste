@@ -1,32 +1,34 @@
 {
-  description = "Releste — 从零重写的 2D 精确平台跳跃引擎";
+  description = "Releste — a from-scratch rewrite of a 2D precision platformer engine";
 
-  # 输入按 rev 固定，保证跨机器可复现。
-  # 升级：nix flake update --commit-lock-file
+  # Inputs are pinned by flake.lock, which is committed. Do NOT put revisions
+  # in these URLs: that duplicates what the lock already guarantees and turns
+  # every update into a manual edit of this file.
+  #
+  #   update one input:  nix flake update nixpkgs
+  #   update everything: nix flake update
+  #   (add --commit-lock-file to commit the new lock in one step)
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/c2313a03e6edc6232c6c33da23414b1e9a7e74a1";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     flake-parts = {
-      url = "github:hercules-ci/flake-parts/024633cd702b10285db5cb19b40ad48d2399ba60";
+      url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
 
-    # crane 不带 nixpkgs 输入（用调用方传入的 pkgs），因此无需 follows。
-    crane.url = "github:ipetkov/crane/47b6b27ed9a3a9181415e4367d0c30ab2a0e0250";
+    # crane takes no nixpkgs input (the caller passes pkgs), so no follows.
+    crane.url = "github:ipetkov/crane";
 
     git-hooks = {
-      url = "github:cachix/git-hooks.nix/a0e4241b51206fbcbf52fd322eb5f0cd80f153c4";
+      url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Rust 工具链。
-    #
-    # rust-overlay 让 rustc / rustfmt / clippy 来自同一个被固定的
-    # toolchain（由 rust-toolchain.toml 声明），而不是靠 nixpkgs
-    # 恰好打包的那一套——否则本机与 CI 的 rustfmt 版本可能不同，
-    # 出现"本地格式化通过、nix build 的 fmt 失败"。
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay/7470661ba2b51156048af08464b82020223dc942";
+    # Rust toolchain: fenix mirrors the toolchain declared in
+    # rust-toolchain.toml, so cargo / rustc / rustfmt / clippy are the same
+    # binaries locally (rustup) and in the flake (CI) and cannot drift.
+    fenix = {
+      url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -41,26 +43,27 @@
         ./nix/shell.nix
       ];
 
-      # 注意：不列 x86_64-darwin —— 当前固定的 nixpkgs(26.11) 已弃用该平台。
-      # 需要 Intel Mac 支持时改用 nixpkgs-26.05-darwin 分支。
+      # x86_64-darwin is deliberately absent: the pinned nixpkgs (26.11)
+      # dropped it. For Intel Mac support, follow nixpkgs-26.05-darwin instead.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
         "aarch64-darwin"
       ];
 
-      # 让所有模块看到的是"叠加了 rust-overlay"的 pkgs，
-      # 这样 pkgs.rust-bin 才可用。
       perSystem =
         { system, config, ... }:
         {
+          # Plain nixpkgs for this system. The Rust toolchain is NOT an
+          # overlay any more: it comes from fenix as an explicit derivation
+          # (see nix/rust.nix), which keeps cross-compilation and the
+          # toolchain file as the single source of truth.
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
-            overlays = [ inputs.rust-overlay.overlays.default ];
           };
 
-          # `nix run .` 入口：与裸 `cargo r` 跑同一个 `releste` 二进制
-          # （ROADMAP Phase 1.4 "one-command entry points"）。
+          # `nix run .` runs the very same `releste` binary as bare `cargo r`
+          # (ROADMAP Phase 1.4 "one-command entry points").
           apps = {
             default = {
               type = "app";
@@ -69,9 +72,9 @@
           };
         };
 
-      # 仓库级元信息（不随 system 变化）。
+      # Repository-wide metadata (does not vary per system).
       flake = {
-        # 供其它 flake 复用的构建参数。
+        # Build arguments other flakes may reuse.
         lib = {
           supportedSystems = [
             "x86_64-linux"

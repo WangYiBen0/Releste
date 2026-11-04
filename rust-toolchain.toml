@@ -1,13 +1,13 @@
-# 单一事实来源：Cargo 与 Nix 共用同一个工具链。
+# Single source of truth: Cargo and Nix use the same toolchain.
 #
-# - 本地：rustup / cargo 自动读取本文件
-# - Nix：flake 用 rust-overlay 的 fromRustupToolchainFile 读取本文件
+# - local: rustup / cargo read this file automatically
+# - Nix:   the flake reads it through fenix (fromToolchainFile in nix/rust.nix)
 #
-# 这样 rustc / rustfmt / clippy 永远同版本，
-# 不会再出现"本地 cargo fmt 过了、nix build 的 fmt 挂了"这种漂移。
+# So rustc / rustfmt / clippy are always the same version and
+# "fmt passed locally, the nix build's fmt failed" cannot happen.
 #
-# 注意：本文件锁定的是**开发工具链**；
-# Cargo.toml 的 rust-version 声明的是**最低支持版本(MSRV)**，两者含义不同。
+# Note: this file pins the *development* toolchain; Cargo.toml's rust-version
+# declares the *minimum supported* one (MSRV). Different things.
 
 [toolchain]
 channel = "1.98.1"
@@ -16,7 +16,7 @@ profile = "minimal"
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
-    # wasm 目标（Phase 7 起步）：std 随工具链就位后，
-    # `cargo check --target wasm32-unknown-unknown` 即可验证可移植性。
+    # wasm target (the start of Phase 7): with std in place,
+    # `cargo check --target wasm32-unknown-unknown` verifies portability.
     "wasm32-unknown-unknown",
 ]

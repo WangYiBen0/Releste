@@ -1,9 +1,9 @@
-# Rust 构建定义（flake-parts 模块）。
+# Rust build definitions (flake-parts module).
 #
-# 用 crane 把"依赖编译"与"本仓库编译"分离：
-#   buildDepsOnly  → 第三方依赖，源码改动不会使其失效
-#   buildPackage   → 本 workspace
-# 这样 `nix build` 在只改业务代码时是秒级的。
+# crane splits "compile the dependencies" from "compile this repository":
+#   buildDepsOnly  → third-party dependencies (survive source changes)
+#   buildPackage   → this workspace
+# so `nix build` stays quick when only application code changed.
 { inputs, ... }:
 {
   perSystem =
@@ -15,34 +15,39 @@
       ...
     }:
     let
-      # 用 rust-overlay 提供的、由 rust-toolchain.toml 固定的工具链。
+      # Rust toolchain, read from the repository's rust-toolchain.toml via
+      # fenix. cargo / rustc / rustfmt / clippy therefore come from the same
+      # toolchain rustup uses locally — no "fmt passes locally, fails in CI"
+      # drift, and no dependency on whatever nixpkgs happens to package.
       #
-      # `fromRustupToolchainFile` 读取仓库根的 rust-toolchain.toml，
-      # 因此 Cargo 与 Nix 用的是**同一个** rustc/rustfmt/clippy，
-      # 不会出现格式化版本漂移。
-      rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ../rust-toolchain.toml;
+      # `sha256` is the hash of the toolchain file; bump it whenever
+      # rust-toolchain.toml changes (nix prints the right value on mismatch).
+      rustToolchain = inputs.fenix.packages.${system}.fromToolchainFile {
+        file = ../rust-toolchain.toml;
+        sha256 = "sha256-p8h3Sl/YRByZfZTAKXdsvF6xEenXKrXSVvpphmZENH4=";
+      };
 
       craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
 
       inherit (pkgs) stdenv;
 
-      # 构建源。
+      # Build source.
       #
-      # `inputs.self` 在 git 仓库里**已经**只包含被 git 跟踪的文件
-      # （Nix 复制 flake 源时遵循 .gitignore），因此：
-      #   - references/  （~13GB 第三方资料）不会进入 store
-      #   - assets/      （派生产物）
-      #   - libfmod.so   （用户自备的专有动态库）
-      #   - target/ 等
-      # 全部被排除。
+      # In a git repository `inputs.self` already contains only git-tracked
+      # files (Nix copies the flake source following .gitignore), so these
+      # never reach the store:
+      #   - references/  (~13GB of third-party material)
+      #   - assets/      (derived artefacts)
+      #   - libfmod.so   (proprietary library the user provides)
+      #   - target/, ...
       #
-      # 注意：不要用 `lib.fileset` 在这里再筛一遍——`inputs.self`
-      # 是字符串（store 路径），而 fileset 要求真正的 path，
-      # 纯求值模式下没有合法的转换方式。保持依赖 git 过滤，
-      # 也意味着**必须从 git 仓库使用本 flake**。
+      # Do NOT re-filter with `lib.fileset` here: `inputs.self` is a string
+      # (a store path) and fileset wants a real path, which pure evaluation
+      # gives no legal way to obtain. Relying on git filtering also means
+      # the flake MUST be used from a git checkout.
       src = inputs.self;
 
-      # 各平台上构建 wgpu / winit 所需的系统库。
+      # System libraries wgpu / winit need, per platform.
       linuxLibs = lib.optionals stdenv.hostPlatform.isLinux (
         with pkgs;
         [
@@ -73,7 +78,7 @@
         ]
       );
 
-      # 所有构建共享的参数。
+      # Arguments shared by every build.
       commonArgs = {
         inherit src;
         pname = "releste";
@@ -84,7 +89,7 @@
 
         nativeBuildInputs = with pkgs; [
           pkg-config
-          # `lua` / `gamepad` feature 需要构建 32 位友好的原生依赖。
+          # The `lua` / `gamepad` features build native dependencies.
           gnumake
           perl
         ];
@@ -92,12 +97,12 @@
         buildInputs = linuxLibs ++ darwinLibs;
       };
 
-      # 第三方依赖（缓存友好）。
+      # Third-party dependencies (the cacheable half).
       #
-      # crane 的 buildDepsOnly 会**自动**给 pname 追加 `-deps` 后缀
-      # （lib/buildDepsOnly.nix: pnameSuffix = "-deps"），所以这里只写
-      # "releste" —— 显式写 "releste-deps" 会得到滑稽的
-      # `releste-deps-deps-0.1.0`。
+      # crane's buildDepsOnly appends a `-deps` suffix to pname on its own
+      # (lib/buildDepsOnly.nix: pnameSuffix = "-deps"), so pname stays
+      # "releste" here — spelling out "releste-deps" yields the silly
+      # `releste-deps-deps-0.1.0`.
       cargoArtifacts = craneLib.buildDepsOnly (
         commonArgs
         // {
@@ -105,20 +110,20 @@
         }
       );
 
-      # 完整 workspace 构建（含所有二进制）。
+      # Full workspace build (all binaries).
       #
-      # `nix run` 直接运行的就是这个包：二进制在 store 里，窗口模式的
-      # wayland / X11 / vulkan-loader 全是**运行期 dlopen**（NixOS 没有
-      # /usr/lib），所以用 makeWrapper 把库路径包进每个二进制 ——
-      # headless / editor / 管线同样受益，不加分辨。
+      # This is what `nix run` executes. The binaries live in the store and
+      # the windowed path dlopens wayland / X11 / vulkan-loader at runtime
+      # (NixOS has no /usr/lib), so makeWrapper bakes the library path into
+      # every binary — headless, editor and pipeline benefit alike.
       releste = craneLib.buildPackage (
         commonArgs
         // {
           inherit cargoArtifacts;
-          # 把两个二进制的产物都收集起来。
+          # Collect every binary in the workspace.
           cargoExtraArgs = "--workspace";
-          # 让 `nix run` 在这个包上也能工作（apps.default 已显式指向
-          # 同一个 `releste` bin，ROADMAP Phase 1.4）。
+          # Lets `nix run` work on this package (apps.default points at the
+          # very same `releste` bin; ROADMAP Phase 1.4).
           meta.mainProgram = "releste";
 
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper ];
@@ -131,17 +136,17 @@
         }
       );
 
-      # 带可选 feature 的构建：Nix 提供 make / udev / pkg-config，
-      # 因此 `lua`（vendored LuaJIT）与 `gamepad`（gilrs）都能启用。
-      # 可选 feature 的构建参数。
+      # Build with the optional features: Nix provides make / udev /
+      # pkg-config, so `lua` (vendored LuaJIT) and `gamepad` (gilrs) both work.
       #
-      # `lua` 需要 vendored LuaJIT（构建期要 make），`gamepad` 需要
-      # udev + pkg-config —— 二者都由 Nix 提供（见 commonArgs）。
+      # `lua` needs `make` for vendored LuaJIT, `gamepad` needs udev +
+      # pkg-config — both come from commonArgs.
       fullFeatures = "--workspace --features releste-script/lua,releste-input/gamepad";
 
-      # full 变体有自己的依赖缓存：与默认变体的依赖图不同，
-      # 复用同一份 artifacts 会让这些依赖在构建阶段重编。
-      # （crane 会追加 `-deps` 后缀 → `releste-full-deps`。）
+      # The full variant gets its own dependency cache: its dependency graph
+      # differs from the default one, and reusing those artifacts would force
+      # a rebuild of the very crates the cache is meant to avoid.
+      # (crane appends `-deps` → `releste-full-deps`.)
       cargoArtifactsFull = craneLib.buildDepsOnly (
         commonArgs
         // {
@@ -159,9 +164,9 @@
         }
       );
 
-      # ── 检查项 ────────────────────────────────────────────────
-      # 这些会成为 `nix flake check` / `nix build .#checks.<system>.<name>`
-      # 的目标。
+      # ── Checks ────────────────────────────────────────────────
+      # These become the targets of `nix flake check` /
+      # `nix build .#checks.<system>.<name>`.
 
       clippy = craneLib.cargoClippy (
         commonArgs
@@ -180,7 +185,7 @@
         commonArgs
         // {
           inherit cargoArtifacts;
-          # 文档中的 broken intra-doc link 视为失败。
+          # Broken intra-doc links in the API docs are failures.
           RUSTDOCFLAGS = "-D warnings";
         }
       );
@@ -190,19 +195,19 @@
         // {
           inherit cargoArtifacts;
           pname = "releste-nextest";
-          # 同上：不覆盖 doCheck 就一个测试都不会跑。
+          # As above: without overriding doCheck, no test runs at all.
           doCheck = true;
           partitions = 1;
           partitionType = "count";
         }
       );
 
-      # 不依赖 nextest 的纯 cargo test（CI 里更保险）。
+      # Plain cargo test, independent of nextest (safer for CI).
       #
-      # 注意 `doCheck = true` 必不可少：crane 的 cargoTest 会遵循
-      # doCheck，而 commonArgs 里为了 `buildPackage` 不重复跑测试
-      # 把它设成了 false。忘了覆盖的话这个 check 会"通过"但
-      # **一个测试都不执行**（日志里只有一行 doCheck is not set）。
+      # `doCheck = true` is mandatory: crane's cargoTest honours doCheck and
+      # commonArgs sets it to false so `buildPackage` does not run the suite
+      # twice. Forget the override and this check "passes" while running
+      # NOTHING (the log only says doCheck is not set).
       unit-tests = craneLib.cargoTest (
         commonArgs
         // {
@@ -212,10 +217,11 @@
         }
       );
 
-      # 可选 feature 的测试。
+      # Tests for the optional features.
       #
-      # `lua` 的脚本引擎在默认构建下不参与编译（需要 make 构建
-      # vendored LuaJIT），因此必须有这个 check 才能真正验证它。
+      # The `lua` scripting engine is not compiled in the default build (it
+      # needs make for vendored LuaJIT), so this check is the only place it
+      # is actually verified.
       lua-tests = craneLib.cargoTest (
         commonArgs
         // {
@@ -226,15 +232,12 @@
         }
       );
 
-      # 伪造一个导出 FMOD 3.x 符号的 64 位动态库。
+      # Fake 64-bit shared libraries exporting FMOD symbols.
       #
-      # 用来验证 fmod_backend 的**代际探测**逻辑：
-      # 真实 libfmod.so 由用户自备且不入库，无法进 CI；
-      # 但探测逻辑本身必须可测。
-      # 三个伪造的 FMOD 动态库，分别导出三代 API 的关键符号。
-      #
-      # 真实 libfmod.so 由用户自备且不入库，无法进 CI；
-      # 但"按符号识别代际"的逻辑本身必须可测。
+      # They exist to test fmod_backend's generation *probing*: the real
+      # libfmod.so is user-provided and never committed, so it cannot go into
+      # CI — but the "identify the generation by its symbols" logic must be
+      # testable. Three stubs, one per API generation.
       fmodStubs =
         let
           mkStub =
@@ -261,13 +264,13 @@
             int FMOD_Studio_System_GetCoreSystem(void *s) { (void)s; return 0; }
             int FMOD_Studio_System_LoadBankFile(void *s) { (void)s; return 0; }
           '';
-          # FMOD Ex 4.x（刻意不导出 Studio 符号）
+          # FMOD Ex 4.x (deliberately exports no Studio symbols)
           ex = mkStub "ex" "/* FMOD Ex */" ''
             int FMOD_System_Create(void **s) { (void)s; return 0; }
             int FMOD_System_Init(void *s) { (void)s; return 0; }
             int FMOD_System_CreateSound(void *s) { (void)s; return 0; }
           '';
-          # FMOD 3.x（刻意不导出 Ex / Studio 符号）
+          # FMOD 3.x (deliberately exports no Ex / Studio symbols)
           legacy3 = mkStub "legacy3" "/* FMOD 3.x */" ''
             int FSOUND_Init(int a, int b, int c) { (void)a; (void)b; (void)c; return 1; }
             int FSOUND_PlaySound(int ch, int snd) { (void)ch; (void)snd; return 1; }
@@ -276,11 +279,13 @@
           '';
         };
 
-      # FMOD 代际探测测试：把各桩库通过 RELESTE_FMOD_LIB 喂给后端，
-      # 用 RELESTE_FMOD_EXPECT 断言识别结果。
+      # FMOD generation probe: hand each stub to the backend through
+      # RELESTE_FMOD_LIB and assert the detected generation with
+      # RELESTE_FMOD_EXPECT.
       #
-      # 构建期用 RELESTE_FMOD_ALLOW_MISSING 跳过 build.rs 的硬失败
-      # （桩库不在标准搜索路径里，运行期才通过环境变量指定）。
+      # RELESTE_FMOD_ALLOW_MISSING skips build.rs's hard failure at build
+      # time: the stubs are not on the standard search path, they are only
+      # pointed at at run time.
       fmod-probe = craneLib.mkCargoDerivation (
         commonArgs
         // {
@@ -301,13 +306,14 @@
         }
       );
 
-      # 端到端：内容管线转换 + 用运行时加载器回读校验。
+      # End to end: content-pipeline conversion + read-back through the
+      # runtime loader.
       content-pipeline-smoke = craneLib.mkCargoDerivation (
         commonArgs
         // {
           inherit cargoArtifacts;
           pname = "releste-content-pipeline-smoke";
-          # 造一个最小 .map，过一遍管线的解析/序列化链路。
+          # Exercise the parse/serialise path over a minimal .map.
           buildPhaseCargoCommand = ''
             cargo run --release -p releste-content-pipeline -- --help >/dev/null
             cargo run --release -p releste-net-server -- --selftest
@@ -318,14 +324,15 @@
     in
     {
       _module.args.craneLib = craneLib;
-      # 供 hooks.nix 复用，保证 pre-commit 的 rustfmt 与
-      # `nix build .#checks.*.fmt` 用的是同一个二进制。
+      # Reused by hooks.nix so pre-commit's rustfmt is the same binary as
+      # `nix build .#checks.*.fmt`.
       _module.args.rustToolchain = rustToolchain;
       _module.args.commonArgs = commonArgs;
       _module.args.cargoArtifacts = cargoArtifacts;
 
-      # `nix fmt` 用。nixfmt-tree 遍历仓库里的 .nix 文件，
-      # 与 pre-commit 的 `nixfmt` 钩子共用同一版本，避免格式漂移。
+      # For `nix fmt`. nixfmt-tree walks the repository's .nix files and
+      # shares its version with the `nixfmt` pre-commit hook, so formatting
+      # cannot drift between the two.
       formatter = pkgs.nixfmt-tree;
 
       packages = {
@@ -334,7 +341,7 @@
 
         full = relesteFull;
 
-        # 单独暴露两个便于快速验证的产物。
+        # Expose two more artefacts for quick checks.
         content-pipeline = craneLib.buildPackage (
           commonArgs
           // {
@@ -368,7 +375,7 @@
           ;
       }
       // lib.optionalAttrs (!stdenv.hostPlatform.isDarwin) {
-        # nextest 在 darwin 上偶有沙箱问题，Linux 才跑。
+        # nextest occasionally trips over the darwin sandbox; Linux only.
         inherit nextest;
       };
     };
