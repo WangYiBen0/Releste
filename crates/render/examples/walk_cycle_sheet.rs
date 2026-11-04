@@ -1,23 +1,26 @@
-//! 视觉对照：把玩家走路相关的动画帧从真实图集里拼成一张放大对照图。
+//! Visual cross-check: assemble the frames the walking animations use into
+//! one magnified contact sheet.
 //!
-//! 用法（仓库根目录）：
+//! Usage (from the repository root):
 //!
 //! ```text
 //! cargo run -p releste-render --example walk_cycle_sheet -- .devtmp/walk-cycle.png
 //! ```
 //!
-//! 只用图集里真实存在的矩形与 PNG，所以画出来的就是引擎会画的那些帧 ——
-//! 用来判断"动画是不是原版那几帧/顺序对不对"最快；但结论仍要回到
-//! `Sprites.xml` 与 `references/pureCeleste.cs` 的出处，别用眼睛当权威。
+//! Only rectangles and PNGs that actually exist in the atlas are drawn, so the
+//! sheet shows exactly the frames the engine would draw. It is the quickest way
+//! to judge "are these the vanilla frames, in the vanilla order?" — but the
+//! verdict still belongs to `Sprites.xml` and `references/pureCeleste.cs`,
+//! not to your eyes.
 //!
-//! 这是 `.agents/skills/releste-vanilla-audit` §6.5 的配套工具。
+//! Companion tool of `.agents/skills/releste-vanilla-audit` section 6.5.
 
 use std::path::PathBuf;
 
 use image::{imageops, GenericImageView, RgbaImage};
 use releste_render::atlas::AtlasDescriptor;
 
-/// 放大倍数（像素画，用最近邻）。
+/// Magnification (pixel art, nearest neighbour).
 const SCALE: u32 = 4;
 
 fn main() {
@@ -37,10 +40,11 @@ fn main() {
         .expect("Gameplay0.png")
         .to_rgba8();
 
-    // 走路相关的四条动画 + 各自的真实帧数（引擎的
-    // `Gameplay.sprites.toml` 就是照 `Sprites.xml` 来的）：
-    // idle 无 `frames` 属性 → 枚举全部；flip 写死 `frames="0-7"`，
-    // 而图集里还存在 flip08（别的 sprite 用），所以这里要截断。
+    // The four walking animations plus their real frame counts (the engine's
+    // `Gameplay.sprites.toml` mirrors `Sprites.xml`):
+    // idle has no `frames` attribute -> enumerate all; flip hardcodes
+    // `frames="0-7"`, while the atlas also holds flip08 (used by another
+    // sprite), so that one is capped.
     let rows: [(&str, Option<usize>); 4] = [
         ("idle", None),
         ("runSlow", None),
@@ -62,11 +66,11 @@ fn main() {
                 None => break,
             }
         }
-        assert!(!row_frames.is_empty(), "{row} 一帧都没有");
+        assert!(!row_frames.is_empty(), "{row} has no frames at all");
         frames.push(row_frames);
     }
 
-    let cell_w = 20 * SCALE; // 原版玩家帧最宽 16px，留点余地
+    let cell_w = 20 * SCALE; // vanilla player frames are up to 16px wide
     let cell_h = 16 * SCALE;
     let width = cell_w * frames.iter().map(Vec::len).max().unwrap() as u32;
     let height = cell_h * frames.len() as u32;
@@ -92,7 +96,7 @@ fn main() {
     }
     sheet.save(&out).expect("write sheet");
     println!(
-        "{} -> {} ({}x{}) 每行: {:?}",
+        "{} -> {} ({}x{}) rows: {:?}",
         atlas_path.display(),
         out.display(),
         width,

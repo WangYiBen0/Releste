@@ -3,45 +3,52 @@ name: releste-vanilla-audit
 description: Use when writing or reviewing Releste code that ports Celeste behavior (Player, camera, transitions, backdrops, tiles) — audits every behavior line against references/pureCeleste.cs with line citations, and runs the repo's full gate including `nix flake check` before any commit. Also use when the user says "审查", "对齐原版", "不许有偏差".
 ---
 
-# Releste 原版对齐审查
+# Releste vanilla-parity audit
 
-`references/pureCeleste.cs`（131320 行，反编译）是**行为权威**；本仓库的规则是
-「每一行行为代码都要能指回原版行号」。审查时逐条执行下列步骤。
+`references/pureCeleste.cs` (131,320 lines, decompiled) is the **behavioural
+authority**. The rule in this repository: every behavioural line must point
+back to a vanilla line number. Work through the steps below in order.
 
-## 1. 逐行对齐
+## 1. Line-by-line alignment
 
-1. 对每个被审查文件里的行为行（常量、公式、状态转移、绘制顺序），在
-   `pureCeleste.cs` 找到出处，注释格式：`// `pureCeleste.cs:LINE`` 或
-   `（`pureCeleste.cs:LINE-LINE`）`。**没有出处的行为行 = 违规**，要么补出处、
-   要么在注释里写明"引擎自造 + 理由"。
-2. **tick 换算**：原版是 60Hz、`Speed` 单位 px/s。本引擎固定步长 1 tick =
-   1/60s、速度单位 px/tick —— 换算一律 `px/s ÷ 60`，且必须写成精确的
-   `Fx::from_ratio`（如 105 px/s = `-7/4` px/tick）。抽查每个常量。
-3. **tick 内顺序**：原版一个 tick 的顺序（如 Player.Update：计时递减 →
-   NormalUpdate（跑动 → maxFall → 重力 → varJump 钳制 → 跳跃判定）→
-   MoveH/MoveV → EnforceBounds）必须与引擎一致；顺序错=手感错。
-4. **渲染/可见性规则**：原版 `X.Render` 的循环次序、层次（Depth 排序是
-   降序=值小者后画）、每帧 vs 缓存，都要核对（如 backdrops 每帧重建、
-   转场结束才卸载旧房间）。
-5. 缺数据/未实现的部分必须 `warn_once` 或文档注明，禁止静默省略
-   （AGENTS.md §15.8/15.9）。
+1. For every behavioural line in the files under review (constants, formulas,
+   state transitions, draw order), find its source in `pureCeleste.cs` and note
+   it as `// pureCeleste.cs:LINE` or `(pureCeleste.cs:LINE-LINE)`.
+   **A behavioural line with no source is a violation**: either add the source
+   or write "engine-specific + reason" in the comment.
+2. **Tick conversion**: vanilla runs at 60Hz with `Speed` in px/s. This engine
+   uses a fixed 1 tick = 1/60s and px/tick — always divide px/s by 60 and spell
+   it as an exact `Fx::from_ratio` (105 px/s = `-7/4` px/tick). Spot-check every
+   constant.
+3. **Within-tick order**: vanilla's order (e.g. `Player.Update`: timer decay →
+   NormalUpdate (run → maxFall → gravity → varJump pin → jump decision) →
+   MoveH/MoveV → EnforceBounds) must match the engine. Wrong order = wrong feel.
+4. **Render/visibility rules**: check vanilla `X.Render` iteration order, layer
+   order (Depth sorts descending: smaller values draw last) and per-frame vs
+   cached work (backdrops rebuild every frame; the old room only unloads when
+   the transition finishes).
+5. Missing data or unimplemented paths must `warn_once` or be documented —
+   silent omission is forbidden (AGENTS.md §15.8/15.9).
 
-## 2. 测试
+## 2. Tests
 
-- 纯逻辑（物理、几何、格式）必须有单测断言**原版数值**（不是"合理值"）；
-  例子：`jump pins at JUMP_SPEED`、`v2_fixture_still_loads_and_migrates`。
-- 纯渲染代码可免测试，但要在提交信息里写手动清单（AGENTS.md §9）。
+- Pure logic (physics, geometry, formats) needs unit tests asserting the
+  **vanilla numbers**, not "reasonable" ones — e.g. `jump pins at JUMP_SPEED`,
+  `v2_fixture_still_loads_and_migrates`.
+- Pure rendering code may skip tests, but then the commit message must carry a
+  manual checklist (AGENTS.md §9).
 
-## 3. 提交前门禁（缺一不可，顺序执行）
+## 3. Pre-commit gate (all of it, in order)
 
 ```bash
 cd /home/w1ngd1nga5ter/Projects/Releste
-export PRE_COMMIT_HOME="$PWD/.devtmp/pc"     # 本机 pre-commit 缓存只读，必须重定向
+export PRE_COMMIT_HOME="$PWD/.devtmp/pc"     # the machine's pre-commit cache is read-only
 cargo fmt --all
-cargo build --workspace --all-targets 2>&1 | grep -cE "^(warning|error)"   # 必须为 0
+cargo build --workspace --all-targets 2>&1 | grep -cE "^(warning|error)"   # must be 0
 cargo test --workspace                        # 0 failed
-# nix 门禁（新版 clippy + rustdoc + fmt + hooks），XDG/TMPDIR 必须重定向，
-# 否则 fetcher-lock 只读 / TMPDIR 指向已消失的 shell 临时目录而误报：
+# nix gate (newer clippy + rustdoc + fmt + hooks). XDG/TMPDIR must be
+# redirected, otherwise the fetcher cache is read-only / TMPDIR points at a
+# temporary directory that no longer exists and you get bogus failures:
 env XDG_CACHE_HOME="$PWD/.devtmp/nix-cache" \
     XDG_STATE_HOME="$PWD/.devtmp/nix-state" \
     XDG_DATA_HOME="$PWD/.devtmp/nix-data" \
@@ -49,93 +56,112 @@ env XDG_CACHE_HOME="$PWD/.devtmp/nix-cache" \
     nix flake check
 ```
 
-`nix flake check` **必须在 commit 之前**跑——它用的 clippy 比本地新
-（会抓 chunks_exact_to_as_chunks、unnecessary_to_owned、too_many_arguments、
-rustdoc intra-doc link（`node[0]` 这类方括号要转义）等本地看不见的问题），
-且 fmt 规则一致。**没有 FLAKE-OK 不许 commit。**
+`nix flake check` **must run before the commit**: its clippy is newer than a
+local one and catches things you cannot see otherwise (including
+`chunks_exact_to_as_chunks`, `unnecessary_to_owned`, `too_many_arguments`, and
+rustdoc intra-doc links — square brackets such as `node[0]` must be escaped).
+**No FLAKE-OK, no commit.**
 
-## 4. 提交纪律
+Two gotchas that cost real time:
 
-- Conventional Commits，type(scope): subject ≤72 字符（AGENTS.md §5.3）。
-- 一个提交一个逻辑变更；提交信息里写原版行号出处与动机。
-- 工作树必须干净；提交后 `git log -1 --format=%B` 复查信息没被 shell 吃掉
-  字符（反引号、括号要用 heredoc `-F file` 传）。
+- nix only sees **git-tracked** files, so `git add` new files before running the
+  check or it fails with `failed to resolve mod <name>`.
+- The dev shell, the builds and the hooks all use the toolchain pinned by
+  `rust-toolchain.toml` through fenix; if you change that file, update the
+  `sha256` in `nix/rust.nix` (nix prints the correct value on mismatch).
 
-## 5. 常见偏差清单（审查时重点盯）
+## 4. Commit discipline
 
-- 速度单位忘了 ÷60；`Fx` 用 f32 常数代替精确 ratio（§15.7）。
-- 松键砍速、 Coyote/缓冲帧数拍脑袋 —— 一律回 pureCeleste 查
-  （VirtualButton.BufferTime 110376、jumpGraceTimer 119832）。
-- 相机/转场/背景的"合理猜测"——原版全有出处（相机 120133-120146、
-  转场 115282-115423、EnforceBounds 116517-116607、backdrops 112163-112906）。
-- HashMap 用于需要字节确定性的结构（应 BTreeMap，E.8）。
+- Conventional Commits, `type(scope): subject` ≤72 chars (AGENTS.md §5.3).
+- One logical change per commit; cite the vanilla lines and the motivation in
+  the message body.
+- Keep the working tree clean. After committing, re-read the message
+  (`git log -1 --format=%B`) to make sure the shell did not eat characters —
+  pass it with `-F file` when it contains backticks or parentheses.
+- Write commit messages and in-repo prose in English.
 
-## 6. 调试工具（LLM 友好，全部机器可读）
+## 5. Recurring deviations to watch for
 
-四件套，都是仓库里的**受版本控制**的工具，不要再写一次性脚本：
+- px/s not divided by 60; `Fx` built from f32 constants instead of exact ratios
+  (§15.7).
+- Release-speed cut, coyote/buffer frame counts made up — always look them up in
+  pureCeleste (`VirtualButton.BufferTime` 110376, `jumpGraceTimer` 119832).
+- Camera/transition/backdrop "reasonable guesses" — vanilla has a source for all
+  of them (camera 120133-120146; transitions 115282-115423; EnforceBounds
+  116517-116607; backdrops 112163-112906).
+- `HashMap` in structures that need byte determinism (use `BTreeMap`, E.8).
 
-### 6.1 引用审计 `citation_audit`
+## 6. Debugging tools (LLM-friendly, machine-readable)
+
+Four tools, all **version-controlled** — do not write throw-away scripts.
+
+### 6.1 Citation audit `citation_audit`
 
 ```bash
-# 只报问题（out_of_range / snippet_mismatch），没问题退出码 0
+# report problems only (out_of_range / snippet_mismatch); exit 0 when clean
 cargo run -p releste-game --example citation_audit
-# 机器可读（每条引用 + 原版摘录 + 状态）
+# machine-readable (every citation + the vanilla excerpt + status)
 cargo run -p releste-game --example citation_audit -- --json
-# 全部条目 + 每个文件的已校验比例
+# every entry + per-file verified ratio
 cargo run -p releste-game --example citation_audit -- --all --coverage
-# 定位原版行号（写引用时用它，别凭记忆）+ 方法声明表
+# look up vanilla line numbers (do this instead of trusting memory) + method table
 cargo run -p releste-game --example citation_audit -- --find "private void ClimbHop"
 cargo run -p releste-game --example citation_audit -- --methods
 ```
 
-**可校验引用写法**：引用后紧跟反引号片段，工具会核对片段是否真的出现在
-被引用行区间里（空白归一化）：
+**Verifiable citation style**: put a backtick-quoted snippet right after the
+citation; the tool checks that the snippet really occurs inside the cited line
+range (whitespace-normalised):
 
 ```rust
 // pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`
 ```
 
-没有片段的引用记为 `unchecked`（能列出来，但挡不住漂移）。裸行号
-（`（122042-122048）` 这种不带文件名的）工具看不见 —— 新写和改动的引用
-一律写全 `pureCeleste.cs:LINE` 并尽量带片段。
+A citation without a snippet is reported as `unchecked` (listed, but unable to
+catch drift). Bare line numbers (`(122042-122048)` without the file name) are
+invisible to the tool — write new and edited citations as the full
+`pureCeleste.cs:LINE`, with a snippet whenever possible.
 
-### 6.2 逐 tick 轨迹 `--trace`
+### 6.2 Per-tick trace `--trace`
 
 ```bash
 cargo run --bin releste -- --headless --frames 600 --trace .devtmp/run.jsonl
 ```
 
-首行是自描述 banner（`releste.trace.v1`），之后每 tick 一行 JSON：
-`tick/room/x/y/vx/vy/vx_ps/vy_ps/on_ground/facing/state/dashes/stamina/ducking/
-anim/anim_frame/last_anim/move_x/var_jump/jump_buffer/coyote`。
-`*_ps` 是原版单位（px/s），对照 `pureCeleste.cs` 时直接读它。
+The first line is a self-describing banner (`releste.trace.v1`), then one JSON
+object per tick: `tick/room/x/y/vx/vy/vx_ps/vy_ps/on_ground/facing/state/
+dashes/stamina/ducking/anim/anim_frame/last_anim/move_x/var_jump/jump_buffer/
+coyote`. The `*_ps` fields are vanilla units (px/s) — read those when comparing
+against `pureCeleste.cs`. Keep plugins off (`--no-plugins`) for reproducibility.
 
-### 6.3 场景回放 `--script`
+### 6.3 Scenario replay `--script`
 
 ```bash
 cargo run --bin releste -- --script crates/game/tests/scenarios/walk_and_stop.toml
 ```
 
-确定性（无插件/无热重载），断言失败打印
-`tick=… field: expected … got … (Δ… > tol …)` 并退出 1。
-字段与写法见 `crates/game/tests/scenarios/README.md`。
-**期望值必须能从原版推出来**，注释写明出处行号。
+Deterministic (no plugins, no hot reload). A failed assertion prints
+`tick=… field: expected … got … (Δ… > tol …)` and exits 1. Fields and syntax:
+`crates/game/tests/scenarios/README.md`. **Expectations must be derivable from
+vanilla**, with the source line in the comment.
 
-### 6.4 运行时地图快照 `--dump-map`
+### 6.4 Runtime map snapshot `--dump-map`
 
 ```bash
 cargo run --bin releste -- --dump-map .devtmp/map.json
 ```
 
-引擎**解析后**看到的东西（出生点、图集名、每个房间的 tile 行十六进制、
-实体与属性、sync 规则），与 `releste-map --example dump_rooms`（原始文件
-视图）互补。行为和地图数据对不上时，先比这两个视图。
+What the engine **parsed** (spawn, atlas name, per-room tile rows in hex,
+entities and properties, sync rules) — the complement of
+`releste-map --example dump_rooms` (raw file view). When behaviour and map data
+disagree, compare both views.
 
-### 6.5 视觉对照 `--example walk_cycle_sheet`
+### 6.5 Visual cross-check `--example walk_cycle_sheet`
 
 ```bash
 cargo run -p releste-render --example walk_cycle_sheet -- .devtmp/walk-cycle.png
 ```
 
-把图集里真实的帧拼成一张放大对照图 —— 判"动画是不是原版那几帧"用眼睛看
-最快，但结论仍要回到 `Sprites.xml` / `pureCeleste.cs` 的出处。
+Assembles the atlas' real frames into one magnified contact sheet — the fastest
+way to see whether an animation uses the vanilla frames. The verdict still
+belongs to `Sprites.xml` / `pureCeleste.cs`.

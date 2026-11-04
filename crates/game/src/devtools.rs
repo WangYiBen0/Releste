@@ -1,22 +1,26 @@
-//! LLM 友好的调试工具：确定性回放、逐 tick 轨迹、运行时地图快照。
+//! LLM-friendly debugging tools: deterministic replay, per-tick traces and a
+//! runtime map snapshot.
 //!
-//! 设计原则（为什么这么写）：
+//! Design rules (and why they are what they are):
 //!
-//! 1. **确定性**：场景回放不装插件、不监听热重载，输入由脚本显式给出，
-//!    同一输入必然得到同一轨迹 —— 否则 LLM（和人）无法复现问题。
-//! 2. **机器可读**：轨迹是 JSONL（每 tick 一行对象），首行是自描述的
-//!    schema banner；地图快照是 JSON。字段名稳定、单位写在字段名里。
-//! 3. **失败要说清楚**：断言失败打印 `tick=… 字段: expected … got … (Δ… > tol …)`
-//!    并以退出码 1 结束 —— LLM 可以直接读这一行定位。
-//! 4. **配置写错要炸**：TOML 一律 `deny_unknown_fields`，拼错的键会报错，
-//!    不会静默当作默认值（AGENTS.md §15.9）。
+//! 1. **Determinism**: scenario replay loads no plugins and watches nothing;
+//!    the script states the input, so the same input yields the same trace —
+//!    without that, neither an LLM nor a human can reproduce anything.
+//! 2. **Machine-readable**: the trace is JSONL (one object per tick) whose
+//!    first line is a self-describing banner; the map snapshot is JSON.
+//!    Field names are stable and the unit lives in the name.
+//! 3. **Failures must be explicit**: a failed assertion prints
+//!    `tick=… field: expected … got … (Δ… > tol …)`
+//!    and exits 1 — that single line is enough for an LLM to locate the issue.
+//! 4. **Bad config must blow up**: every TOML struct is `deny_unknown_fields`,
+//!    so a misspelled key is an error, never a silent default (AGENTS.md §15.9).
 //!
-//! 三个入口都在 `releste --help` 里：
+//! All three entry points are in `releste --help`:
 //!
 //! ```text
-//! releste --headless --trace  out.jsonl   [--frames N]      # 逐 tick 轨迹
-//! releste --script            scenario.toml                 # 脚本化回放 + 断言
-//! releste --dump-map          map.json                      # 运行时地图快照
+//! releste --headless --trace  out.jsonl   [--frames N]      # per-tick trace
+//! releste --script            scenario.toml                 # scripted replay + assertions
+//! releste --dump-map          map.json                      # runtime map snapshot
 //! ```
 
 use std::fs::File;
@@ -33,50 +37,53 @@ use crate::player::Input;
 use crate::service::GameService;
 use crate::session::Session;
 
-/// 轨迹格式版本。字段一变就升版本 —— LLM 拿到的 JSONL 自带这一行。
+/// Trace format version. Bump it whenever a field changes — every JSONL an
+/// LLM receives carries this line.
 pub const TRACE_SCHEMA: &str = "releste.trace.v1";
 
-/// 一 tick 的玩家状态快照。
+/// Player state snapshot for one tick.
 ///
-/// 位置单位 px，速度同时给 px/tick（引擎内部单位）与 px/s（原版
-/// `pureCeleste.cs` 的单位，方便逐行对照）。
+/// Positions are px; velocities are given both in px/tick (the engine's
+/// internal unit) and px/s (vanilla's unit in `pureCeleste.cs`), so a line can
+/// be compared against the reference directly.
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot<'a> {
-    /// 第几次 `kernel.tick()` 之后的状态（1-based，与脚本断言同轴）。
+    /// State after this many `kernel.tick()` calls (1-based, same axis as the
+    /// script assertions).
     pub tick: u64,
-    /// 该 tick 玩家中心所在的房间名。
+    /// Name of the room containing the player's centre on this tick.
     pub room: &'a str,
     pub x: f32,
     pub y: f32,
     pub vx: f32,
     pub vy: f32,
-    /// 原版单位（px/s）= px/tick × 60。
+    /// Vanilla unit (px/s) = px/tick × 60.
     pub vx_ps: f32,
-    /// 原版单位（px/s）。
+    /// Vanilla unit (px/s).
     pub vy_ps: f32,
     pub on_ground: bool,
     pub facing: i32,
-    /// 原版 `StateMachine.State`：0 = Normal，2 = Dash。
+    /// Vanilla `StateMachine.State`: 0 = Normal, 2 = Dash.
     pub state: u8,
     pub dashes: u8,
     pub stamina: f32,
     pub ducking: bool,
     pub anim: &'a str,
     pub anim_frame: usize,
-    /// 原版 `Sprite.LastAnimationID`。
+    /// Vanilla `Sprite.LastAnimationID`.
     pub last_anim: &'a str,
-    /// 本 tick 生效的水平输入（`moveX`）。
+    /// Horizontal input in effect this tick (`moveX`).
     pub move_x: f32,
-    /// `varJumpTimer` 剩余 tick。
+    /// Remaining `varJumpTimer` ticks.
     pub var_jump: u32,
-    /// 跳跃缓冲剩余 tick。
+    /// Remaining jump-buffer ticks.
     pub jump_buffer: u32,
-    /// 土狼时间剩余 tick。
+    /// Remaining coyote-time ticks.
     pub coyote: u32,
 }
 
 impl Snapshot<'_> {
-    /// 人读一行（`--trace` 之外的手动排查用）。
+    /// One human-readable line (for manual digging outside `--trace`).
     pub fn to_line(&self) -> String {
         format!(
             "t={:<5} {:<10} pos=({:>8.3},{:>8.3}) v=({:>8.3},{:>8.3}) ps=({:>7.1},{:>7.1}) \
@@ -99,16 +106,17 @@ impl Snapshot<'_> {
     }
 }
 
-/// 逐 tick 轨迹写入器（JSONL）。
+/// Per-tick trace writer (JSONL).
 pub struct TraceWriter {
     out: BufWriter<File>,
     wrote: u64,
 }
 
 impl TraceWriter {
-    /// 建文件并写下 schema banner。
+    /// Create the file and write the schema banner.
     ///
-    /// banner 记录地图与步长 —— 光看轨迹也能知道它是怎么跑出来的。
+    /// The banner records the map and the tick rate: the trace alone says how it
+    /// was produced.
     pub fn create(path: &Path, map: &str, root: &Path) -> Result<Self> {
         let file = File::create(path)
             .with_context(|| format!("failed to create trace {}", path.display()))?;
@@ -124,7 +132,7 @@ impl TraceWriter {
         Ok(TraceWriter { out, wrote: 0 })
     }
 
-    /// 写一 tick。
+    /// Write one tick.
     pub fn write(&mut self, snap: &Snapshot<'_>) -> Result<()> {
         let line = serde_json::to_string(snap).context("failed to encode a trace snapshot")?;
         writeln!(self.out, "{line}").context("failed to write a trace snapshot")?;
@@ -132,12 +140,12 @@ impl TraceWriter {
         Ok(())
     }
 
-    /// 已写 tick 数。
+    /// Number of ticks written.
     pub fn ticks(&self) -> u64 {
         self.wrote
     }
 
-    /// 落盘。
+    /// Flush to disk.
     pub fn finish(mut self) -> Result<()> {
         self.out.flush().context("failed to flush the trace")?;
         Ok(())
@@ -145,43 +153,45 @@ impl TraceWriter {
 }
 
 // ---------------------------------------------------------------------------
-// 场景脚本
+// Scenario scripts
 // ---------------------------------------------------------------------------
 
-/// 一份场景脚本（TOML）。
+/// One scenario script (TOML).
 ///
-/// 例子见 `tests/scenarios/`；字段拼错会直接报错，不会静默忽略。
+/// Examples live in `tests/scenarios/`; a misspelled field is an error, never
+/// silently ignored.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Script {
-    /// 场景元信息。
+    /// Scenario metadata.
     pub scenario: ScenarioMeta,
-    /// 输入段（可重叠，重叠处按位或）。
+    /// Input segments (may overlap; overlaps are OR-ed).
     #[serde(default)]
     pub input: Vec<InputSegment>,
-    /// 断言。
+    /// Assertions.
     #[serde(default)]
     pub expect: Vec<Expect>,
 }
 
-/// 场景元信息。
+/// Scenario metadata.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioMeta {
-    /// 总 tick 数（1-based：跑 `ticks` 次 `kernel.tick()`）。
+    /// Total tick count (1-based: run `kernel.tick()` `ticks` times).
     pub ticks: u64,
-    /// 期望加载的地图名（写错说明 `--map`/默认值不对，属于配置错误）。
+    /// Expected map name (a mismatch means `--map`/the default is wrong).
     #[serde(default)]
     pub map: Option<String>,
-    /// 把逐 tick 轨迹写到这里（JSONL）。
+    /// Write the per-tick trace here (JSONL).
     #[serde(default)]
     pub trace: Option<PathBuf>,
-    /// 给轨迹/断言写一句人读的说明。
+    /// One human-readable note for the trace/assertions.
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// 一段输入：`from..=to`（1-based tick，含两端）期间按住这些键。
+/// One input segment: hold these keys for ticks `from..=to` (1-based,
+/// inclusive).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputSegment {
@@ -204,7 +214,7 @@ pub struct InputSegment {
 }
 
 impl InputSegment {
-    /// 该段的按键状态。
+    /// The key state of this segment.
     pub fn keys(&self) -> Input {
         Input {
             left: self.left,
@@ -217,27 +227,30 @@ impl InputSegment {
         }
     }
 
-    /// 是否覆盖 `tick`（1-based，含两端）。
+    /// Whether this segment covers `tick` (1-based, inclusive).
     pub fn covers(&self, tick: u64) -> bool {
         self.from <= tick && tick <= self.to
     }
 }
 
-/// 一条断言：在 `tick`（1-based，与轨迹同轴）检查给到的字段。
+/// One assertion: check the given fields at `tick` (1-based, same axis as the
+/// trace).
 ///
-/// 只检查**写了**的字段；浮点比较用 `tol`（默认 [`DEFAULT_TOL`]）。
+/// Only the fields you write are checked; floats compare with `tol`
+/// (default [`DEFAULT_TOL`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Expect {
     pub tick: u64,
-    /// 浮点容差（px）。默认 0.05。
+    /// Float tolerance (px). Default 0.05.
     #[serde(default)]
     pub tol: Option<f32>,
     #[serde(default)]
     pub x: Option<f32>,
     #[serde(default)]
     pub y: Option<f32>,
-    /// 相对 tick 1 的位移（px）：跨地图/出生点变化都稳定，行为回归首选。
+    /// Displacement relative to tick 1 (px): stable across maps and spawn
+    /// points, so it is the preferred form for behaviour regressions.
     #[serde(default)]
     pub dx: Option<f32>,
     #[serde(default)]
@@ -260,22 +273,22 @@ pub struct Expect {
     pub room: Option<String>,
 }
 
-/// 浮点断言默认容差（px）。
+/// Default float tolerance for assertions (px).
 pub const DEFAULT_TOL: f32 = 0.05;
 
-/// 场景回放结果。
+/// Result of a scenario replay.
 #[derive(Debug, Default)]
 pub struct ScenarioOutcome {
-    /// 跑的 tick 数。
+    /// Number of ticks run.
     pub ticks: u64,
-    /// 检查过的字段数。
+    /// Number of fields checked.
     pub checks: usize,
-    /// 失败的检查（人读一行一条）。
+    /// Failed checks (one human-readable line each).
     pub failures: Vec<String>,
 }
 
 impl ScenarioOutcome {
-    /// 一行总结（成功路径也会打印）。
+    /// One-line summary (printed on success too).
     pub fn summary(&self) -> String {
         format!(
             "scenario: {} ticks, {} checks, {} failure(s)",
@@ -286,7 +299,7 @@ impl ScenarioOutcome {
     }
 }
 
-/// 读一份场景脚本。
+/// Read a scenario script.
 pub fn load_script(path: &Path) -> Result<Script> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read the scenario {}", path.display()))?;
@@ -294,7 +307,7 @@ pub fn load_script(path: &Path) -> Result<Script> {
         .with_context(|| format!("failed to parse the scenario {}", path.display()))
 }
 
-/// 计算 `tick` 时刻的输入：所有覆盖它的段按位或。
+/// Input at `tick`: every covering segment OR-ed together.
 pub fn input_at(script: &Script, tick: u64) -> Input {
     script
         .input
@@ -303,10 +316,11 @@ pub fn input_at(script: &Script, tick: u64) -> Input {
         .fold(Input::default(), |acc, seg| acc.merge(seg.keys()))
 }
 
-/// 回放一份场景：确定性 tick、可选轨迹、断言检查。
+/// Replay a scenario: deterministic ticks, optional trace, assertion checks.
 ///
-/// 不装插件、不监听热重载（确定性优先）。断言失败**不中断**回放 ——
-/// 一次跑完把所有偏差都列出来，比只报第一条更有用。
+/// No plugins and no hot reload (determinism first). A failed assertion does
+/// NOT abort the replay:
+/// listing every deviation in one run beats reporting only the first.
 pub fn run_script(
     script: &Script,
     session: Session,
@@ -325,11 +339,11 @@ pub fn run_script(
         None => None,
     };
 
-    // 确定性：无插件、无 watcher。
+    // Determinism: no plugins, no watcher.
     let service = GameService::new(session, None, None, None);
     let mut kernel = Kernel::new().with(service);
     let mut outcome = ScenarioOutcome::default();
-    // 位移断言（dx/dy）的基准：tick 1 的位置（出生点站稳的位置）。
+    // Reference point for displacement assertions (dx/dy): the tick 1 position.
     let mut base = (0.0f32, 0.0f32);
 
     for tick in 1..=script.scenario.ticks {
@@ -363,9 +377,9 @@ pub fn run_script(
     Ok(outcome)
 }
 
-/// 逐字段比对一条断言，把偏差写进 `outcome`。
+/// Compare one assertion field by field, appending deviations to `outcome`.
 ///
-/// `base` 是 tick 1 的位置，供 `dx`/`dy` 相对位移断言用。
+/// `base` is the tick 1 position, used by the `dx`/`dy` displacement assertions.
 fn check(snap: &Snapshot<'_>, base: (f32, f32), expect: &Expect, outcome: &mut ScenarioOutcome) {
     let tol = expect.tol.unwrap_or(DEFAULT_TOL);
     let tick = expect.tick;
@@ -430,14 +444,14 @@ fn check(snap: &Snapshot<'_>, base: (f32, f32), expect: &Expect, outcome: &mut S
 }
 
 // ---------------------------------------------------------------------------
-// 地图快照
+// Map snapshot
 // ---------------------------------------------------------------------------
 
-/// 把运行时看到的会话落成 JSON。
+/// Write the session as the runtime sees it to JSON.
 ///
-/// 与 `releste-map --example dump_rooms`（原始文件视图）互补：这里dump 的是
-/// **运行时解析后**的东西 —— 出生点、图集名、tile 网格（按行十六进制），
-/// 以及与 `.map` 有偏差的地方一眼可见。
+/// Complements `releste-map --example dump_rooms` (the raw file view): this
+/// dumps what the engine **parsed** — spawn point, atlas name, tile grid (hex
+/// per row), so any deviation from the `.map` is visible at a glance.
 pub fn dump_session_json(session: &Session, path: &Path) -> Result<()> {
     let doc: &MapDocument = &session.doc;
     let rooms: Vec<serde_json::Value> = doc
@@ -533,8 +547,8 @@ dashes = 1
         assert_eq!(input_at(&script, 6), Input::default());
     }
 
-    /// 重叠段按位或：左+右同时按住时输入两个键都置位（引擎里
-    /// `axis_x` 会判 0，但脚本层的合并规则必须明确）。
+    /// Overlapping segments OR together: pressing left+right sets both keys
+    /// (the engine's `axis_x` then reads 0, but the merge rule must be explicit).
     #[test]
     fn overlapping_segments_merge_with_or() {
         let text = r#"
@@ -553,13 +567,13 @@ jump = true
 "#;
         let script: Script = toml::from_str(text).expect("parse");
         let merged = input_at(&script, 2);
-        assert!(merged.right, "tick 2 同时落在两段里");
+        assert!(merged.right, "tick 2 falls inside both segments");
         assert!(merged.jump);
         assert!(input_at(&script, 3).jump);
         assert!(!input_at(&script, 4).jump);
     }
 
-    /// 拼错的键必须报错，不能静默当默认值（§15.9）。
+    /// A misspelled key must be an error, never a silent default (§15.9).
     #[test]
     fn unknown_keys_are_rejected() {
         let text = r#"
@@ -574,7 +588,7 @@ jummmp = true
         );
     }
 
-    /// 浮点断言用容差，失败信息要带 Δ 与 tol。
+    /// Float assertions use a tolerance; failures must carry Δ and tol.
     #[test]
     fn float_expectations_report_deltas() {
         let snap = Snapshot {
@@ -604,12 +618,15 @@ jummmp = true
         let mut outcome = ScenarioOutcome::default();
         check(&snap, (10.0, 20.0), &good, &mut outcome);
         assert_eq!(outcome.checks, 1);
-        assert!(outcome.failures.is_empty(), "0.02 < 0.05 容差");
+        assert!(
+            outcome.failures.is_empty(),
+            "0.02 is inside the 0.05 tolerance"
+        );
 
         let bad: Expect = toml::from_str("tick = 7\nx = 10.5\nanim = \"runSlow\"").expect("parse");
         check(&snap, (10.0, 20.0), &bad, &mut outcome);
         assert_eq!(outcome.checks, 3);
-        // dx 是相对 tick 1 的位移：跨出生点稳定。
+        // dx is displacement relative to tick 1: stable across spawn points.
         let rel: Expect = toml::from_str("tick = 7\ndx = 3.0").expect("parse");
         check(&snap, (7.0, 20.0), &rel, &mut outcome);
         assert_eq!(outcome.checks, 4);

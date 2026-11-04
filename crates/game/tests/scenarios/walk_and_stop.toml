@@ -1,15 +1,19 @@
-# 走路：加速 → 满速 → 松手减速 → 停下（+ 动画链）。
+# Walking: accelerate -> top speed -> release -> decelerate -> stop (+ the
+# animation chain).
 #
-# 期望值全部来自原版常量，不是"跑一遍抄下来的"：
-#   MaxRun = 90f      (pureCeleste.cs:118386) → 1.5 px/tick
-#   RunAccel = 1000f  (pureCeleste.cs:118388) → 1/60×1000 = 0.27778 px/tick²
-#   无输入停下走 1000 档（pureCeleste.cs:121965-121975；400 档只用于同向超速）
+# Every expectation is derived from the vanilla constants, not copied from
+# whatever the engine prints today:
+#   MaxRun = 90f      (pureCeleste.cs:118386) -> 1.5 px/tick
+#   RunAccel = 1000f  (pureCeleste.cs:118388) -> 1/60*1000 = 0.27778 px/tick^2
+#   releasing the input decelerates at the full 1000 rate
+#   (pureCeleste.cs:121965-121975; the 400 rate is for same-direction overspeed)
 #
-# 位移用 dx（相对 tick 1），这样换地图/改出生点也不会误报。
+# Displacement uses dx (relative to tick 1) so a different map or spawn point
+# cannot cause false alarms.
 [scenario]
 ticks = 60
 map = "0-Intro.map"
-note = "从出生点向右走 36 tick，松手再等 20 tick"
+note = "walk right for 36 ticks from spawn, then release and wait 20"
 
 [[input]]
 from = 5
@@ -18,18 +22,18 @@ right = true
 
 [[expect]]
 tick = 5
-vx = 0.2778            # 起步第一 tick 只加速 1/60×1000
+vx = 0.2778            # first tick only accelerates by 1/60*1000
 anim = "runSlow"
 
 [[expect]]
 tick = 10
-vx = 1.5               # 已到满速 90 px/s
+vx = 1.5               # top speed 90 px/s reached
 anim = "runFast"
 
 [[expect]]
 tick = 40
 vx = 1.5
-dx = 50.667             # 加速段 + 满速段的总位移
+dx = 50.667            # ramp + top-speed displacement
 
 [[expect]]
 tick = 50

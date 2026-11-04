@@ -1,55 +1,63 @@
-# 场景脚本（LLM 友好的行为回归）
+# Scenario scripts (LLM-friendly behaviour regressions)
 
-每个 `.toml` 是一份**确定性**回放：显式输入 + 断言。没有插件、没有热重载、
-没有墙钟依赖 —— 同一份脚本永远得到同一条轨迹。
+Each `.toml` is a **deterministic** replay: explicit input plus assertions.
+No plugins, no hot reload, no wall-clock dependency — the same script always
+produces the same trace.
 
 ```bash
 cargo run --bin releste -- --script crates/game/tests/scenarios/walk_and_stop.toml
 ```
 
-断言失败会逐条打印（并返回退出码 1）：
+A failed assertion is printed (and the process exits 1):
 
 ```text
 FAIL tick=40 vx: expected 1.6000, got 1.5000 (Δ0.1000 > tol 0.0500)
 scenario: 60 ticks, 10 checks, 1 failure(s)
 ```
 
-## 为什么这么设计
+## Why it is shaped this way
 
-- **写原版数值，不写"跑出来的数值"**：期望值应当能从
-  `references/pureCeleste.cs` 推出来（如 `MaxRun = 90f` → 1.5 px/tick），
-  脚本注释里写下出处行号。抄一遍当前实现只能锁住现状，锁不住正确性。
-- **位移用 `dx`/`dy`**（相对 tick 1），别用绝对 `x`/`y`：地图转换产物
-  （`assets/`，gitignored）换了出生点也不会误报。
-- **拼错的键直接报错**（`deny_unknown_fields`），不会静默当默认值。
+- **Write vanilla values, not "whatever it prints"**: expectations should be
+  derivable from `references/pureCeleste.cs` (e.g. `MaxRun = 90f` -> 1.5
+  px/tick), with the source line in the comment. Copying today's output only
+  freezes the status quo, not correctness.
+- **Use `dx`/`dy` for displacement** (relative to tick 1) rather than absolute
+  `x`/`y`: the converted assets under `assets/` are gitignored and their spawn
+  point can change without invalidating the scenario.
+- **A typo in a key is an error** (`deny_unknown_fields`), never a silent
+  default.
 
-## 字段
+## Fields
 
 ```toml
 [scenario]
-ticks = 60                 # 跑几次 kernel.tick()（1-based 计）
-map = "0-Intro.map"        # 期望的地图；不符即报错（防止 --map 写错）
-trace = ".devtmp/out.jsonl" # 可选：逐 tick 轨迹（JSONL）
-note = "一句话说明场景"
+ticks = 60                  # how many kernel.tick() calls (counted from 1)
+map = "0-Intro.map"         # expected map; a mismatch is an error
+trace = ".devtmp/out.jsonl" # optional: per-tick trace (JSONL)
+note = "one line describing the scenario"
 
-[[input]]                  # 可多段；重叠处按位或
+[[input]]                   # any number; overlaps are OR-ed
 from = 5
-to = 40                    # 含两端
-right = true               # left/right/up/down/jump/dash/grab
+to = 40                     # inclusive
+right = true                # left/right/up/down/jump/dash/grab
 
-[[expect]]                 # 可多条；只检查写了的字段
+[[expect]]                  # any number; only the fields you write are checked
 tick = 40
-vx = 1.5                   # 浮点比较用 tol（默认 0.05）
+vx = 1.5                    # floats compare with tol (default 0.05)
 dx = 50.667
 anim = "runFast"
-state = 0                  # 0 = Normal、1 = Climb、2 = Dash
+state = 0                   # 0 = Normal, 1 = Climb, 2 = Dash
 dashes = 1
 on_ground = true
 ```
 
-需要新数值时，先看轨迹再写断言：
+To find new numbers, trace first and then write the assertion:
 
 ```bash
-cargo run --bin releste -- --script <scenario>.toml   # 用 [scenario] trace 落盘
-# 再逐行读 JSONL：字段名即断言名，单位写在名字里（vx = px/tick，vx_ps = px/s）
+cargo run --bin releste -- --script <scenario>.toml   # writes [scenario] trace
+# then read the JSONL: field names are assertion names, and units are in the
+# names (vx = px/tick, vx_ps = px/s)
 ```
+
+These scenarios need the converted assets (`assets/maps/`, `assets/atlas/`),
+which are gitignored: run them on a dev machine, not in the nix sandbox.

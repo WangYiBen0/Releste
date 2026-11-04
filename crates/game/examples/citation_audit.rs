@@ -1,49 +1,53 @@
-//! 引用审计：把源码里的 `pureCeleste.cs:LINE[-LINE]` 引用变成可机器校验的清单。
+//! Citation audit: turn every `pureCeleste.cs:LINE[-LINE]` citation in the
+//! source into a machine-checkable list.
 //!
-//! 为什么需要它：本仓库的规则是「每一行行为代码都要能指回原版行号」
-//! （`.agents/skills/releste-vanilla-audit`）。引用写错/漂移时，
-//! 纯靠人眼读代码看不出来 —— 这个工具把每条引用摊开，并支持一种
-//! **可校验的引用写法**：
+//! Why it exists: the rule in this repository is that every behavioural line
+//! points back to a vanilla line number
+//! (`.agents/skills/releste-vanilla-audit`). When a citation is wrong or has
+//! drifted, reading the code by eye will not show it — this tool lays every
+//! citation out and supports one **verifiable citation style**:
 //!
 //! ```text
-//! // 120403 的阈值是 25 px/s：pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f`
+//! // the 25 px/s threshold: pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f`
 //! ```
 //!
-//! 引用后面**紧跟**（只隔空格）的反引号片段会被当作"被引用行里应当
-//! 出现的内容"，工具用空白归一化后的子串匹配来验证。没有片段的引用
-//! 记为 `unchecked`（不是失败，但也没有防漂移能力）。
+//! A backtick-quoted snippet **immediately** after a citation (only spaces
+//! between) is treated as "that is what the cited lines should contain" and is
+//! verified by whitespace-normalised substring match. A citation without a
+//! snippet is recorded as `unchecked` — not a failure, but it cannot catch drift.
 //!
-//! 用法（仓库根目录）：
+//! Usage (from the repository root):
 //!
 //! ```text
-//! cargo run -p releste-game --example citation_audit                # 只报问题
-//! cargo run -p releste-game --example citation_audit -- --json      # 机器可读
-//! cargo run -p releste-game --example citation_audit -- --all       # 全部条目 + 原版摘录
-//! cargo run -p releste-game --example citation_audit -- --coverage  # 每个文件的统计
+//! cargo run -p releste-game --example citation_audit                # problems only
+//! cargo run -p releste-game --example citation_audit -- --json      # machine-readable
+//! cargo run -p releste-game --example citation_audit -- --all       # every entry + excerpt
+//! cargo run -p releste-game --example citation_audit -- --coverage  # per-file stats
 //! cargo run -p releste-game --example citation_audit -- \
 //!     --ref references/pureCeleste.cs crates/game/src/player.rs
 //! ```
 //!
-//! 退出码：0 = 没有 `out_of_range` / `snippet_mismatch`；1 = 有。
+//! Exit code: 0 = no `out_of_range` / `snippet_mismatch`; 1 = there are some.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// 引用审计的输出 schema。
+/// Output schema of the citation audit.
 const SCHEMA: &str = "releste.citation-audit.v1";
 
-/// 一条引用。
+/// One citation.
 #[derive(Debug)]
 struct Entry {
     file: String,
-    /// 引用所在的源码行（1-based）。
+    /// Source line the citation sits on (1-based).
     src_line: usize,
-    /// 被引用的原版行区间（1-based，含两端）。
+    /// Cited vanilla line range (1-based, inclusive).
     first: usize,
     last: usize,
-    /// 引用后面紧跟的反引号片段（若有）。
+    /// Backtick-quoted snippet directly after the citation, if any.
     snippet: Option<String>,
-    /// 被引用原版行的摘录（空白归一化，截断到 120 字符）。
+    /// Excerpt of the cited vanilla lines (whitespace-normalised, cut at 120
+    /// characters).
     excerpt: String,
     /// `ok` / `unchecked` / `out_of_range` / `snippet_mismatch`。
     status: &'static str,
@@ -137,28 +141,32 @@ fn run(args: &[String]) -> Result<std::process::ExitCode, String> {
 }
 
 const HELP: &str = "\
-citation_audit — 校验 pureCeleste.cs 引用（行号范围 + 可选片段）
+citation_audit — verify pureCeleste.cs citations (line ranges + optional snippets)
 
 USAGE:
     cargo run -p releste-game --example citation_audit -- [FLAGS] [FILES...]
 
 FLAGS:
-    --json        机器可读的 JSON（含每条引用的原版摘录）
-    --all         文本模式下列出全部条目（默认只列问题）
-    --coverage    每个文件的引用数 / 已校验数统计
-    --ref PATH    原版源码路径（默认 references/pureCeleste.cs）
-    -h, --help    这份帮助
+    --json        machine-readable JSON (with the vanilla excerpt per citation)
+    --all         in text mode, list every entry (default: problems only)
+    --coverage    per-file citation and verified counts
+    --ref PATH    path to the vanilla source (default references/pureCeleste.cs)
+    -h, --help    this help
 
-引用写法（可校验）:
+Verifiable citation style:
     // pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f`
-    引用后紧跟的反引号片段必须出现在被引用的行区间里（空白归一化）。
-    没有片段的引用记 unchecked —— 能列出来，但没有防漂移能力。
+    A snippet directly after the citation must occur inside the cited range
+    (whitespace-normalised).
+    Citations without a snippet are recorded as unchecked: listed, but unable
+    to catch drift.
 
-EXIT: 0 = 无问题；1 = 有 out_of_range / snippet_mismatch。";
+EXIT: 0 = clean; 1 = out_of_range / snippet_mismatch present.";
 
-/// `--find`：在原版里按子串找行，打印 `行号| 内容`（最多 40 条）。
+/// `--find`: locate a substring in the vanilla source and print
+/// `LINE| content` (at most 40 hits).
 ///
-/// 写引用时用它定位行号，不要凭记忆 —— 记忆里的行号正是漂移的来源。
+/// Use it to locate line numbers when writing a citation instead of trusting
+/// memory — remembered line numbers are exactly where drift comes from.
 fn find_in_reference(needle: &str) -> Result<(), String> {
     let reference = default_reference();
     let text = std::fs::read_to_string(&reference)
@@ -181,9 +189,10 @@ fn find_in_reference(needle: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `--methods`：原版的方法声明清单（`行号| 声明`）。
+/// `--methods`: the vanilla method declaration list (`LINE| declaration`).
 ///
-/// 用于给"函数级引用"（如 `UpdateSprite（pureCeleste.cs:…）`）核对区间端点。
+/// For checking the endpoints of function-level citations (such as
+/// `UpdateSprite (pureCeleste.cs:…)`).
 fn list_methods() -> Result<(), String> {
     let reference = default_reference();
     let text = std::fs::read_to_string(&reference)
@@ -205,7 +214,7 @@ fn list_methods() -> Result<(), String> {
     Ok(())
 }
 
-/// 默认原版路径：优先仓库根的 `references/pureCeleste.cs`。
+/// Default vanilla path: prefer `references/pureCeleste.cs` at the repo root.
 fn default_reference() -> PathBuf {
     let from_manifest =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../references/pureCeleste.cs");
@@ -216,7 +225,7 @@ fn default_reference() -> PathBuf {
     }
 }
 
-/// 默认扫描面：`crates/` 与 `tools/` 下的全部 `.rs`。
+/// Default scan area: every `.rs` under `crates/` and `tools/`.
 fn default_sources() -> Vec<PathBuf> {
     let mut out = Vec::new();
     for root in ["crates", "tools"] {
@@ -241,7 +250,7 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 扫一个文件里的全部引用。
+/// Scan every citation in one file.
 fn scan_file(file: &Path, text: &str, vanilla: &[&str], out: &mut Vec<Entry>) {
     const MARK: &str = "pureCeleste.cs:";
     for (idx, line) in text.lines().enumerate() {
@@ -254,7 +263,8 @@ fn scan_file(file: &Path, text: &str, vanilla: &[&str], out: &mut Vec<Entry>) {
                 let entry = build_entry(file, idx + 1, first, last, snippet, vanilla);
                 out.push(entry);
             }
-            // 继续找同一行后面的引用（注释里常有一句多个引用）。
+            // Keep looking for later citations on the same line (comments often
+            // carry several).
             rest = &after[consumed..];
             if rest.is_empty() {
                 break;
@@ -263,7 +273,7 @@ fn scan_file(file: &Path, text: &str, vanilla: &[&str], out: &mut Vec<Entry>) {
     }
 }
 
-/// 解析 `123` 或 `123-456`，返回 (first, last, 吃掉的字节数)。
+/// Parse `123` or `123-456` and return (first, last, bytes consumed).
 fn parse_range(s: &str) -> (Option<usize>, usize, usize) {
     let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() {
@@ -283,11 +293,12 @@ fn parse_range(s: &str) -> (Option<usize>, usize, usize) {
     (Some(first), last, consumed)
 }
 
-/// 引用后**紧跟**（只隔空格）的反引号片段。
+/// Backtick-quoted snippet **directly** after a citation (spaces only).
 ///
-/// 只认"像代码"的片段：至少含一个 ASCII 字母或数字。注释里紧跟引用的
-/// 反引号常常是中文标点或散文（``` `；` ```、``` `（` ```），把它们当成
-/// 断言会全是误报 —— 这类一律不算片段（记 unchecked）。
+/// Only snippets that look like code are accepted: at least one ASCII letter
+/// or digit. A backtick directly after a citation is often punctuation or
+/// prose, and treating those as assertions produces pure noise — they are not
+/// counted as snippets (recorded as unchecked).
 fn parse_snippet(s: &str) -> Option<String> {
     let s = s.trim_start();
     let body = s.strip_prefix('`')?;
@@ -300,7 +311,8 @@ fn parse_snippet(s: &str) -> Option<String> {
     }
 }
 
-/// 归一化：把连续空白压成一个空格，便于跨换行/缩进比对。
+/// Normalise: collapse runs of whitespace to one space so comparisons work
+/// across line breaks and indentation.
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -325,7 +337,7 @@ fn build_entry(
         String::new()
     };
 
-    // 行号区间必须落在文件内，且 first <= last。
+    // The range must lie inside the file, with first <= last.
     if first == 0 || last == 0 || first > last || last > vanilla.len() {
         return Entry {
             file: file.display().to_string(),
