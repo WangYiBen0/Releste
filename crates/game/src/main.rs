@@ -50,6 +50,17 @@ struct Args {
     #[arg(long, value_name = "DIR")]
     root: Option<PathBuf>,
 
+    /// Config file (key bindings). Defaults to
+    /// `$XDG_CONFIG_HOME/releste/config.toml` (`RELESTE_CONFIG_FILE` overrides
+    /// it, this flag overrides both).
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Write the resolved config file (current bindings, or the vanilla defaults
+    /// when it does not exist yet) and exit.
+    #[arg(long)]
+    write_config: bool,
+
     /// Do not scan `plugins/`.
     #[arg(long)]
     no_plugins: bool,
@@ -193,6 +204,18 @@ fn run(args: &Args) -> anyhow::Result<()> {
 
     let paths = Paths::resolve(args.root.as_deref());
     info_paths(&paths);
+    let config = settings::config_location(args.config.as_deref(), paths.root());
+    if args.write_config {
+        let bindings = settings::KeyBindings::load_resolved(&config, paths.root());
+        bindings.save(&config.path)?;
+        println!("ok: config written to {}", config.path.display());
+        return Ok(());
+    }
+    tracing::info!(
+        config = %config.path.display(),
+        read = %config.read_path(paths.root()).display(),
+        "config file"
+    );
 
     let session = Session::load(&args.map, None, &paths)?;
 
@@ -233,6 +256,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
         plugins,
         args.screenshot.clone(),
         args.frame_count(),
+        config,
     );
     app.run()
 }

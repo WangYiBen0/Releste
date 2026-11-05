@@ -44,7 +44,8 @@ pub struct GameApp {
     kernel: Option<Kernel>,
     batch: SpriteBatch,
     keys: Input,
-    /// User key bindings (`<root>/settings.toml`, absent = vanilla defaults).
+    /// User key bindings, loaded from the resolved config file (absent = vanilla
+    /// defaults; see `crate::settings` for the path rules).
     bindings: crate::settings::KeyBindings,
     accumulator: Duration,
     last: Instant,
@@ -70,8 +71,9 @@ impl GameApp {
         load_plugins: bool,
         screenshot: Option<PathBuf>,
         screenshot_after: u64,
+        config: crate::settings::ConfigLocation,
     ) -> Self {
-        let bindings = crate::settings::KeyBindings::load(paths.root());
+        let bindings = crate::settings::KeyBindings::load_resolved(&config, paths.root());
         let watcher = watch_maps(&paths);
         let now = Instant::now();
         GameApp {
@@ -202,7 +204,7 @@ impl GameApp {
             return;
         };
         let down = event.state == ElementState::Pressed;
-        // Key bindings = `settings.toml` (absent means vanilla defaults: arrow keys move, C jumps --
+        // Key bindings = the resolved config file (absent means vanilla defaults: arrow keys move, C jumps --
         // `SetDefaultKeyboardControls`, pureCeleste.cs:101602-101651;
         // `TranslateKeys` 101708's physical-key semantics = winit `PhysicalKey`).
         // Enter = vanilla Pause (101642); ESC = the vanilla menu key (`Input.ESC`,

@@ -119,6 +119,40 @@ Scenarios live in `crates/game/tests/scenarios/` - expectations must be
 derivable from `references/pureCeleste.cs` (cite the line), not copied from
 whatever the engine currently prints.
 
+## Configuration (key bindings)
+
+Bindings are read from the first of these that exists:
+
+1. `--config <PATH>`,
+2. `RELESTE_CONFIG_FILE`,
+3. `<root>/settings.toml` -- a portable / per-install override that deliberately
+   beats the user configuration,
+4. the user configuration directory:
+   `$XDG_CONFIG_HOME/releste/config.toml` (fallback `~/.config/releste/config.toml`),
+   `~/Library/Application Support/releste/config.toml` on macOS,
+   `%APPDATA%\releste\config.toml` on Windows.
+
+```toml
+# Releste configuration.
+[keys]
+left = ["ArrowLeft"]
+right = ["ArrowRight"]
+up = ["ArrowUp"]
+down = ["ArrowDown"]
+jump = ["KeyC"]
+dash = ["KeyX"]
+grab = ["KeyZ", "KeyV", "ShiftLeft"]
+```
+
+Key names are winit `KeyCode` names and bind by physical position (vanilla
+`TranslateKeys`, pureCeleste.cs:101708). An action may list several keys.
+
+- `releste --write-config` writes the file (current bindings, or the vanilla
+  defaults) and exits -- the quickest way to get an editable starting point.
+- A missing file, a missing action or an unknown key name falls back to that
+  action's vanilla default and logs a warning; nothing panics.
+- Writing always targets the path from 1/2/4, never `<root>/settings.toml`.
+
 ## Measured results
 
 `releste-content-pipeline` runs end to end over **every vanilla Celeste asset**, and the
