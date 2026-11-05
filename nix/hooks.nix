@@ -43,7 +43,7 @@
         default_stages = [ "pre-commit" ];
 
         hooks = {
-          # ── Restricted content guard ────────────────────────
+          # -- Restricted content guard ------------------------
           #
           # .gitignore is passive (it ignores silently); this hook is active:
           # if someone forces a restricted file in with `git add -f`, the
@@ -60,7 +60,10 @@
           # The largest tracked file today is Cargo.lock (~113 KiB).
           added-large-files = lint "large" "--maxkb=512";
 
-          # ── Repository hygiene ──────────────────────────────
+          # -- Repository hygiene ------------------------------
+          # Every tracked file is ASCII-only (AGENTS.md 5.4); only
+          # localisation data may carry non-ASCII bytes.
+          ascii = lint "ascii" "";
           trailing-whitespace = lint "whitespace" "";
           end-of-file = lint "eof" "";
           line-ending = lint "line-ending" "";
@@ -68,7 +71,7 @@
           private-key = lint "private-key" "";
           case-conflict = lint "case-conflict" "";
 
-          # ── Rust ────────────────────────────────────────────
+          # -- Rust --------------------------------------------
           # Point the hook's cargo/rustfmt at the flake's pinned toolchain,
           # never at nixpkgs' own rustfmt: a version mismatch makes the hook
           # and `nix build .#checks.*.fmt` fight each other.
@@ -81,7 +84,7 @@
             };
           };
 
-          # ── Nix ─────────────────────────────────────────────
+          # -- Nix ---------------------------------------------
           # git-hooks.nix dropped `nixfmt-rfc-style` / `nixpkgs-fmt`;
           # `nixfmt` is the single formatter now.
           nixfmt = {

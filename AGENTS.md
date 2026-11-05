@@ -4,11 +4,11 @@
 
 Releste is a **from-scratch rewrite** of a 2D precision platformer engine with the following objectives:
 
-- **Hot-reloadable maps as a first-class citizen** — change `.map` files while running and they take effect in seconds without restarting the process.
-- **Reuse original Celeste art, audio, and map data** — convert once offline, load only the engine-native format at runtime.
-- **Client-authoritative networking** — the server is a pure relay; world state is not synchronized by default. "Unsynchronized worlds" are a feature, not a bug.
+- **Hot-reloadable maps as a first-class citizen** - change `.map` files while running and they take effect in seconds without restarting the process.
+- **Reuse original Celeste art, audio, and map data** - convert once offline, load only the engine-native format at runtime.
+- **Client-authoritative networking** - the server is a pure relay; world state is not synchronized by default. "Unsynchronized worlds" are a feature, not a bug.
 - **Cross-platform** (Windows, Linux, macOS, and potentially Wasm).
-- **Full control** — not built on Everest, FNA, or MonoGame.
+- **Full control** - not built on Everest, FNA, or MonoGame.
 
 **This is not a Celeste remake.** Celeste is a reference. The entity system, map format, scripting layer, and networking layer are all redesigned.
 
@@ -27,7 +27,7 @@ Releste is a **from-scratch rewrite** of a 2D precision platformer engine with t
 | Logging | **tracing** + **tracing-subscriber** | Structured with spans |
 | Errors | **thiserror** (libraries) / **anyhow** (applications) | Libraries must not expose anyhow |
 | Testing | **cargo test** + **proptest** | Use proptest for critical algorithms |
-| CLI | **clap** | — |
+| CLI | **clap** | - |
 
 **Prohibited:** `bevy_ecs`, `godot`, `macroquad`, `piston`, or any library binding to MonoGame/XNA/FNA.
 
@@ -78,7 +78,7 @@ releste/
 
 **Namespaces are shared.** `maps/<namespace>/` and `resources/<namespace>/` use the *same* namespace string, so an atlas and the rooms consuming it resolve together. A missing namespace is a warning, never a crash.
 
-**Nothing here may be compiled into the binary.** `plugins/`, `resources/` and `libs/` are read at runtime — that is what makes them hot-pluggable (see ROADMAP Appendix D).
+**Nothing here may be compiled into the binary.** `plugins/`, `resources/` and `libs/` are read at runtime - that is what makes them hot-pluggable (see ROADMAP Appendix D).
 
 **Cargo workspace.** All crates share one `Cargo.lock`; use `[workspace.dependencies]` to unify versions.
 
@@ -145,7 +145,7 @@ Place libfmod.so / fmod.dll / libfmod.dylib in:
 
 - `#![deny(warnings)]` in CI; if locally allowing warnings with `#[allow]`, include a clear reason.
 - All public APIs must have doc comments.
-- Use `thiserror` for error types; **libraries must not panic** — propagate errors with `Result`.
+- Use `thiserror` for error types; **libraries must not panic** - propagate errors with `Result`.
 - Applications (`bin`) may use `anyhow`, but must include context.
 - Prefer `crossbeam` or `flume` channels for concurrency; **avoid shared mutable state**.
 - Avoid allocations on hot paths (pre-allocate `Vec`s, use `SmallVec`, use object pools).
@@ -161,14 +161,29 @@ Place libfmod.so / fmod.dll / libfmod.dylib in:
 ### 5.3 Commits
 
 - One logical change per commit.
-- **Conventional Commits**: `type(scope): imperative summary`, subject ≤ 72 chars.
+- **Conventional Commits**: `type(scope): imperative summary`, subject <= 72 chars.
   - `type`: `feat` `fix` `refactor` `perf` `docs` `test` `build` `ci` `chore`
-  - `scope`: the affected crate/module (`player`, `map`, `render`, …), or
+  - `scope`: the affected crate/module (`player`, `map`, `render`, ...), or
     `workspace` / `repo` for tree-wide changes.
   - `fix(player): collide across room seams and snap to world-cell edges`
   - `feat(map): add dump_rooms example for seam analysis`
   - `chore(workspace): normalize all package and binary names to releste`
 - For commits involving original asset conversion, include the source asset path(s).
+
+### 5.4 Text and encoding
+
+- Every tracked file is **ASCII-only** (`0x00`-`0x7F`). Localisation data is the
+  only exception, and it does not live in the source tree.
+- Comments, documentation and commit messages are written in English.
+- Use ASCII forms: `->` instead of an arrow glyph, `x` instead of a
+  multiplication sign, `<=` / `>=` instead of the comparison glyphs, `...`
+  instead of an ellipsis, `-` instead of an em dash, and `15.7` (or
+  `AGENTS.md 15.7`) instead of a section sign.
+- Box-drawing characters are not allowed either: draw trees and diagrams with
+  ASCII (`|--`, `` `-- ``, `|`) and keep the columns aligned.
+- `cargo test --workspace` and the nix gate both fail if a tracked file stops
+  being ASCII; run `grep -nP '[^\x00-\x7F]' <files>` before committing.
+
 
 ## 6. Common Commands
 
@@ -266,12 +281,12 @@ pub struct Room {
 }
 ```
 
-**`.map` format:** custom binary (`bincode`) with a version header. **Full normative spec: ROADMAP Appendix E** — container layout, encoding rules, field schema, identity rules, versioning/migration policy, and the known defect list.
+**`.map` format:** custom binary (`bincode`) with a version header. **Full normative spec: ROADMAP Appendix E** - container layout, encoding rules, field schema, identity rules, versioning/migration policy, and the known defect list.
 
 Two rules that follow from the spec and are easy to get wrong:
 
-- **Backward compatibility requires explicit migration functions.** `bincode` is not self-describing, so `#[serde(default)]` never fires and *adding a field breaks every existing file*. Any schema change is a `MAP_VERSION` bump plus a chained `v_n → v_{n+1}` migration plus a golden fixture.
-- **Serialisation must be byte-deterministic.** Property maps use `BTreeMap`, never `HashMap` — otherwise the same map hashes differently run to run and content hashing is impossible.
+- **Backward compatibility requires explicit migration functions.** `bincode` is not self-describing, so `#[serde(default)]` never fires and *adding a field breaks every existing file*. Any schema change is a `MAP_VERSION` bump plus a chained `v_n -> v_{n+1}` migration plus a golden fixture.
+- **Serialisation must be byte-deterministic.** Property maps use `BTreeMap`, never `HashMap` - otherwise the same map hashes differently run to run and content hashing is impossible.
 
 ### 7.4 `reload`
 
@@ -292,9 +307,9 @@ impl Reload {
 
 **Conflict resolution strategy (in order):**
 
-1. Player overlaps with newly added entity → push player out (`world.resolve_overlap`).
-2. Referenced ID no longer exists → log warning and skip that patch entry.
-3. Room bounds shrink and player is now outside → log error and roll back the entire patch.
+1. Player overlaps with newly added entity -> push player out (`world.resolve_overlap`).
+2. Referenced ID no longer exists -> log warning and skip that patch entry.
+3. Room bounds shrink and player is now outside -> log error and roll back the entire patch.
 
 ### 7.5 `script`
 
@@ -327,18 +342,18 @@ Target frame time: 16.67ms (60 FPS). Budgets:
 | Audio | < 0.5ms | fmod-oxide timing |
 | Networking | < 0.5ms | custom counters |
 
-**If any stage exceeds its budget by 2×, open an issue to discuss.** Use `tracing` spans in production with 1% sampling.
+**If any stage exceeds its budget by 2x, open an issue to discuss.** Use `tracing` spans in production with 1% sampling.
 
 ## 9. Testing Strategy
 
 | Layer | Strategy |
 |---|---|
 | `kernel` | Unit tests + property tests (monotonic frame IDs, event order) |
-| `world` | Unit tests + snapshot roundtrip (`snapshot` → `restore` must be idempotent) |
-| `map` | Roundtrip (parse → serialize → parse, results equal) |
+| `world` | Unit tests + snapshot roundtrip (`snapshot` -> `restore` must be idempotent) |
+| `map` | Roundtrip (parse -> serialize -> parse, results equal) |
 | `reload` | Property tests (random patch sequences, world invariants hold) |
-| `content-pipeline` | Golden tests (original samples → expected output) |
-| End-to-end | Headless client × 2, local network, run cooperative scenarios |
+| `content-pipeline` | Golden tests (original samples -> expected output) |
+| End-to-end | Headless client x 2, local network, run cooperative scenarios |
 
 **Exception for not writing tests:** pure rendering code, pure UI code. In those cases, maintain a manual checklist.
 
@@ -353,7 +368,7 @@ This is the core capability of the project. **No PR may regress it.**
 5. `reload::apply(world, patch)` applies the patches:
    - Player/carried state preserved.
    - Static entities diffed by ID.
-   - Conflicts handled per §7.4.
+   - Conflicts handled per 7.4.
 6. `render` receives `WorldChanged` event and rebuilds affected GPU resources.
 7. User sees changes; **session is uninterrupted.**
 
@@ -387,7 +402,7 @@ pub enum CarryMode {
 }
 ```
 
-**Carried entity disables local collision** — this is the technical key to "carry-through-wall" behavior. See `crates/net-client/src/carry.rs`.
+**Carried entity disables local collision** - this is the technical key to "carry-through-wall" behavior. See `crates/net-client/src/carry.rs`.
 
 ## 12. Asset Pipeline
 
@@ -395,11 +410,11 @@ pub enum CarryMode {
 
 ```
 assets-src/                   assets/
-  Graphics/Atlases/    →        atlas/*.atlas
-  Maps/*.bin           →        maps/*.map
-  Dialog/*.txt         →        dialog/*.toml
-  Fonts/*.fnt          →        fonts/*.font
-  FMOD/Desktop/*.bank  →        audio/*.bank (copied as-is)
+  Graphics/Atlases/    ->        atlas/*.atlas
+  Maps/*.bin           ->        maps/*.map
+  Dialog/*.txt         ->        dialog/*.toml
+  Fonts/*.fnt          ->        fonts/*.font
+  FMOD/Desktop/*.bank  ->        audio/*.bank (copied as-is)
 ```
 
 `.atlas` format: one PNG + one TOML (sprite list, rect, offset, origin).
@@ -408,7 +423,7 @@ assets-src/                   assets/
 
 ## 13. TODOs / Known Issues
 
-- [ ] `content-pipeline`: per-sprite `.data` payloads are copied verbatim — packed pages are already decoded to PNG by the pixel-RLE decoder (`tools/content-pipeline/src/data.rs`); the remaining atlases need a multi-page packer plus runtime per-sprite texture binding
+- [ ] `content-pipeline`: per-sprite `.data` payloads are copied verbatim - packed pages are already decoded to PNG by the pixel-RLE decoder (`tools/content-pipeline/src/data.rs`); the remaining atlases need a multi-page packer plus runtime per-sprite texture binding
 - [ ] Hot reload: reload Lua chunk separately (currently reloads whole room/map context)
 - [ ] Carry protocol: disconnect handling
 - [ ] Server: heartbeat and timeout
@@ -417,22 +432,22 @@ assets-src/                   assets/
 
 ## 14. References
 
-- Original Celeste decompiled source (`src.cs`) — **behavioral reference only**, not structural reference for code.
-- CelesteNet / MiaoNet protocol design — **networking reference only**; do not adopt their "world sync" assumptions.
-- GGPO rollback paper — **not adopted, but worth reading**.
+- Original Celeste decompiled source (`src.cs`) - **behavioral reference only**, not structural reference for code.
+- CelesteNet / MiaoNet protocol design - **networking reference only**; do not adopt their "world sync" assumptions.
+- GGPO rollback paper - **not adopted, but worth reading**.
 
 ## 15. Hard Constraints for AI Agents
 
 1. **Do not add new crates** unless already listed in `[workspace.dependencies]`, or first open an issue to discuss.
 2. **Do not change** `Cargo.toml` `edition` or `rust-version`.
 3. **Do not import any business crate** in `crates/kernel/`.
-4. **Do not put logic in maps** — only data.
+4. **Do not put logic in maps** - only data.
 5. **Do not write hot-reload code** that requires restart to take effect.
-6. **Do not assume world synchronization** — sync is opt-in.
-7. **Do not use `f32` for simulation** — use `Fx` (fixed-point).
-8. **Do not panic** — use `Result`.
-9. **Do not silently swallow errors** — at minimum use `tracing::warn`.
-10. **Do not commit unformatted code** — run `cargo fmt` and `cargo clippy` first.
+6. **Do not assume world synchronization** - sync is opt-in.
+7. **Do not use `f32` for simulation** - use `Fx` (fixed-point).
+8. **Do not panic** - use `Result`.
+9. **Do not silently swallow errors** - at minimum use `tracing::warn`.
+10. **Do not commit unformatted code** - run `cargo fmt` and `cargo clippy` first.
 
 Violating any of these results in PR rejection and required fixes.
 
