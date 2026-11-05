@@ -429,6 +429,13 @@ assets-src/                   assets/
 - [ ] Server: heartbeat and timeout
 - [ ] Editor: schema auto-panel performance for large rooms (hundreds of entities)
 - [ ] wgpu: MSAA and visual parity with original Celeste
+- [ ] Tooling parity with the three reference projects (deferred; pull the
+  checkouts in `references/` before starting, they are gitignored): **CelesteTAS**
+  (TAS input record/playback, savestates, frame advance, hitbox/trigger overlays),
+  **ExtendedVariantMode** (the variant/modifier system with presets) and
+  **desk-madeline** (running mods outside the full game). None of them can land
+  before the player is a data-driven entity and the rebinding UI exists - see the
+  architecture notes in section 7.2. `nix flake check` must stay green.
 
 ## 14. References
 
