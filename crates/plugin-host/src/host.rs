@@ -5,16 +5,24 @@
 //! other N: every failure is a `[WARN]` plus a skipped entry, and the host
 //! keeps running (ROADMAP Appendix C rule 8, AGENTS.md 15.8/15.9).
 
+// wasm has no dynamic loader: the loader and the whole host-callback ABI surface
+// below are compiled for native targets only, which leaves the imports they use
+// unused there. Silencing those two lints for wasm beats fragmenting every import.
+#![cfg_attr(target_arch = "wasm32", allow(unused_imports, dead_code))]
+
 use std::collections::BTreeMap;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_arch = "wasm32"))]
 use libloading::Library;
 use tracing::{info, warn};
 
-use crate::abi::{HostApi, LogLevel, PluginV1, ABI_VERSION, ENTRY_SYMBOL};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::abi::ENTRY_SYMBOL;
+use crate::abi::{HostApi, LogLevel, PluginV1, ABI_VERSION};
 use crate::fiber::{Fiber, FiberState};
 use crate::manifest::Manifest;
 use crate::registry::{kind_id_for, EntityKind, Registry};
@@ -69,6 +77,7 @@ pub enum HostError {
 ///
 /// Kept on the heap behind a raw pointer handed to the plugin, so its address
 /// is stable for as long as the plugin is loaded.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct HostState {
     /// Name of the plugin being called back into.
     plugin: String,
@@ -89,6 +98,8 @@ struct Loaded {
     /// `_library`'s mapping, which this struct keeps alive.
     vtable: *const PluginV1,
     /// Dropping this `dlclose`s the artifact.
+    /// Keeps the mapping alive for as long as the plugin is loaded.
+    #[cfg(not(target_arch = "wasm32"))]
     _library: Library,
 }
 
@@ -280,71 +291,85 @@ impl PluginHost {
     }
 
     fn load_artifact(&mut self, entry: &ScanEntry, path: &Path) -> Result<(), HostError> {
-        let name = entry.name.clone();
-        // Safety: `Library::new` maps the file; every symbol we take out of it
-        // is validated before the plugin is allowed to run.
-        let library = unsafe { Library::new(path) }.map_err(|e| {
-            HostError::Load(name.clone(), format!("dlopen {}: {e}", path.display()))
-        })?;
-
-        let sym = unsafe { library.get::<unsafe extern "C" fn() -> *const PluginV1>(ENTRY_SYMBOL) }
-            .map_err(|_| HostError::MissingEntry(name.clone()))?;
-        let vtable = unsafe { sym() };
-        if vtable.is_null() {
+        // wasm has no dynamic loader; refuse cleanly instead of failing to build.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (entry, path);
             return Err(HostError::Load(
-                name.clone(),
-                "entry symbol returned null".into(),
+                entry.name.clone(),
+                "dynamic library loading is not available on this target".into(),
             ));
         }
 
-        // Safety: the symbol just returned a pointer we can read.
-        let vt: &PluginV1 = unsafe { &*vtable };
-        if vt.abi != ABI_VERSION {
-            return Err(HostError::AbiMismatch {
-                name,
-                found: vt.abi,
-                expected: ABI_VERSION,
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let name = entry.name.clone();
+            // Safety: `Library::new` maps the file; every symbol we take out of it
+            // is validated before the plugin is allowed to run.
+            let library = unsafe { Library::new(path) }.map_err(|e| {
+                HostError::Load(name.clone(), format!("dlopen {}: {e}", path.display()))
+            })?;
+
+            let sym =
+                unsafe { library.get::<unsafe extern "C" fn() -> *const PluginV1>(ENTRY_SYMBOL) }
+                    .map_err(|_| HostError::MissingEntry(name.clone()))?;
+            let vtable = unsafe { sym() };
+            if vtable.is_null() {
+                return Err(HostError::Load(
+                    name.clone(),
+                    "entry symbol returned null".into(),
+                ));
+            }
+
+            // Safety: the symbol just returned a pointer we can read.
+            let vt: &PluginV1 = unsafe { &*vtable };
+            if vt.abi != ABI_VERSION {
+                return Err(HostError::AbiMismatch {
+                    name,
+                    found: vt.abi,
+                    expected: ABI_VERSION,
+                });
+            }
+
+            let mut state = Box::new(HostState {
+                plugin: name.clone(),
+                registry: Arc::clone(&self.registry),
             });
+            let api = Box::new(HostApi {
+                abi: ABI_VERSION,
+                reserved: 0,
+                user_data: (&mut *state as *mut HostState).cast::<std::os::raw::c_void>(),
+                log: host_log,
+                provide_service: host_provide_service,
+                revoke_service: host_revoke_service,
+                register_entity_kind: host_register_entity_kind,
+                entity_kind_id: host_entity_kind_id,
+            });
+
+            let status = match vt.load {
+                Some(load_fn) => unsafe { load_fn(&*api) },
+                None => 0,
+            };
+            if status != 0 {
+                return Err(HostError::LoadRejected(
+                    name,
+                    format!("load() returned {status}"),
+                ));
+            }
+
+            let scope = crate::scope::Scope::new();
+            self.scopes.insert(name.clone(), Arc::new(scope));
+            self.loaded.insert(
+                name.clone(),
+                Loaded {
+                    _api: api,
+                    _state: state,
+                    vtable,
+                    _library: library,
+                },
+            );
+            Ok(())
         }
-
-        let mut state = Box::new(HostState {
-            plugin: name.clone(),
-            registry: Arc::clone(&self.registry),
-        });
-        let api = Box::new(HostApi {
-            abi: ABI_VERSION,
-            reserved: 0,
-            user_data: (&mut *state as *mut HostState).cast::<std::os::raw::c_void>(),
-            log: host_log,
-            provide_service: host_provide_service,
-            revoke_service: host_revoke_service,
-            register_entity_kind: host_register_entity_kind,
-            entity_kind_id: host_entity_kind_id,
-        });
-
-        let status = match vt.load {
-            Some(load_fn) => unsafe { load_fn(&*api) },
-            None => 0,
-        };
-        if status != 0 {
-            return Err(HostError::LoadRejected(
-                name,
-                format!("load() returned {status}"),
-            ));
-        }
-
-        let scope = crate::scope::Scope::new();
-        self.scopes.insert(name.clone(), Arc::new(scope));
-        self.loaded.insert(
-            name.clone(),
-            Loaded {
-                _api: api,
-                _state: state,
-                vtable,
-                _library: library,
-            },
-        );
-        Ok(())
     }
 
     /// Queue `name` for unload; it actually unloads at the next frame boundary.
@@ -466,6 +491,7 @@ impl PluginHost {
 
 /// # Safety
 /// `user_data` must be the pointer the host handed to this plugin.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn state<'a>(user_data: *mut c_void) -> Option<&'a HostState> {
     if user_data.is_null() {
         return None;
@@ -473,6 +499,7 @@ unsafe fn state<'a>(user_data: *mut c_void) -> Option<&'a HostState> {
     Some(&*(user_data as *const HostState))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn host_log(user_data: *mut c_void, level: u32, message: *const c_char) {
     let Some(st) = state(user_data) else {
         return;
@@ -492,6 +519,7 @@ unsafe extern "C" fn host_log(user_data: *mut c_void, level: u32, message: *cons
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn host_provide_service(user_data: *mut c_void, service: *const c_char) -> u64 {
     let Some(st) = state(user_data) else {
         return 0;
@@ -506,6 +534,7 @@ unsafe extern "C" fn host_provide_service(user_data: *mut c_void, service: *cons
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn host_revoke_service(user_data: *mut c_void, service: *const c_char) {
     let Some(st) = state(user_data) else {
         return;
@@ -519,6 +548,7 @@ unsafe extern "C" fn host_revoke_service(user_data: *mut c_void, service: *const
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn host_register_entity_kind(
     user_data: *mut c_void,
     name: *const c_char,
@@ -554,6 +584,7 @@ unsafe extern "C" fn host_register_entity_kind(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn host_entity_kind_id(user_data: *mut c_void, name: *const c_char) -> u32 {
     let Some(st) = state(user_data) else {
         return 0;

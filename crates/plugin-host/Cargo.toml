@@ -6,8 +6,12 @@ edition.workspace = true
 
 [dependencies]
 blake3.workspace = true
-libloading.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
+
+# The in-process loader needs `dlopen`; wasm has no such thing (there the host
+# degrades to "no plugins", which the game already handles as a warning).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libloading.workspace = true

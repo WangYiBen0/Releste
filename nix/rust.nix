@@ -306,6 +306,19 @@
         }
       );
 
+      # The game must stay compilable for the browser target: the wasm32 std is in
+      # the pinned toolchain and plugins degrade to "none" there (no dlopen).
+      wasm-check = craneLib.mkCargoDerivation (
+        commonArgs
+        // {
+          inherit cargoArtifacts;
+          pname = "releste-wasm-check";
+          doCheck = false;
+          doInstallCargoArtifacts = false;
+          buildPhaseCargoCommand = "cargo check -p releste-game --target wasm32-unknown-unknown";
+        }
+      );
+
       # End to end: content-pipeline conversion + read-back through the
       # runtime loader.
       content-pipeline-smoke = craneLib.mkCargoDerivation (
@@ -372,6 +385,7 @@
           lua-tests
           fmod-probe
           content-pipeline-smoke
+          wasm-check
           ;
       }
       // lib.optionalAttrs (!stdenv.hostPlatform.isDarwin) {
