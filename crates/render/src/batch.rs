@@ -1,49 +1,50 @@
-//! Sprite 批处理。
+//! Sprite batching.
 //!
-//! # 目标
-//! 单帧渲染提交预算 < 4ms（AGENTS.md §8）。核心手段是把手绘
-//! 调用按"层 → 纹理"排序后合并成少数几个 draw call。
+//! # Goal
+//! Keep the per-frame render submission budget under 4ms (AGENTS.md 8). The core
+//! technique is to sort hand-written draw calls by "layer -> texture" and merge
+//! them into a handful of draw calls.
 //!
-//! # 流程
-//! 1. 游戏逻辑每帧 `begin()` 后 `push()` 一堆 [`SpriteDraw`]。
-//! 2. `sort()` 按 `(layer, atlas)` 稳定排序。
-//! 3. `ranges()` 给出相同纹理的连续区段 → 每段一个 draw call。
-//! 4. `vertices()` 把排序后的绘制项展开为 GPU 顶点（每 sprite 6 个）。
+//! # Flow
+//! 1. Game logic calls `push()` for a heap of [`SpriteDraw`]s after `begin()` each frame.
+//! 2. `sort()` stably sorts by `(layer, atlas)`.
+//! 3. `ranges()` yields runs of the same texture -> one draw call per run.
+//! 4. `vertices()` expands the sorted draw items into GPU vertices (6 per sprite).
 
 use releste_math::Vec2;
 use thiserror::Error;
 
 use crate::camera::Camera;
 
-/// 单个 sprite 的绘制请求。
+/// A draw request for a single sprite.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpriteDraw {
-    /// 纹理组索引（由图集加载器分配）。
+    /// Texture group index (assigned by the atlas loader).
     pub atlas: u32,
-    /// 世界坐标位置（sprite 左上角，已应用原点偏移）。
+    /// World-space position (the sprite's top-left corner, after applying the origin offset).
     pub position: Vec2,
-    /// 世界坐标尺寸。
+    /// World-space size.
     pub size: Vec2,
-    /// 纹理 UV（左上）。
+    /// Texture UV (top-left).
     pub uv_min: (f32, f32),
-    /// 纹理 UV（右下）。
+    /// Texture UV (bottom-right).
     pub uv_max: (f32, f32),
-    /// 顶点色（RGBA，预乘 alpha）。
+    /// Vertex color (RGBA, premultiplied alpha).
     pub color: [f32; 4],
-    /// 绘制层（小者先画）。
+    /// Draw layer (lower draws first).
     pub layer: i32,
-    /// 水平翻转。
+    /// Horizontal flip.
     pub flip_x: bool,
-    /// 绕 `position`（左上角）旋转的弧度，`0.0` = 轴对齐（快路径）。
+    /// Rotation in radians about `position` (the top-left corner); `0.0` = axis-aligned (fast path).
     ///
-    /// 语义对齐 XNA `SpriteBatch.Draw(…, rotation, origin: Vector2.Zero,
-    /// scale)`：原版 `Draw.Line` 正是"旋转的 1px 高横条"
-    /// （`pureCeleste.cs:23386-23404`），引擎用它画 `Wire`。
+    /// Semantically matches XNA `SpriteBatch.Draw(..., rotation, origin: Vector2.Zero,
+    /// scale)`: the vanilla `Draw.Line` is exactly a "rotated 1px-tall horizontal bar"
+    /// (`pureCeleste.cs:23386-23404`), and the engine uses it to draw `Wire`.
     pub rotation: f32,
 }
 
 impl SpriteDraw {
-    /// 便捷构造：不透明白色、无翻转。
+    /// Convenience constructor: opaque white, no flip.
     pub fn new(atlas: u32, position: Vec2, size: Vec2, uv: ((f32, f32), (f32, f32))) -> Self {
         SpriteDraw {
             atlas,
@@ -58,32 +59,32 @@ impl SpriteDraw {
         }
     }
 
-    /// 设置层。
+    /// Sets the layer.
     pub fn with_layer(mut self, layer: i32) -> Self {
         self.layer = layer;
         self
     }
 
-    /// 设置颜色。
+    /// Sets the color.
     pub fn with_color(mut self, color: [f32; 4]) -> Self {
         self.color = color;
         self
     }
 
-    /// 水平翻转。
+    /// Horizontal flip.
     pub fn with_flip_x(mut self, flip: bool) -> Self {
         self.flip_x = flip;
         self
     }
 
-    /// 绕 `position` 旋转（弧度；屏幕坐标 y 向下，正值顺时针）。
+    /// Rotates about `position` (radians; screen coordinates have y down, so positive is clockwise).
     pub fn with_rotation(mut self, rotation: f32) -> Self {
         self.rotation = rotation;
         self
     }
 }
 
-/// 批处理错误。
+/// Batch error.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BatchError {
     #[error("batch is full: capacity {capacity}, tried to push {attempted}")]
@@ -92,40 +93,40 @@ pub enum BatchError {
     NotBegun,
 }
 
-/// 相同纹理的连续区段。
+/// A run of consecutive draws sharing one texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchRange {
-    /// 纹理组。
+    /// Texture group.
     pub atlas: u32,
-    /// `draws` 中的起始下标。
+    /// Start index into `draws`.
     pub start: usize,
-    /// 元素个数。
+    /// Number of elements.
     pub len: usize,
 }
 
-/// 展开后的顶点（供 wgpu 顶点缓冲使用）。
+/// An expanded vertex (for the wgpu vertex buffer).
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct SpriteVertex {
-    /// 归一化设备坐标。
+    /// Normalized device coordinates.
     pub position: [f32; 2],
-    /// 纹理坐标。
+    /// Texture coordinates.
     pub uv: [f32; 2],
-    /// 顶点色。
+    /// Vertex color.
     pub color: [f32; 4],
 }
 
-/// Sprite 批处理缓冲。
+/// Sprite batch buffer.
 #[derive(Debug)]
 pub struct SpriteBatch {
     draws: Vec<SpriteDraw>,
     capacity: usize,
     begun: bool,
-    /// 排序后是否仍需要重新排序。
+    /// Whether the sorted order is stale and must be re-sorted.
     dirty: bool,
 }
 
-/// 默认容量（够一屏 320x180 下铺满 8x8 tile + 实体）。
+/// Default capacity (enough for a full 320x180 screen of 8x8 tiles plus entities).
 pub const DEFAULT_CAPACITY: usize = 16_384;
 
 impl Default for SpriteBatch {
@@ -135,7 +136,7 @@ impl Default for SpriteBatch {
 }
 
 impl SpriteBatch {
-    /// 指定容量。
+    /// Creates a batch with the given capacity.
     pub fn new(capacity: usize) -> Self {
         SpriteBatch {
             draws: Vec::with_capacity(capacity),
@@ -145,14 +146,14 @@ impl SpriteBatch {
         }
     }
 
-    /// 开始新一帧（清空）。
+    /// Begins a new frame (clears the batch).
     pub fn begin(&mut self) {
         self.draws.clear();
         self.begun = true;
         self.dirty = false;
     }
 
-    /// 加入一个绘制请求。
+    /// Adds one draw request.
     pub fn push(&mut self, draw: SpriteDraw) -> Result<(), BatchError> {
         if !self.begun {
             return Err(BatchError::NotBegun);
@@ -168,36 +169,36 @@ impl SpriteBatch {
         Ok(())
     }
 
-    /// 绘制项数量。
+    /// Number of draw items.
     pub fn len(&self) -> usize {
         self.draws.len()
     }
 
-    /// 是否为空。
+    /// Whether the batch is empty.
     pub fn is_empty(&self) -> bool {
         self.draws.is_empty()
     }
 
-    /// 只读访问。
+    /// Read-only access.
     pub fn draws(&self) -> &[SpriteDraw] {
         &self.draws
     }
 
-    /// 按 `(layer, atlas)` 排序，把同层同纹理的绘制项聚到一起。
+    /// Sorts by `(layer, atlas)`, clustering draws with the same layer and texture.
     ///
-    /// 排序是**稳定**的：同层同纹理内保持提交顺序（决定遮挡）。
+    /// The sort is **stable**: within the same layer and texture, submission order is preserved (which determines occlusion).
     pub fn sort(&mut self) {
         if !self.dirty {
             return;
         }
-        // 稳定排序保持同 key 的提交顺序。
+        // A stable sort preserves submission order among equal keys.
         self.draws.sort_by_key(|d| (d.layer, d.atlas));
         self.dirty = false;
     }
 
-    /// 相同纹理的连续区段（每段一次 draw call）。
+    /// Runs of the same texture (one draw call per run).
     ///
-    /// 调用前应先 [`SpriteBatch::sort`]。
+    /// Call [`SpriteBatch::sort`] first.
     pub fn ranges(&self) -> Vec<BatchRange> {
         let mut out: Vec<BatchRange> = Vec::new();
         let mut i = 0usize;
@@ -216,9 +217,9 @@ impl SpriteBatch {
         out
     }
 
-    /// 展开为顶点数组（每 sprite 两个三角形 = 6 个顶点）。
+    /// Expands to a vertex array (two triangles = 6 vertices per sprite).
     ///
-    /// 调用前应先 [`SpriteBatch::sort`]。
+    /// Call [`SpriteBatch::sort`] first.
     pub fn vertices(&self, camera: &Camera, viewport: (u32, u32)) -> Vec<SpriteVertex> {
         let mut out = Vec::with_capacity(self.draws.len() * 6);
 
@@ -233,7 +234,7 @@ impl SpriteBatch {
                 let (px, py) = camera.world_to_ndc(d.position, viewport);
                 let (sx, sy) = camera.world_size_to_ndc(d.size, viewport);
 
-                // NDC 的 y 向上，因此"顶部"是 py，底部是 py - sy。
+                // NDC has y up, so the "top" is py and the bottom is py - sy.
                 let left = px;
                 let right = px + sx;
                 let top = py;
@@ -262,9 +263,10 @@ impl SpriteBatch {
                     },
                 ]
             } else {
-                // 旋转：先在世界坐标（y 向下，顺时针为正）里绕左上角转
-                // 四个角，再各自投影到 NDC —— 相机只做均匀缩放，旋转角
-                // 不受纵横比影响。
+                // Rotation: first rotate the four corners about the top-left corner
+                // in world coordinates (y down, clockwise positive), then project each
+                // one to NDC -- the camera only applies a uniform scale, so the
+                // rotation angle is unaffected by the aspect ratio.
                 let (sin, cos) = d.rotation.sin_cos();
                 let w = d.size.x.to_f32();
                 let h = d.size.y.to_f32();
@@ -288,14 +290,14 @@ impl SpriteBatch {
                 [bl, br, tl, tr]
             };
 
-            // 三角形 1: bl, br, tl ; 三角形 2: tl, br, tr
+            // Triangle 1: bl, br, tl ; triangle 2: tl, br, tr
             out.extend_from_slice(&[bl, br, tl, tl, br, tr]);
         }
 
         out
     }
 
-    /// draw call 数量（= 区段数）。
+    /// Number of draw calls (= number of runs).
     pub fn draw_call_count(&self) -> usize {
         self.ranges().len()
     }
@@ -351,7 +353,7 @@ mod tests {
     fn sort_groups_by_layer_then_atlas() {
         let mut b = SpriteBatch::new(64);
         b.begin();
-        // 故意交错：层 0 纹理 1、层 1 纹理 0、层 0 纹理 0
+        // Deliberately interleaved: layer 0 texture 1, layer 1 texture 0, layer 0 texture 0
         b.push(draw(1, 0)).unwrap();
         b.push(draw(0, 1)).unwrap();
         b.push(draw(0, 0)).unwrap();
@@ -386,7 +388,7 @@ mod tests {
         b.sort();
 
         let ranges = b.ranges();
-        // 排序后：0,0,0,1 → 两段
+        // After sorting: 0,0,0,1 -> two runs
         assert_eq!(
             ranges,
             vec![
@@ -427,8 +429,8 @@ mod tests {
     fn vertices_fill_expected_ndc_quad() {
         let mut b = SpriteBatch::new(8);
         b.begin();
-        // 摄像机居中于原点，基准 320x180：sprite 在 (0,0) 尺寸 8x8
-        // → 屏幕 (160,90)..(168,98) → NDC (0,0)..(0.05,-0.0889)
+        // Camera centered on the origin, base 320x180: a sprite at (0,0) with size 8x8
+        // -> screen (160,90)..(168,98) -> NDC (0,0)..(0.05,-0.0889)
         b.push(draw(0, 0)).unwrap();
         let cam = Camera::new();
         let v = b.vertices(&cam, (320, 180));
@@ -451,7 +453,7 @@ mod tests {
         b.push(draw(0, 0).with_flip_x(true)).unwrap();
         let cam = Camera::new();
         let v = b.vertices(&cam, (320, 180));
-        // 左下角应该拿到 uv_max.x
+        // The bottom-left corner should get uv_max.x
         assert!((v[0].uv[0] - 0.1).abs() < 1e-6, "uv u0={}", v[0].uv[0]);
     }
 
@@ -459,8 +461,8 @@ mod tests {
     fn rotation_turns_the_quad_around_its_anchor() {
         let mut b = SpriteBatch::new(8);
         b.begin();
-        // 10x1 的横条绕左上角转 90°（屏幕 y 向下 → 正角顺时针）：
-        // 本该向右 10px 的边现在应当竖直向下。
+        // A 10x1 bar rotated 90 deg about its top-left corner (screen y down -> positive angle is clockwise):
+        // the edge that should point 10px right must now point straight down.
         b.push(
             SpriteDraw::new(
                 0,
@@ -473,9 +475,9 @@ mod tests {
         .unwrap();
         let cam = Camera::new();
         let v = b.vertices(&cam, (320, 180));
-        let tl = v[2]; // 顶点顺序 bl,br,tl,tl,br,tr
+        let tl = v[2]; // Vertex order: bl,br,tl,tl,br,tr
         let tr = v[5];
-        // 竖直向下 → NDC 中 x 不变、y 变小（NDC y 向上）。
+        // Straight down -> in NDC x stays the same and y decreases (NDC y is up).
         assert!(
             (tr.position[0] - tl.position[0]).abs() < 1e-5,
             "rotated tip must stay on the anchor's vertical, got {} vs {}",
@@ -484,11 +486,11 @@ mod tests {
         );
         assert!(
             tr.position[1] < tl.position[1],
-            "90° CW must point down in NDC, tip y={} anchor y={}",
+            "90 deg CW must point down in NDC, tip y={} anchor y={}",
             tr.position[1],
             tl.position[1]
         );
-        // uv 仍然按角分配（白 texel / 纹理采样靠它）。
+        // uv is still assigned per corner (the white texel / texture sampling relies on it).
         assert_eq!(tl.uv, [0.0, 0.0]);
         assert_eq!(tr.uv, [1.0, 0.0]);
         assert_eq!(v[0].uv, [0.0, 1.0]); // bl
@@ -499,7 +501,7 @@ mod tests {
     fn draw_call_count_drops_after_sort() {
         let mut b = SpriteBatch::new(64);
         b.begin();
-        // 交错 4 个纹理两次 → 未排序 8 段
+        // Interleave 4 textures twice -> 8 runs before sorting
         for _ in 0..2 {
             for atlas in 0..4 {
                 b.push(draw(atlas, 0)).unwrap();

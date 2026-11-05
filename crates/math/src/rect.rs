@@ -1,11 +1,11 @@
-//! 轴对齐矩形。
+//! Axis-aligned rectangle.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use super::{Fx, Vec2};
 
-/// 定点轴对齐矩形。
+/// Fixed-point axis-aligned rectangle.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Rect {
     pub min: Vec2,
@@ -13,18 +13,18 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// 零矩形。
+    /// Zero rectangle.
     pub const ZERO: Rect = Rect {
         min: Vec2::ZERO,
         max: Vec2::ZERO,
     };
 
-    /// 构造。
+    /// Construct.
     pub const fn new(min: Vec2, max: Vec2) -> Self {
         Rect { min, max }
     }
 
-    /// 从原点 + 尺寸构造。
+    /// Construct from origin + size.
     pub fn from_origin_size(origin: Vec2, size: Vec2) -> Self {
         Rect {
             min: origin,
@@ -32,22 +32,22 @@ impl Rect {
         }
     }
 
-    /// 宽度。
+    /// Width.
     pub fn width(self) -> Fx {
         (self.max.x - self.min.x).abs()
     }
 
-    /// 高度。
+    /// Height.
     pub fn height(self) -> Fx {
         (self.max.y - self.min.y).abs()
     }
 
-    /// 尺寸。
+    /// Size.
     pub fn size(self) -> Vec2 {
         Vec2::new(self.width(), self.height())
     }
 
-    /// 是否包含点。
+    /// Whether the rectangle contains a point.
     pub fn contains(self, point: Vec2) -> bool {
         point.x >= self.min.x
             && point.x <= self.max.x
@@ -55,7 +55,7 @@ impl Rect {
             && point.y <= self.max.y
     }
 
-    /// 是否与另一矩形重叠。
+    /// Whether the rectangle overlaps another.
     pub fn overlaps(self, other: Rect) -> bool {
         self.min.x <= other.max.x
             && self.max.x >= other.min.x
@@ -63,7 +63,7 @@ impl Rect {
             && self.max.y >= other.min.y
     }
 
-    /// 并集。
+    /// Union.
     pub fn union(self, other: Rect) -> Rect {
         Rect {
             min: self.min.component_min(other.min),
@@ -71,7 +71,7 @@ impl Rect {
         }
     }
 
-    /// 膨胀（各边加上相同值）。
+    /// Inflate (add the same value to each side).
     pub fn inflate(self, amount: Fx) -> Rect {
         let inflate_vec = Vec2::new(amount, amount);
         Rect {

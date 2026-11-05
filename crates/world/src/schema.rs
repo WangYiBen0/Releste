@@ -1,32 +1,33 @@
-//! Schema：属性类型与值。
+//! Schema: property types and values.
 //!
-//! 用于编辑器自动生成面板以及实体属性序列化。
+//! Used by the editor to auto-generate panels and to serialize entity
+//! properties.
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-/// 字段类型。
+/// Field type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FieldType {
-    /// 定点数（内部 Fx，编辑器用 f32 交互）。
+    /// Fixed-point number (stored as Fx, the editor interacts with it as f32).
     Float,
-    /// 整数。
+    /// Integer.
     Int,
-    /// 字符串。
+    /// String.
     String,
-    /// 布尔。
+    /// Boolean.
     Bool,
-    /// 枚举（有限字符串集合）。
+    /// Enum (a finite set of strings).
     Enum(Vec<Cow<'static, str>>),
-    /// 颜色（RGBA，编辑器中展示拾色器）。
+    /// Color (RGBA, shown as a color picker in the editor).
     Color,
-    /// 实体引用（EntityId）。
+    /// Entity reference (EntityId).
     EntityRef,
-    /// 向量（Vec2）。
+    /// Vector (Vec2).
     Vec2,
 }
 
-/// 字段值。
+/// Field value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FieldValue {
     Float(f32),
@@ -39,24 +40,24 @@ pub enum FieldValue {
     Vec2 { x: f32, y: f32 },
 }
 
-/// 实体的 Schema 定义。
+/// Schema definition for an entity.
 ///
-/// 描述实体有哪些可编辑属性及类型。
+/// Describes which editable properties an entity has and their types.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     pub fields: Vec<SchemaField>,
 }
 
-/// 单个 Schema 字段。
+/// A single Schema field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SchemaField {
-    /// 属性名（如 `"collidable"`）。
+    /// Property name (such as `"collidable"`).
     pub name: Cow<'static, str>,
-    /// 属性类型。
+    /// Property type.
     pub field_type: FieldType,
-    /// 默认值。
+    /// Default value.
     pub default: FieldValue,
-    /// 编辑器提示。
+    /// Editor tooltip.
     pub tooltip: Option<Cow<'static, str>>,
 }
 
@@ -65,7 +66,7 @@ impl Schema {
         Schema { fields }
     }
 
-    /// 查找字段。
+    /// Find a field.
     pub fn find(&self, name: &str) -> Option<&SchemaField> {
         self.fields.iter().find(|f| f.name == name)
     }

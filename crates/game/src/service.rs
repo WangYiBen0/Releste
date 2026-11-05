@@ -1,7 +1,7 @@
-//! 游戏 service：固定步长推进玩家 + 插件，渲染步把快照喂给 wgpu。
+//! Game service: fixed-step advance of the player + plugins; the render step feeds snapshots to wgpu.
 //!
-//! 它是窗口宿主与 [`releste_kernel`] 之间的唯一桥梁（AGENTS.md §4.1：
-//! kernel 只认识 `Service`）。地图是数据，改地图不重启（§4.3）。
+//! It is the only bridge between the window host and [`releste_kernel`] (AGENTS.md 4.1:
+//! the kernel only knows `Service`). Maps are data, editing a map does not restart (4.3).
 
 use std::time::Instant;
 
@@ -16,35 +16,35 @@ use crate::paths::Paths;
 use crate::player::{Input, Player, PLAYER_H, PLAYER_H_PX, PLAYER_W, PLAYER_W_PX};
 use crate::session::Session;
 
-/// `FileWatcher` 的防抖窗口，ROADMAP 第 10 步：100ms。
+/// Debounce window for `FileWatcher`, ROADMAP step 10: 100ms.
 const WATCH_DEBOUNCE_MS: u64 = 100;
-/// 相机跟随系数（每 tick 追目标的 1/4）。
-/// 原版相机跟随系数（`Player.Update` 120137-120145）：
-/// `pos += (target - pos) * (1 - 0.01^dt)`；dt = 1/60 时系数 ≈ 0.0739，
-/// 取 19/256 = 0.0742（Fx 1/256 步长内最接近的有理数）。
+/// Camera follow coefficient (chases 1/4 of the target each tick).
+/// Vanilla camera follow coefficient (`Player.Update` 120137-120145):
+/// `pos += (target - pos) * (1 - 0.01^dt)`; with dt = 1/60 the coefficient is ~0.0739,
+/// taking 19/256 = 0.0742 (the closest rational within the Fx 1/256 step).
 const CAMERA_LERP: Fx = Fx::from_ratio(19, 256);
 
-/// 房间转场时长 0.65s = 39 tick（`Level.NextTransitionDuration`，
-/// pureCeleste.cs:113847，Reset 115428）。
+/// Room transition duration 0.65s = 39 ticks (`Level.NextTransitionDuration`,
+/// pureCeleste.cs:113847, Reset 115428).
 const TRANSITION_TICKS: u32 = 39;
 
-/// 进行中的房间转场（原版 `Level.transition` 协程的显式状态版）。
+/// In-progress room transition (an explicit state version of the vanilla `Level.transition` coroutine).
 #[derive(Debug, Clone, Copy)]
 struct RoomTransition {
-    /// 玩家 hitbox 左上角的滑动终点（原版 `playerTo`）。
+    /// Glide endpoint for the player hitbox top-left (vanilla `playerTo`).
     player_to: Vec2,
-    /// 相机起点（视口中心，原版 `cameraFrom`）。
+    /// Camera start point (viewport center, vanilla `cameraFrom`).
     camera_from: Vec2,
-    /// 相机终点（新房间里钳制后的目标，原版 `cameraTo`）。
+    /// Camera end point (the clamped target in the new room, vanilla `cameraTo`).
     camera_to: Vec2,
-    /// 已进行的 tick（原版 `cameraAt`，按 dt/0.65 逼近 1）。
+    /// Ticks elapsed (vanilla `cameraAt`, approaches 1 by dt/0.65).
     ticks: u32,
 }
 
-/// 插件启动：扫描并加载 `plugins/` 下的每个插件。
+/// Plugin boot: scan and load every plugin under `plugins/`.
 ///
-/// 任何失败都只 `warn`，游戏照常跑（ROADMAP 3.6：`rm -rf plugins/`
-/// 必须能启动）。目录不存在由 `scan` 自己告警。
+/// Any failure only `warn`s and the game keeps running (ROADMAP 3.6: `rm -rf plugins/`
+/// must still start). A missing directory is warned about by `scan` itself.
 pub fn boot_plugins(paths: &Paths) -> Option<PluginHost> {
     let mut host = PluginHost::new(paths.plugins());
     match host.scan() {
@@ -70,7 +70,7 @@ pub fn boot_plugins(paths: &Paths) -> Option<PluginHost> {
     Some(host)
 }
 
-/// 打开 `.map` 监听器。失败只是没有热重载，不是致命错误。
+/// Open the `.map` watcher. Failure just means no hot reload, not a fatal error.
 pub fn watch_maps(paths: &Paths) -> Option<FileWatcher> {
     match FileWatcher::new(paths.watch_dir(), WATCH_DEBOUNCE_MS) {
         Ok(w) => {
@@ -84,57 +84,57 @@ pub fn watch_maps(paths: &Paths) -> Option<FileWatcher> {
     }
 }
 
-/// 游戏主 service。
+/// The main game service.
 pub struct GameService {
-    /// 当前地图 + 图集。
+    /// Current map + atlas.
     pub session: Session,
-    /// 玩家状态（热重载必须保留，§4.3）。
+    /// Player state (hot reload must preserve it, 4.3).
     pub player: Player,
-    /// 本 tick 的输入。
+    /// Input for this tick.
     pub input: Input,
-    /// 暂停（Esc 菜单）。
+    /// Paused (Esc menu).
     pub paused: bool,
-    /// 相机（渲染时按插值取 `prev` → `cur`）。
+    /// Camera (at render time interpolate from `prev` -> `cur`).
     camera: Camera,
     prev_camera: Camera,
     host: Option<PluginHost>,
     watcher: Option<FileWatcher>,
     static_draws: Vec<SpriteDraw>,
-    /// 转场期间保留下来的**上一个房间**静态批次（原版转场结束时才
-    /// `UnloadEntities` 旧房间实体，115415/115432 —— 切屏动画进行中，
-    /// 旧房间的瓦片/实体必须继续渲染，不能提前变成虚无）。
+    /// The **previous room** static batch kept during a transition (vanilla calls
+    /// `UnloadEntities` on the old-room entities only when the transition ends, 115415/115432 -- while the
+    /// screen transition is running the old room's tiles/entities must keep rendering, they must not vanish early).
     transition_statics: Option<Vec<SpriteDraw>>,
     static_dirty: bool,
-    /// 静态批次当前对应的房间（切房即重建 —— 原版一次只画一个房间）。
+    /// Room the static batch currently corresponds to (rebuild on room change -- vanilla draws only one room at a time).
     built_room: String,
-    /// 当前房间（原版 `Session.Level` 语义：转场开始时即切到新房间，
-    /// 相机钳制、房间过滤、EnforceBounds 都以它为准）。
+    /// Current room (vanilla `Session.Level` semantics: it switches to the new room as the transition starts,
+    /// and camera clamping, room filtering and EnforceBounds all follow it).
     current_room: String,
-    /// 进行中的房间转场；`Some` 时实体冻结，只有玩家滑动与相机平移
-    /// （原版 `Level.Update` 的 Transitioning 分支，115659-115668）。
+    /// In-progress room transition; while `Some`, entities are frozen and only the player glide and camera pan run
+    /// (vanilla `Level.Update`'s Transitioning branch, 115659-115668).
     transition: Option<RoomTransition>,
     overflow_warned: bool,
     reloads: u64,
-    /// 上次报告过的房间名（`-v` 下房间切换只在这变化时打一行）。
+    /// Last reported room name (under `-v` a room switch logs a line only when this changes).
     reported_room: String,
 }
 
 impl GameService {
-    /// 建服务。`gpu` 为 `None`（headless）时不建静态批次。
+    /// Build the service. With `gpu` as `None` (headless) no static batch is built.
     pub fn new(
         session: Session,
         host: Option<PluginHost>,
         watcher: Option<FileWatcher>,
         gpu: Option<&GpuRenderer>,
     ) -> Self {
-        // 原版：`new Player(Session.RespawnPoint.Value, ...)`（115105），
-        // Position = 出生锚点 = hitbox 底中心；我们的 Player 存 hitbox
-        // 左上角 → 左上角 = 锚点 − (W/2, H)（hitbox 8×11，offset (-4,-11)，
-        // 118856）。
+        // Vanilla: `new Player(Session.RespawnPoint.Value, ...)` (115105),
+        // Position = spawn anchor = hitbox bottom-center; our Player stores the hitbox
+        // top-left -> top-left = anchor - (W/2, H) (hitbox 8x11, offset (-4,-11),
+        // 118856).
         let player = Player::new(session.spawn - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H));
         let spawn_room = session.spawn_room.clone();
         let current_room = spawn_room.clone();
-        // 相机初始落位即按原版钳制（见 `update_camera`）。
+        // The initial camera placement is already clamped per vanilla (see `update_camera`).
         let anchor = player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
 
         let (session, static_draws, built_room) = match gpu {
@@ -152,7 +152,7 @@ impl GameService {
             }
             None => (session, Vec::new(), spawn_room.clone()),
         };
-        // 相机钳进出生房间（原版：相机永远在房间界内）。
+        // Clamp the camera into the spawn room (vanilla: the camera is always inside the room bounds).
         let camera = Camera::at(Self::vanilla_camera_center(&session, anchor, &spawn_room));
 
         GameService {
@@ -176,22 +176,22 @@ impl GameService {
         }
     }
 
-    /// 原版相机中心：`Player.CameraTarget` 是 `Position + (-160,-90)` 的
-    /// 相机**中心**钳进 `[Left+160, Right-160] × [Top+90, Bottom-90]`
-    /// （等价于原版把相机左上角钳进 `[Left, Top, Right-320, Bottom-180]`
-    /// 再加回半屏，`pureCeleste.cs:119108-119111`）。
+    /// Vanilla camera center: `Player.CameraTarget` is the camera **center** of `Position + (-160,-90)`
+    /// clamped into `[Left+160, Right-160] x [Top+90, Bottom-90]`
+    /// (equivalent to vanilla clamping the camera top-left into `[Left, Top, Right-320, Bottom-180]`
+    /// and adding half a screen back, `pureCeleste.cs:119108-119111`).
     ///
-    /// 钳制取 XNA `MathHelper.Clamp(v, min, max)` 的逐值语义 —— max <
-    /// min（房间窄/矮于视图）时**不**取中心：值偏左给 min，偏右给 max。
+    /// The clamp uses XNA `MathHelper.Clamp(v, min, max)` per-value semantics -- when max <
+    /// min (room narrower/shorter than the view), the center is **not** used: a value left of center gives min, right gives max.
     ///
-    /// `anchor` 是玩家的**底中心**（原版 Position 语义），`room_name`
-    /// 是目标房间。引擎 `Camera.position` 即视口中心。
+    /// `anchor` is the player's **bottom-center** (vanilla Position semantics), `room_name`
+    /// is the target room. The engine `Camera.position` is the viewport center.
     fn vanilla_camera_center(session: &Session, anchor: Vec2, room_name: &str) -> Vec2 {
         let Some(room) = session.doc.rooms.iter().find(|r| r.name == room_name) else {
             return anchor;
         };
         let b = &room.bounds;
-        // XNA `MathHelper.Clamp`：先查下界再查上界（max < min 时按值落边）。
+        // XNA `MathHelper.Clamp`: check the lower bound first, then the upper (when max < min the value lands on a side).
         let clamp_axis = |v: Fx, lo: f32, size: f32, view: f32| -> Fx {
             let min = Fx::from_f32(lo + view * 0.5);
             let max = Fx::from_f32(lo + size - view * 0.5);
@@ -209,36 +209,36 @@ impl GameService {
         )
     }
 
-    /// 热重载累计次数。
+    /// Total hot reloads.
     pub fn reloads(&self) -> u64 {
         self.reloads
     }
 
-    /// 静态批次里画了多少个精灵。
+    /// How many sprites are drawn in the static batch.
     pub fn static_draw_count(&self) -> usize {
         self.static_draws.len()
     }
 
-    /// 当前房间名。
+    /// Current room name.
     pub fn room_name(&self) -> &str {
         &self.current_room
     }
 
-    /// 已加载的插件数。
+    /// Number of loaded plugins.
     pub fn plugin_count(&self) -> usize {
         self.host.as_ref().map(|h| h.loaded().count()).unwrap_or(0)
     }
 
-    /// 渲染步：（重）建静态批次、填满 `batch`、排序。
+    /// Render step: (re)build the static batch, fill `batch`, sort.
     ///
-    /// `alpha` ∈ [0, 1] 是上个 tick 到这个 tick 的插值进度，玩家位置按
-    /// 它取 `prev_pos` → `pos` 的线性插值，避免 60Hz 模拟在 144Hz 屏幕上抖动。
+    /// `alpha` in [0, 1] is the interpolation progress from the previous tick to this one; the player position is
+    /// linearly interpolated `prev_pos` -> `pos` from it, avoiding 60Hz simulation jitter on a 144Hz screen.
     pub fn render(&mut self, gpu: &mut GpuRenderer, alpha: f32, batch: &mut SpriteBatch) {
-        // 清屏色来自地图样式（`<Style color=...>` → `MapStyle::background_color`）。
+        // The clear color comes from the map style (`<Style color=...>` -> `MapStyle::background_color`).
         gpu.set_clear_color(self.session.clear_color());
 
-        // 原版一次只画一个房间：转场开始（`Session.Level` 已切到新房间）
-        // 或热重载时，以当前房间重建静态批次。
+        // Vanilla draws only one room at a time: when a transition starts (`Session.Level` already switched to the new room)
+        // or on hot reload, the static batch is rebuilt from the current room.
         let room_name = self.current_room.clone();
         if self.static_dirty || self.built_room != room_name {
             let idx = self
@@ -280,8 +280,8 @@ impl GameService {
                 break;
             }
         }
-        // 视差背景/前景依赖相机位置，每帧按插值相机重建
-        // （`Parallax.Render`，`pureCeleste.cs:112163-112236`）。
+        // Parallax backgrounds/foregrounds depend on the camera position and are rebuilt each frame from the interpolated camera
+        // (`Parallax.Render`, `pureCeleste.cs:112163-112236`).
         for draw in self.session.backdrop_draws(gpu, self.camera_pos(alpha)) {
             if batch.push(draw).is_err() && !self.overflow_warned {
                 self.overflow_warned = true;
@@ -297,7 +297,7 @@ impl GameService {
         batch.sort();
     }
 
-    /// 玩家本帧的 draw（头发 + 身体，位置按 alpha 插值）。
+    /// This frame's player draws (hair + body, position interpolated by alpha).
     fn player_draws(&self, gpu: &GpuRenderer, alpha: f32) -> Vec<SpriteDraw> {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
         let pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
@@ -313,20 +313,20 @@ impl GameService {
         )
     }
 
-    /// 插值后的相机位置（视口**中心**）。
+    /// Interpolated camera position (viewport **center**).
     fn camera_pos(&self, alpha: f32) -> Vec2 {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
         self.prev_camera.position + (self.camera.position - self.prev_camera.position) * a
     }
 
-    /// 插值后的相机（供渲染使用）。
+    /// Interpolated camera (for rendering).
     pub fn render_camera(&self, alpha: f32) -> Camera {
         Camera::at(self.camera_pos(alpha))
     }
 
-    /// 轮询 `.map` 变更；成功则换掉文档、重建静态批次。
+    /// Poll for `.map` changes; on success swap the document and rebuild the static batch.
     ///
-    /// 玩家位置/速度/朝向**不重置**（AGENTS.md §4.3）。
+    /// Player position/velocity/facing are **not reset** (AGENTS.md 4.3).
     fn poll_reload(&mut self) {
         let Some(watcher) = self.watcher.as_mut() else {
             return;
@@ -360,8 +360,8 @@ impl GameService {
             "map reloaded"
         );
 
-        // `room_at` 接收 hitbox 左上角（它内部取中心）；这里再用同一
-        // 中心做 contains 判断，保证"回落 + 告警"判定的是同一个点。
+        // `room_at` takes the hitbox top-left (it derives the center internally); here the same
+        // center is used for the contains check, ensuring the "fall back + warn" decision uses the same point.
         let room = self.session.room_at(self.player.pos);
         let centre = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H * 0.5);
         if !room.bounds.to_rect().contains(centre) {
@@ -372,38 +372,38 @@ impl GameService {
         }
     }
 
-    /// 一个模拟 tick：转场中只推进协程；否则物理 → 相机 → 转场判定 →
-    /// backdrop 可见性刷新。
+    /// One simulation tick: during a transition only advance the coroutine; otherwise physics -> camera -> transition check ->
+    /// backdrop visibility refresh.
     fn simulate_tick(&mut self) {
-        // 原版 `Celeste.Freeze(0.05f)`（冲刺起手，122540）：整场景停帧
-        // 0.05s = 3 tick（`Engine.FreezeTimer`，期间 Update 不跑）。
+        // Vanilla `Celeste.Freeze(0.05f)` (dash startup, 122540): the whole scene freezes for
+        // 0.05s = 3 ticks (`Engine.FreezeTimer`, Update does not run meanwhile).
         if self.player.freeze_ticks > 0 {
             self.player.freeze_ticks -= 1;
             return;
         }
-        // 转场期间实体冻结（原版 `Level.Update` 的 Transitioning 分支，
-        // 115659-115668 只跑转场协程），只有玩家滑动与相机平移。
+        // Entities are frozen during a transition (vanilla `Level.Update`'s Transitioning branch,
+        // 115659-115668 runs only the transition coroutine), only the player glide and camera pan run.
         if self.transition.is_some() {
             self.advance_transition();
         } else {
             self.player.update(&self.input, &self.session);
-            // UpdateSprite + Sprite.Update（120068/119824：每帧动画推进）。
+            // UpdateSprite + Sprite.Update (120068/119824: per-frame animation advance).
             self.player
                 .update_visuals(&self.session.anims, &self.input, &self.session.doc.rooms);
             self.update_camera();
-            // EnforceBounds：转场触发/边界钳制，在物理之后（120168）。
+            // EnforceBounds: transition triggering/bounds clamping, after physics (120168).
             self.check_room_transition();
         }
 
-        // backdrop 可见性每 tick 刷新（原版 `Backdrop.Update` 的节奏，
-        // 109468-109489）；房间过滤用当前房间名（`Session.Level` 语义），
-        // 转场期间按 InstantIn/InstantOut 规则保留或点亮。
+        // Backdrop visibility refreshes every tick (the cadence of vanilla `Backdrop.Update`,
+        // 109468-109489); room filtering uses the current room name (`Session.Level` semantics),
+        // and during a transition it is kept or lit per the InstantIn/InstantOut rules.
         let transitioning = self.transition.is_some();
         let room = self.current_room.clone();
         self.session
             .update_backdrop_visibility(&room, transitioning);
 
-        // 房间身份变化：`-v` 以上打一行，供排查"玩家到底站在哪个房间"。
+        // Room identity changed: at `-v` and above log a line to debug "which room the player is actually standing in".
         if room != self.reported_room {
             debug!(
                 from = %self.reported_room,
@@ -416,10 +416,10 @@ impl GameService {
         }
     }
 
-    /// 常规 tick 的相机跟随（原版 `Player.Update` 120133-120146）：
-    /// 目标 = 玩家锚点在当前房间内钳制后的位置，指数逼近。
+    /// Regular-tick camera follow (vanilla `Player.Update` 120133-120146):
+    /// Target = the player anchor clamped inside the current room, approached exponentially.
     fn update_camera(&mut self) {
-        // 玩家锚点 = hitbox 底中心（原版 Position 语义）。
+        // Player anchor = hitbox bottom-center (vanilla Position semantics).
         let anchor = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         let target = Self::vanilla_camera_center(&self.session, anchor, &self.current_room);
         self.prev_camera = self.camera;
@@ -427,11 +427,11 @@ impl GameService {
         self.camera.position += delta * CAMERA_LERP;
     }
 
-    /// 原版 `Level.EnforceBounds`（pureCeleste.cs:116517-116607）的转场
-    /// 触发与边界钳制。玩家 hitbox 越过当前房间边界且探针点落在另一间
-    /// 房里 → 开转场；否则按原版钳位（左右硬夹、上 24px 余量）。
+    /// Transition triggering and bounds clamping from vanilla `Level.EnforceBounds`
+    /// (pureCeleste.cs:116517-116607). When the player hitbox crosses the current room bounds and the probe point lands in another
+    /// room -> start a transition; otherwise clamp per vanilla (hard clamp left/right, 24px margin on top).
     ///
-    /// 两侧同时越界时按原版 if/else 优先级只触发一个：左 → 右 → 上 → 下。
+    /// When both sides are out of bounds at once only one triggers, per the vanilla if/else priority: left -> right -> top -> bottom.
     fn check_room_transition(&mut self) {
         let Some(room) = self
             .session
@@ -456,7 +456,7 @@ impl GameService {
             match self.room_at_point(probe) {
                 Some(next) => self.start_transition(next, (-1.0, 0.0)),
                 None => {
-                    // 原版钳位：player.Left = bounds.Left
+                    // Vanilla clamp: player.Left = bounds.Left
                     self.player.pos.x = Fx::from_f32(left);
                     self.player.vel.x = Fx::zero();
                 }
@@ -472,8 +472,8 @@ impl GameService {
             }
         }
 
-        // 上：中心越过房间顶边（119560-119577）；没有目标房间时钳到
-        // 顶上 24px（允许探头看上面）。
+        // Top: the center crosses the room top edge (119560-119577); with no target room clamp to
+        // 24px above the top (letting the player peek upward).
         if center.y.to_f32() < top {
             let probe = center + Vec2::from_f32s(0.0, -12.0);
             match self.room_at_point(probe) {
@@ -488,8 +488,8 @@ impl GameService {
                 }
             }
         } else if p_bottom > bottom {
-            // 下：脚下 4px 无实体才转场（116589-116598）；原版底部越界
-            // 未转场即死亡（116599-116606），死亡尚未实现，沿用世界夹取。
+            // Bottom: transition only when nothing solid is 4px below the feet (116589-116598); vanilla dies when
+            // out of bounds at the bottom without a transition (116599-116606); death is not implemented yet, so world clamping is kept.
             let probe = center + Vec2::from_f32s(0.0, 12.0);
             let grounded_below =
                 self.player
@@ -504,7 +504,7 @@ impl GameService {
         }
     }
 
-    /// 点所在的房间（原版 `MapData.GetAt`；无回落）。
+    /// The room a point is in (vanilla `MapData.GetAt`; no fallback).
     fn room_at_point(&self, point: Vec2) -> Option<String> {
         self.session
             .doc
@@ -514,9 +514,9 @@ impl GameService {
             .map(|r| r.name.clone())
     }
 
-    /// 开转场（原版 `Level.TransitionRoutine` 115282-115423 的准备段）：
-    /// `Session.Level` 立即切到新房间（世界/静态批次随后以新房间重建），
-    /// 算出玩家滑动终点与相机起终点。
+    /// Start a transition (the preparation part of vanilla `Level.TransitionRoutine` 115282-115423):
+    /// `Session.Level` switches to the new room immediately (the world/static batch is then rebuilt from the new room),
+    /// and the player glide endpoint and camera start/end points are computed.
     fn start_transition(&mut self, next_room: String, direction: (f32, f32)) {
         let Some(next) = self
             .session
@@ -530,25 +530,25 @@ impl GameService {
         };
         let nb = next.bounds;
         let dir = Vec2::from_f32s(direction.0, direction.1);
-        // dirPad：direction * 4，竖直向下是 * 12（115345-115349）。
+        // dirPad: direction * 4, for straight down it is * 12 (115345-115349).
         let dir_pad = if direction == (0.0, 1.0) {
             dir * Fx::from_int(12)
         } else {
             dir * Fx::from_int(4)
         };
 
-        // playerTo：玩家**底中心**空间（原版 Position 语义）。
+        // playerTo: in the player **bottom-center** space (vanilla Position semantics).
         let (dir_x, _) = direction;
         let mut player_to = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         if dir_x != 0.0 {
-            // 横向转场先把终点从地板里拔出来（115351-115355）。
+            // A horizontal transition first pulls the endpoint out of the floor (115351-115355).
             let nb_bottom = nb.y + nb.h;
             while player_to.y.to_f32() >= nb_bottom {
                 player_to.y -= Fx::one();
             }
         }
-        // 一直沿方向滑动，直到落进新房间（带 dirPad 的内缩判定，
-        // `IsInBounds(Vector2, Vector2)` 116641-116657）。
+        // Keep gliding along the direction until it lands in the new room (the padded check with dirPad,
+        // `IsInBounds(Vector2, Vector2)` 116641-116657).
         let mut guard = 0u32;
         while !Self::in_bounds_padded(player_to, dir_pad, &nb) {
             player_to += dir;
@@ -570,11 +570,11 @@ impl GameService {
             to = %next_room,
             "room transition"
         );
-        // 原版转场结束时才卸载旧房间的实体（`UnloadEntities(toRemove)`，
-        // 115415；`UnloadEntities` 115432）—— 动画进行中旧房间照常渲染。
+        // Vanilla unloads the old room's entities only when the transition ends (`UnloadEntities(toRemove)`,
+        // 115415; `UnloadEntities` 115432) -- the old room keeps rendering while the animation runs.
         self.transition_statics = Some(std::mem::take(&mut self.static_draws));
         self.current_room = next_room;
-        // hitbox 左上角 = 底中心 − (W/2, H)。
+        // hitbox top-left = bottom-center - (W/2, H).
         let player_to = player_to - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         self.transition = Some(RoomTransition {
             player_to,
@@ -584,8 +584,8 @@ impl GameService {
         });
     }
 
-    /// 原版 `IsInBounds(Vector2, Vector2 dirPad)`（116641-116657）：
-    /// 房间矩形沿 `dirPad` 的正分量内缩后是否包含该点（右/下开区间）。
+    /// Vanilla `IsInBounds(Vector2, Vector2 dirPad)` (116641-116657):
+    /// whether the room rect contains the point after inset by the positive components of `dirPad` (right/bottom open intervals).
     fn in_bounds_padded(p: Vec2, dir_pad: Vec2, b: &releste_map::RectDef) -> bool {
         let zero = Fx::zero();
         let pad_l = dir_pad.x.max(zero);
@@ -597,18 +597,18 @@ impl GameService {
         p.x >= l + pad_l && p.y >= t + pad_t && p.x < r - pad_r && p.y < bot - pad_b
     }
 
-    /// 推进转场（原版 `TransitionRoutine` 的逐帧段 + `Player.TransitionTo`
-    /// 120551-120566）：玩家以 60 px/s 滑向终点（无碰撞，X 先 Y 后），
-    /// 相机以 CubeOut 缓动滑 0.65s，> 0.9 时直接落位。
+    /// Advance a transition (the per-frame part of vanilla `TransitionRoutine` + `Player.TransitionTo`
+    /// 120551-120566): the player glides toward the endpoint at 60 px/s (no collision, X first then Y),
+    /// and the camera eases with CubeOut over 0.65s, snapping directly when > 0.9.
     ///
-    /// 转场期间实体全部冻结（`Level.Update` 的 Transitioning 分支只跑
-    /// 转场协程），输入被忽略 —— 与原版一致。
+    /// All entities freeze during a transition (`Level.Update`'s Transitioning branch runs only
+    /// the transition coroutine) and input is ignored -- matching vanilla.
     fn advance_transition(&mut self) {
         let Some(t) = self.transition.as_mut() else {
             return;
         };
         self.player.prev_pos = self.player.pos;
-        // MoveTowardsX / MoveTowardsY：每轴最多 1 px/tick（60 px/s）。
+        // MoveTowardsX / MoveTowardsY: at most 1 px/tick per axis (60 px/s).
         let glide = |v: &mut Fx, to: Fx| {
             if *v < to {
                 *v = (*v + Fx::one()).min(to);
@@ -620,8 +620,8 @@ impl GameService {
         glide(&mut self.player.pos.y, t.player_to.y);
         let reached = self.player.pos == t.player_to;
 
-        // cameraAt = Approach(cameraAt, 1, dt / 0.65)（115366）。
-        // 缓动是渲染侧表现（AGENTS.md 15.7 允许），用 f32 算完折回 Fx。
+        // cameraAt = Approach(cameraAt, 1, dt / 0.65) (115366).
+        // Easing is a render-side presentation (allowed by AGENTS.md 15.7); compute it in f32 then convert back to Fx.
         t.ticks += 1;
         let at = (t.ticks as f32 / TRANSITION_TICKS as f32).min(1.0);
         let eased = 1.0 - (1.0 - at).powi(3); // Ease.CubeOut
@@ -638,8 +638,8 @@ impl GameService {
             self.player.prev_pos = self.player.pos;
             self.prev_camera = self.camera;
             self.transition = None;
-            // 转场结束：旧房间实体在这里才卸载（此时相机已整体在新房间，
-            // 丢弃旧批次与原版 UnloadEntities 一样是不可见的）。
+            // Transition ends: the old-room entities are unloaded only here (the camera is now entirely in the new room, so
+            // dropping the old batch is invisible, just like vanilla UnloadEntities).
             self.transition_statics = None;
         }
     }
@@ -687,14 +687,14 @@ mod tests {
     use releste_map::{RectDef, Tileset};
     use releste_world::EntityData;
 
-    /// 自足的测试地图：一个房间 + 一个玩家出生点。
+    /// Self-contained test map: one room + one player spawn point.
     ///
-    /// 真实的 `assets/` 被 gitignore（Appendix C 规则 6），nix/CI 的构建
-    /// 源里没有它 —— 测试必须自己造数据，而不是依赖开发树里的转换产物。
+    /// The real `assets/` is gitignored (Appendix C rule 6), and the nix/CI build
+    /// sources do not have it -- tests must build their own data instead of depending on conversion output in the dev tree.
     fn fixture_doc() -> releste_map::MapDocument {
         let mut tiles = Tileset::new("Test", 8, 4);
         for x in 0..8 {
-            tiles.set(x, 3, 1); // 一行地板
+            tiles.set(x, 3, 1); // one row of floor
         }
         let player = EntityData::new("player", releste_world::EntityId::new(1), 16.0, 16.0);
         releste_map::MapDocument {
@@ -719,8 +719,8 @@ mod tests {
         }
     }
 
-    /// 造一个最小资源根：`maps/<地图>` + `assets/atlas/{Test.atlas,tilesets.toml}`。
-    /// 图集零纹理、tileset 零定义 —— `Session::load` 只要求文件能解析。
+    /// Build a minimal resource root: `maps/<map>` + `assets/atlas/{Test.atlas,tilesets.toml}`.
+    /// Atlas with zero textures, tileset with zero definitions -- `Session::load` only requires that the files parse.
     fn fixture_root() -> anyhow::Result<Paths> {
         let root = std::env::temp_dir().join("releste-game-hot-reload");
         let _ = std::fs::remove_dir_all(&root);
@@ -736,10 +736,10 @@ mod tests {
         Ok(Paths::resolve(Some(&root)))
     }
 
-    /// 热重载：改一个瓦片 → 文档换掉、计数 +1、玩家原地不动（§4.3）。
+    /// Hot reload: change one tile -> the document is swapped, the count goes +1, and the player stays put (4.3).
     ///
-    /// 地图与图集全部合成（见 `fixture_root`），debounce 是 100ms，
-    /// 所以写完要等一会儿再 poll。
+    /// The map and atlas are fully synthesized (see `fixture_root`), the debounce is 100ms,
+    /// so after writing we wait a while before polling.
     #[test]
     fn map_hot_reload_swaps_the_doc_and_keeps_the_player() {
         let paths = fixture_root().expect("fixture root");
@@ -751,7 +751,7 @@ mod tests {
         let watcher = watch_maps(&paths).expect("watcher over the maps dir");
         let mut service = GameService::new(session, None, Some(watcher), None);
 
-        // 改一个瓦片并保存 —— 这才是热重载要吃到的真实变更。
+        // Change one tile and save -- this is the real change hot reload must pick up.
         let mut doc = releste_map::load_map(&map_path).expect("reload the fixture");
         let (room, tx, ty) = {
             let room = &mut doc.rooms[0];
@@ -762,9 +762,9 @@ mod tests {
         assert_eq!(before, Some(1), "the edit landed in the doc");
         releste_map::save_map(&doc, &map_path).expect("save the edited map");
 
-        // debounce 从**看到事件**那一刻起算。事件投递是后台线程的事，
-        // 在并行测试负载下可能晚到，所以不能写死"poll 两次"——
-        // 在截止时间内反复 poll，重载发生（且只发生一次）即算过。
+        // The debounce starts from the moment the event is **seen**. Event delivery is the background thread's job
+        // and may arrive late under parallel test load, so we cannot hard-code "poll twice" --
+        // poll repeatedly until the deadline and pass as soon as a reload happens (exactly once).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while service.reloads() == 0 && std::time::Instant::now() < deadline {
             service.poll_reload();
@@ -772,7 +772,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
         }
-        service.poll_reload(); // 收尾：若窗口刚好在两次 poll 之间成熟，再吸一次
+        service.poll_reload(); // Wrap up: if the window ripened right between two polls, absorb it once more
 
         assert_eq!(service.reloads(), 1, "one debounced change = one reload");
         assert_eq!(
@@ -790,12 +790,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(paths.root());
     }
 
-    /// 两间贴边房间（A x[0,320)、B x[320,640)，地板同高）构成的最小
-    /// 转场地图：玩家从 A 朝右走出右缘，必须触发原版转场。
+    /// The minimal transition map of two edge-adjacent rooms (A x[0,320), B x[320,640), same floor height):
+    /// the player walks right off A's right edge and must trigger a vanilla transition.
     fn seam_map() -> releste_map::MapDocument {
         let mut tiles = Tileset::new("Test", 40, 23);
         for x in 0..40 {
-            tiles.set(x, 22, 1); // 地板一行（y 176..184）
+            tiles.set(x, 22, 1); // one row of floor (y 176..184)
         }
         let player = EntityData::new("player", releste_world::EntityId::new(1), 16.0, 176.0);
         let room = |name: &str, x: f32| releste_map::Room {
@@ -821,8 +821,8 @@ mod tests {
         }
     }
 
-    /// 走出房间右缘 → 原版转场：玩家冻结滑进新房间，相机 CubeOut 平移
-    /// 0.65s，结束后玩家落在新房间的地板上、房间身份已切换。
+    /// Walking off the room's right edge -> vanilla transition: the player freezes and glides into the new room, the camera pans with CubeOut
+    /// for 0.65s, and afterwards the player lands on the new room's floor and the room identity has switched.
     #[test]
     fn walking_off_the_seam_starts_a_vanilla_transition() {
         let doc = seam_map();
@@ -848,7 +848,7 @@ mod tests {
         );
         let from = service.player.pos;
 
-        // 转场期间输入被忽略（实体冻结）：反着按也不影响滑动方向。
+        // Input is ignored during a transition (entities frozen): pressing the opposite way does not change the glide direction.
         service.input.right = false;
         service.input.left = true;
         for _ in 0..64 {
@@ -876,7 +876,7 @@ mod tests {
             "the player lands on lvl_b's floor"
         );
         assert_eq!(service.player.pos.y.to_f32(), 176.0 - PLAYER_H);
-        // 相机落位在新房间的钳制目标上（对玩家在新房间里的位置）。
+        // The camera lands on the clamped target in the new room (for the player's position in the new room).
         let anchor = service.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         assert_eq!(
             service.camera.position,
@@ -884,8 +884,8 @@ mod tests {
         );
     }
 
-    /// 相机跟随系数必须是原版的 `1 - 0.01^dt`（≈0.074/tick），不是旧的
-    /// 1/4 —— 追得太快会失去原版"相机拖拽"的手感。
+    /// The camera follow coefficient must be vanilla `1 - 0.01^dt` (~0.074/tick), not the old
+    /// 1/4 -- chasing too fast loses the vanilla "camera drag" feel.
     #[test]
     fn camera_follow_uses_the_vanilla_exponential_rate() {
         let doc = seam_map();
@@ -893,7 +893,7 @@ mod tests {
         let mut service = GameService::new(session, None, None, None);
         let anchor = service.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         let target = GameService::vanilla_camera_center(&service.session, anchor, "lvl_a");
-        // 把相机拖到别处，走一 tick：位移必须是 (target - pos) * 19/256。
+        // Drag the camera elsewhere and run one tick: the displacement must be (target - pos) * 19/256.
         service.camera.position = Vec2::from_f32s(40.0, 90.0);
         service.update_camera();
         let expected =

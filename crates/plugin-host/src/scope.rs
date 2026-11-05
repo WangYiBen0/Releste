@@ -1,4 +1,4 @@
-//! [`Scope::effect`] — the teardown contract (ROADMAP D.3).
+//! [`Scope::effect`] -- the teardown contract (ROADMAP D.3).
 //!
 //! Disposers registered against a scope run in **reverse order**, each carrying
 //! a mandatory label. That is what makes "what will be torn down, and in what
@@ -92,7 +92,7 @@ pub struct Scope {
 
 impl fmt::Debug for Scope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Disposers are opaque closures, so print the labels — which is the
+        // Disposers are opaque closures, so print the labels -- which is the
         // only part a human can act on anyway.
         f.debug_struct("Scope")
             .field("open", &self.open.load(Ordering::SeqCst))
@@ -120,7 +120,7 @@ impl Scope {
     /// Register `disposer` to run when this scope dies, labelled `label`.
     ///
     /// Disposal happens in **reverse** registration order (LIFO): a resource
-    /// allocated before B is released after B — textures before the device,
+    /// allocated before B is released after B -- textures before the device,
     /// listeners before the bus.
     ///
     /// Only `FnOnce` is accepted, so double-dispose is impossible by
@@ -174,7 +174,7 @@ impl Scope {
     /// Run every remaining disposer in **LIFO** order and clear the list.
     ///
     /// A disposer that fails is logged and skipped; the rest still run. This is
-    /// idempotent — a second call is a no-op.
+    /// idempotent -- a second call is a no-op.
     pub fn dispose_all(&self) {
         self.open.store(false, Ordering::SeqCst);
         let taken = {

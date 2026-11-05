@@ -6,8 +6,8 @@ rust-version = "1.80"
 publish = false
 description = "Sample Releste .so plugin: logs one line per second of game time"
 
-# 独立 workspace：不进主 workspace（AGENTS.md §15.1），也没有任何依赖，
-# 所以 `cargo build --release` 不需要网络。
+# Standalone workspace: not part of the main workspace (AGENTS.md 15.1) and
+# dependency-free, so `cargo build --release` needs no network.
 [workspace]
 
 [lib]

@@ -1,13 +1,14 @@
-//! 中继逻辑（纯状态机，无网络依赖）。
+//! Relay logic (pure state machine, no network dependency).
 //!
-//! # 服务器职责（AGENTS.md §4.4 / §11）
-//! 服务器**不理解**地图内容。它只做三件事：
-//! 1. 分配 [`PlayerId`]、维护连接列表。
-//! 2. 转发玩家化身（高频、不可靠）。
-//! 3. 转发协作协议与显式同步事件（低频、可靠）。
+//! # Server responsibilities (AGENTS.md 4.4 / 11)
+//! The server **does not understand** map content. It only does three things:
+//! 1. Assign [`PlayerId`] and maintain the connection list.
+//! 2. Forward player avatars (high frequency, unreliable).
+//! 3. Forward the collaboration protocol and explicit sync events (low
+//!    frequency, reliable).
 //!
-//! 它**从不**判断某个实体是否需要同步——那由地图的
-//! `[[sync_rule]]` 在客户端声明。
+//! It **never** decides whether some entity needs syncing -- that is declared
+//! by the map's `[[sync_rule]]` on the client.
 
 #![deny(warnings)]
 
@@ -15,23 +16,23 @@ use std::collections::HashMap;
 
 use releste_net_client::protocol::{Down, PlayerId, Up, PROTOCOL_VERSION};
 
-/// 已连接玩家。
+/// Connected player.
 #[derive(Debug, Clone)]
 pub struct PlayerInfo {
     pub id: PlayerId,
     pub name: String,
-    /// 是否已完成握手。
+    /// Whether the handshake has completed.
     pub ready: bool,
 }
 
-/// 一条待发送的下行消息。
+/// A downstream message waiting to be sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outgoing {
     pub to: PlayerId,
     pub msg: Down,
 }
 
-/// 服务器中继状态机。
+/// Server relay state machine.
 #[derive(Debug, Default)]
 pub struct Relay {
     players: HashMap<PlayerId, PlayerInfo>,
@@ -39,7 +40,7 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// 新建。
+    /// New.
     pub fn new() -> Self {
         Relay {
             players: HashMap::new(),
@@ -47,17 +48,18 @@ impl Relay {
         }
     }
 
-    /// 玩家数量。
+    /// Number of players.
     pub fn player_count(&self) -> usize {
         self.players.len()
     }
 
-    /// 某玩家的信息。
+    /// A player's information.
     pub fn player(&self, id: PlayerId) -> Option<&PlayerInfo> {
         self.players.get(&id)
     }
 
-    /// 当前所有已就绪玩家的 `(id, name)` 列表（日志 / 状态查询）。
+    /// The `(id, name)` list of all currently ready players (logging / status
+    /// query).
     pub fn roster(&self) -> Vec<(PlayerId, String)> {
         self.players
             .values()
@@ -66,7 +68,7 @@ impl Relay {
             .collect()
     }
 
-    /// 新连接建立：分配 ID。
+    /// A new connection is established: assign an ID.
     pub fn on_connect(&mut self) -> PlayerId {
         let id = PlayerId(self.next_id);
         self.next_id += 1;
@@ -81,7 +83,7 @@ impl Relay {
         id
     }
 
-    /// 处理一条上行消息，返回需要发出的下行消息。
+    /// Handle one upstream message; returns the downstream messages to send.
     pub fn on_message(&mut self, from: PlayerId, msg: Up) -> Vec<Outgoing> {
         match msg {
             Up::Hello {
@@ -91,12 +93,13 @@ impl Relay {
             Up::Avatar(state) => self.broadcast_except(from, Down::Avatar(from, state)),
             Up::SyncEvent(ev) => self.broadcast(Down::SyncEvent(from, ev)),
             Up::CarryRequest { target, mode } => {
-                // 定向转发：只有目标玩家需要知道。
+                // Directed forwarding: only the target player needs to know.
                 self.directed(target, Down::CarryRequest(from, mode))
             }
             Up::CarryAccept { initiator } => self.directed(initiator, Down::CarryAccept(from)),
             Up::CarryEnd { initiator: _ } => {
-                // 服务器不需要知道是谁发起的；通知所有相关方。
+                // The server does not need to know who initiated it; notify all
+                // affected parties.
                 self.broadcast(Down::CarryEnd(from))
             }
             Up::Bye => self.on_disconnect(from),
@@ -124,7 +127,7 @@ impl Relay {
         info.name = name.clone();
         info.ready = true;
 
-        // 1. 欢迎该玩家
+        // 1. Welcome that player
         out.push(Outgoing {
             to: from,
             msg: Down::Welcome {
@@ -133,7 +136,7 @@ impl Relay {
             },
         });
 
-        // 2. 把已有玩家告诉新玩家
+        // 2. Tell the new player about existing players
         let existing: Vec<(PlayerId, String)> = self
             .players
             .values()
@@ -147,7 +150,7 @@ impl Relay {
             });
         }
 
-        // 3. 把新玩家告诉已有玩家
+        // 3. Tell existing players about the new player
         for player in self.players.values() {
             if player.id != from && player.ready {
                 out.push(Outgoing {
@@ -163,7 +166,7 @@ impl Relay {
         out
     }
 
-    /// 断开：清理并通知其他人。
+    /// Disconnect: clean up and notify the others.
     pub fn on_disconnect(&mut self, id: PlayerId) -> Vec<Outgoing> {
         if self.players.remove(&id).is_none() {
             return Vec::new();
@@ -171,12 +174,12 @@ impl Relay {
         self.broadcast(Down::PlayerLeft { id })
     }
 
-    /// 广播给所有已就绪玩家。
+    /// Broadcast to all ready players.
     fn broadcast(&self, msg: Down) -> Vec<Outgoing> {
         self.yield_to_ready(msg, None)
     }
 
-    /// 广播给除 `except` 外的所有已就绪玩家。
+    /// Broadcast to all ready players except `except`.
     fn broadcast_except(&self, except: PlayerId, msg: Down) -> Vec<Outgoing> {
         self.yield_to_ready(msg, Some(except))
     }
@@ -192,7 +195,7 @@ impl Relay {
             .collect()
     }
 
-    /// 定向发送（目标不在线则丢弃）。
+    /// Directed send (dropped if the target is offline).
     fn directed(&self, to: PlayerId, msg: Down) -> Vec<Outgoing> {
         match self.players.get(&to) {
             Some(p) if p.ready => vec![Outgoing { to, msg }],
@@ -272,7 +275,8 @@ mod tests {
             payload: SyncPayload::Flag(true),
         };
         let out = relay.on_message(a, Up::SyncEvent(ev.clone()));
-        // 服务器不解释 payload，原样转发（包括回发给自己以外的所有人）
+        // The server does not interpret the payload; it forwards it verbatim
+        // (including to everyone except the sender itself)
         assert!(
             out.iter()
                 .any(|o| o.to == b
@@ -319,7 +323,7 @@ mod tests {
     fn unready_players_are_not_targets() {
         let mut relay = Relay::new();
         let a = ready(&mut relay, "a");
-        let _ghost = relay.on_connect(); // 未握手
+        let _ghost = relay.on_connect(); // not handshaken yet
 
         let out = relay.on_message(a, Up::Avatar(AvatarState::ZERO));
         assert!(out.is_empty(), "unready players must not receive anything");

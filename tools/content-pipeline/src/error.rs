@@ -1,6 +1,6 @@
-//! 管线错误。
+//! Pipeline errors.
 
-/// 资源转换错误。
+/// Asset conversion error.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     #[error("I/O error at {path}: {source}")]
@@ -26,7 +26,7 @@ pub enum PipelineError {
 }
 
 impl PipelineError {
-    /// 构造 I/O 错误。
+    /// Build an I/O error.
     pub fn io(path: impl std::fmt::Display, source: std::io::Error) -> Self {
         PipelineError::Io {
             path: path.to_string(),
@@ -34,7 +34,7 @@ impl PipelineError {
         }
     }
 
-    /// 构造解析错误。
+    /// Build a parse error.
     pub fn parse(
         format: &'static str,
         path: impl std::fmt::Display,

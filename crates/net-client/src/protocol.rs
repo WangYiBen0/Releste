@@ -1,6 +1,6 @@
 //! Collaboration protocol definition.
 //!
-//! # Core principles (AGENTS.md §4.4 / §11)
+//! # Core principles (AGENTS.md 4.4 / 11)
 //! - **The world is not synced by default**. Syncing is opt-in, declared by the map's `sync_rule`.
 //! - Client-authoritative, pure-relay server: the server does not understand map content.
 //! - The protocol carries only three kinds of information: player avatars,
@@ -18,20 +18,21 @@ pub struct AvatarState {
     /// Position.
     pub x: f32,
     pub y: f32,
-    /// 速度（用于插值 / 特效）。
+    /// Velocity (used for interpolation / effects).
     pub vx: f32,
     pub vy: f32,
-    /// 动画状态（由客户端决定，服务器不解释）。
+    /// Animation state (decided by the client; the server does not interpret
+    /// it).
     pub animation: u8,
-    /// 朝向。
+    /// Facing.
     pub facing: i8,
-    /// 本帧输入的方向（用于远程渲染）。
+    /// The input direction this frame (used for remote rendering).
     pub input_x: i8,
     pub input_y: i8,
 }
 
 impl AvatarState {
-    /// 零状态（用于生成 / 重置）。
+    /// Zero state (used for spawning / resetting).
     pub const ZERO: AvatarState = AvatarState {
         x: 0.0,
         y: 0.0,
@@ -44,89 +45,90 @@ impl AvatarState {
     };
 }
 
-/// 显式同步事件（低频，可靠传输）。
+/// Explicit sync event (low frequency, reliable transport).
 ///
-/// 只有地图通过 `[[sync_rule]]` 声明的实体才会产生此类事件。
+/// Only entities declared by the map via `[[sync_rule]]` produce such events.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct SyncEvent {
-    /// 地图中声明的同步通道名（如 `"door_open"`）。
+    /// Sync channel name declared in the map (such as `"door_open"`).
     pub channel: String,
-    /// 负载（引擎不解释，由地图的 Lua / 规则消费）。
+    /// Payload (the engine does not interpret it; consumed by the map's Lua /
+    /// rules).
     pub payload: SyncPayload,
 }
 
-/// 同步负载。
+/// Sync payload.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum SyncPayload {
-    /// 布尔标记。
+    /// Boolean flag.
     Flag(bool),
-    /// 整数。
+    /// Integer.
     Int(i32),
-    /// 定点位置（用于需要位置同步的 opt-in 实体）。
+    /// Fixed-point position (for opt-in entities that need position sync).
     Position { x: i32, y: i32 },
-    /// 已拾取 / 已触发等一次性事件。
+    /// One-shot events such as picked up / triggered.
     Trigger,
 }
 
-/// 协作模式。
+/// Collaboration mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum CarryMode {
-    /// 抓住，跟随。
+    /// Grab, follow.
     Grab,
-    /// 绳子，弹性。
+    /// Rope, elastic.
     Tether,
-    /// 踩在头上。
+    /// Ride on top.
     Ride,
-    /// 抛出。
+    /// Throw.
     Launch,
 }
 
-/// 客户端 → 服务器消息。
+/// Client -> server message.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Up {
-    /// 握手。
+    /// Handshake.
     Hello { protocol_version: u32, name: String },
-    /// 化身状态（高频，不可靠）。
+    /// Avatar state (high frequency, unreliable).
     Avatar(AvatarState),
-    /// 同步事件（低频，可靠）。
+    /// Sync event (low frequency, reliable).
     SyncEvent(SyncEvent),
-    /// 请求携带某玩家。
+    /// Request to carry a player.
     CarryRequest { target: PlayerId, mode: CarryMode },
-    /// 接受携带。
+    /// Accept a carry.
     CarryAccept { initiator: PlayerId },
-    /// 结束携带。
+    /// End a carry.
     CarryEnd { initiator: PlayerId },
-    /// 主动断开。
+    /// Actively disconnect.
     Bye,
 }
 
-/// 服务器 → 客户端消息。
+/// Server -> client message.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Down {
-    /// 握手应答，分配 `PlayerId`。
+    /// Handshake reply, assigns a `PlayerId`.
     Welcome {
         player_id: PlayerId,
         protocol_version: u32,
     },
-    /// 某玩家加入。
+    /// A player joined.
     PlayerJoined { id: PlayerId, name: String },
-    /// 某玩家离开。
+    /// A player left.
     PlayerLeft { id: PlayerId },
-    /// 某玩家的化身状态。
+    /// A player's avatar state.
     Avatar(PlayerId, AvatarState),
-    /// 某玩家触发的同步事件。
+    /// A sync event triggered by a player.
     SyncEvent(PlayerId, SyncEvent),
-    /// 某玩家请求携带我。
+    /// A player requested to carry me.
     CarryRequest(PlayerId, CarryMode),
-    /// 某玩家接受携带。
+    /// A player accepted a carry.
     CarryAccept(PlayerId),
-    /// 某玩家结束携带。
+    /// A player ended a carry.
     CarryEnd(PlayerId),
-    /// 服务器主动断开（protocol mismatch 等）。
+    /// The server actively disconnects (protocol mismatch, etc.).
     Disconnect { reason: String },
 }
 
-/// 协议版本。握手时比对。
+/// Protocol version. Compared during the handshake.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[cfg(test)]

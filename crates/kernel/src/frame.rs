@@ -1,44 +1,44 @@
-//! 帧标识。
+//! Frame identity.
 
 use std::fmt;
 use std::num::NonZeroU64;
 
-/// 单调递增的帧编号（从 1 开始）。
+/// Monotonically increasing frame number (starting at 1).
 ///
-/// 用 `NonZeroU64` 以保证 `Option<FrameId>` 可享指针优化。
+/// Uses `NonZeroU64` so that `Option<FrameId>` gets the pointer optimization.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameId(NonZeroU64);
 
 impl FrameId {
-    /// 起始帧（帧 1）。
+    /// The starting frame (frame 1).
     pub const ZERO: FrameId = FrameId(match NonZeroU64::new(1) {
         Some(v) => v,
         None => unreachable!(),
     });
 
-    /// 从编号构造。
+    /// Construct from a number.
     ///
     /// # Panics
-    /// `n` 为 0 时 panic。
+    /// Panics if `n` is 0.
     #[inline]
     pub fn new(n: u64) -> Self {
         assert!(n > 0, "FrameId must be >= 1; got 0");
         FrameId(NonZeroU64::new(n).unwrap())
     }
 
-    /// 帧编号。
+    /// Frame number.
     #[inline]
     pub fn get(self) -> u64 {
         self.0.get()
     }
 
-    /// 下一帧。
+    /// The next frame.
     #[inline]
     pub fn next(self) -> Self {
         FrameId::new(self.get().saturating_add(1))
     }
 
-    /// 开始后的第几帧（从 0 开始）。
+    /// The frame index since the start (0-based).
     #[inline]
     pub fn index(self) -> u64 {
         self.get() - 1

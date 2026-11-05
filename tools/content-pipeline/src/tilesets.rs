@@ -1,11 +1,11 @@
-//! `ForegroundTiles.xml` → 引擎原生 [`TilesetsDoc`]。
+//! `ForegroundTiles.xml` -> engine-native [`TilesetsDoc`].
 //!
-//! XML 是原始格式，只在 build time 解析（AGENTS.md §4.6）；产物是
-//! `atlas/tilesets.toml`，运行时由 `releste_map::TilesetsDoc` 读取。
+//! XML is the original format and is only parsed at build time (AGENTS.md 4.6); the output is
+//! `atlas/tilesets.toml`, read at runtime by `releste_map::TilesetsDoc`.
 //!
-//! `copy="z"` 的 tileset 继承被拷贝者的 masks / center / padding
-//! （原版 `Autotiler` 对 tileset 自己的 set 调一次 `ReadInto`，
-//! 再对被拷贝者的 set 调一次）。
+//! A tileset with `copy="z"` inherits the copied tileset's masks / center / padding
+//! (the vanilla `Autotiler` calls `ReadInto` once on the tileset's own set,
+//! then once on the copied tileset's set).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,11 +14,11 @@ use releste_map::{MaskEntry, TilesetDef, TilesetsDoc};
 
 use crate::xml::{parse_tilesets, XmlError};
 
-/// 解析 XML 文本 → 全部 tileset 定义（含 `copy` 继承）。
+/// Parse XML text -> all tileset definitions (including `copy` inheritance).
 pub fn from_xml(xml: &str) -> Result<TilesetsDoc, XmlError> {
     let elements = parse_tilesets(xml)?;
 
-    // 先按出现顺序展开；`copy` 需要查前面已定义的 tileset。
+    // Expand in order of appearance first; `copy` needs to look up tilesets defined earlier.
     let mut tilesets: BTreeMap<String, TilesetDef> = BTreeMap::new();
     for element in elements {
         let id = element.id;
@@ -34,7 +34,7 @@ pub fn from_xml(xml: &str) -> Result<TilesetsDoc, XmlError> {
         let center = special_tiles(&element.sets, "center");
         let padding = special_tiles(&element.sets, "padding");
 
-        // `copy="z"`：继承被拷贝者的 masks / center / padding。
+        // `copy="z"`: inherit the copied tileset's masks / center / padding.
         if let Some(copy_id) = element.copy.as_deref() {
             if let Some(parent) = tilesets.get(copy_id) {
                 masks.extend(parent.masks.iter().cloned());
@@ -61,7 +61,7 @@ pub fn from_xml(xml: &str) -> Result<TilesetsDoc, XmlError> {
             padding
         };
 
-        // 按通配符数升序（最具体的先匹配），对应原版 `Masked.Sort`。
+        // Ascending wildcard count (most specific matches first), matching vanilla `Masked.Sort`.
         masks.sort_by_key(|m| m.wildcards());
 
         let ignores = element
@@ -75,8 +75,8 @@ pub fn from_xml(xml: &str) -> Result<TilesetsDoc, XmlError> {
         tilesets.insert(
             id,
             TilesetDef {
-                // XML 的 `path="snow"` 是相对 `tilesets/` 的名字；存成
-                // 图集内完整 sprite 路径，运行时直接查。
+                // XML `path="snow"` is a name relative to `tilesets/`; store it as the
+                // full sprite path inside the atlas so the runtime can look it up directly.
                 path: element
                     .path
                     .map(|p| format!("tilesets/{p}"))
@@ -92,16 +92,16 @@ pub fn from_xml(xml: &str) -> Result<TilesetsDoc, XmlError> {
     Ok(TilesetsDoc { tilesets })
 }
 
-/// 从 XML 文件读取并转换。
+/// Read and convert from an XML file.
 pub fn from_file(path: &Path) -> anyhow::Result<TilesetsDoc> {
     let xml = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
-    // 去掉 BOM（Celeste 的 XML 带 EF BB BF）。
+    // Strip the BOM (Celeste XML files carry EF BB BF).
     let xml = xml.strip_prefix('\u{feff}').unwrap_or(&xml);
     from_xml(xml).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
-/// `center` / `padding` 这类特殊 set 的 tiles。
+/// The tiles of a special set such as `center` / `padding`.
 fn special_tiles(sets: &[crate::xml::SetElement], name: &str) -> Vec<(u32, u32)> {
     sets.iter()
         .find(|set| set.mask == name)
@@ -109,9 +109,9 @@ fn special_tiles(sets: &[crate::xml::SetElement], name: &str) -> Vec<(u32, u32)>
         .unwrap_or_default()
 }
 
-/// `"x0x-111-x1x"` → `[2,0,2,1,1,1,2,1,2]`。
+/// `"x0x-111-x1x"` -> `[2,0,2,1,1,1,2,1,2]`.
 ///
-/// 布局 `[TL, T, TR, L, C, R, BL, B, BR]`：`0`=空 `1`=固体 `x`=通配。
+/// Layout `[TL, T, TR, L, C, R, BL, B, BR]`: `0`=empty `1`=solid `x`=wildcard.
 fn parse_mask(mask: &str) -> [u8; 9] {
     let mut out = [0u8; 9];
     let chars: Vec<char> = mask.chars().filter(|c| *c != '-').collect();
@@ -126,7 +126,7 @@ fn parse_mask(mask: &str) -> [u8; 9] {
     out
 }
 
-/// `"0,0;1,0;2,0"` → `[(0,0), (1,0), (2,0)]`。
+/// `"0,0;1,0;2,0"` -> `[(0,0), (1,0), (2,0)]`.
 fn parse_tiles(tiles: &str) -> Vec<(u32, u32)> {
     tiles
         .split(';')
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn masks_are_sorted_by_wildcard_count() {
-        // 通配多的排后面：x1x-111-x1x（3 个通配）在 111-111-110（0 个）之后。
+        // More wildcards sort later: x1x-111-x1x (3 wildcards) comes after 111-111-110 (0).
         let xml = r#"<Data>
   <Tileset id="z" path="template">
     <set mask="x1x-111-x1x" tiles="0,0"/>
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn real_file_parses_if_present() {
-        // golden：钉住真实文件（在 gitignored 的 references/ 里，缺了就跳过）。
+        // golden: pin the real file (in gitignored references/, skipped when missing).
         let path = std::path::Path::new("references/Celeste/Content/Graphics/ForegroundTiles.xml");
         if !path.is_file() {
             eprintln!("skipping: {path:?} is not present");

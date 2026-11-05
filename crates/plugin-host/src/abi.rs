@@ -1,7 +1,7 @@
 //! The frozen `#[repr(C)]` ABI shared with `.so` plugins.
 //!
 //! Everything crossing this boundary is a plain integer, a `CStr`, or JSON.
-//! **No Rust type crosses it** — the host and the plugin may have been compiled
+//! **No Rust type crosses it** -- the host and the plugin may have been compiled
 //! with different compilers, and a `String` is not an ABI.
 //!
 //! # How a plugin exports itself
@@ -85,7 +85,7 @@ pub struct HostApi {
         schema: *const c_char,
     ) -> u32,
     /// Look up the entity kind id for a name the plugin did not itself define.
-    /// Returns `0` when unknown — the caller must warn and skip, never panic.
+    /// Returns `0` when unknown -- the caller must warn and skip, never panic.
     pub entity_kind_id: unsafe extern "C" fn(user_data: *mut c_void, name: *const c_char) -> u32,
 }
 

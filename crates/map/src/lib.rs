@@ -1,10 +1,10 @@
-//! `releste-map`: `.map` 二进制格式解析 / 序列化 / diff。
+//! `releste-map`: `.map` binary format parsing / serialization / diff.
 //!
-//! - 自研二进制（`bincode`），版本号在头部。
-//! - 向后兼容通过**显式迁移函数**（[`legacy`] 里每个历史版本一份冻结
-//!   结构体 + 一条 `v_n → v_{n+1}`）。`#[serde(default)]` 在 bincode 下
-//!   不生效，不能当作兼容层的替代品。
-//! - `diff(old, new)` 生成 `Vec<Patch>` 用于热重载。
+//! - Custom binary (`bincode`), with the version number in the header.
+//! - Backward compatibility goes through **explicit migration functions** (one frozen struct
+//!   per historical version in [`legacy`] plus one `v_n -> v_{n+1}` step). `#[serde(default)]` does not
+//!   fire under bincode and cannot replace the compatibility layer.
+//! - `diff(old, new)` produces a `Vec<Patch>` for hot reload.
 
 #![deny(warnings)]
 

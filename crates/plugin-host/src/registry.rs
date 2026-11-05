@@ -1,6 +1,6 @@
 //! Capability registry: what a plugin provides, and what depends on it.
 //!
-//! Dependencies are declared as **data**, never resolved by an import — that is
+//! Dependencies are declared as **data**, never resolved by an import -- that is
 //! the whole point of hot-plug. Losing a provider rewrites an epoch string;
 //! any fiber whose epoch changed unloads, and comes back when the provider
 //! does (ROADMAP D.4).
@@ -22,7 +22,7 @@ pub struct ServiceEntry {
 pub struct EntityKind {
     /// Kind name as written in a `.map`, e.g. `"crystal"`.
     pub name: String,
-    /// `u32::from_le(blake3(name)[0..4])` — the id a `.map` resolves against.
+    /// `u32::from_le(blake3(name)[0..4])` -- the id a `.map` resolves against.
     pub kind_id: u32,
     /// JSON-encoded schema, so the host never has to link a plugin's Rust types.
     pub schema: String,
@@ -100,7 +100,7 @@ impl Registry {
     /// Compute the epoch for `deps`.
     ///
     /// Returns [`Dependency::Missing`] with the first absent name as soon as
-    /// any dependency is unavailable — a fiber with an unsatisfiable dependency
+    /// any dependency is unavailable -- a fiber with an unsatisfiable dependency
     /// is `FAILED`, not dangling.
     pub fn epoch(&self, deps: &[String]) -> Dependency {
         let mut out = String::new();
@@ -125,8 +125,8 @@ impl Registry {
 
     /// Resolve an entity kind id to its definition.
     ///
-    /// A `.map` may reference a kind no plugin currently provides — the caller
-    /// must warn and skip, never panic (AGENTS.md §15.8/§15.9).
+    /// A `.map` may reference a kind no plugin currently provides -- the caller
+    /// must warn and skip, never panic (AGENTS.md 15.8/15.9).
     pub fn entity_kind(&self, kind_id: u32) -> Option<&EntityKind> {
         self.kinds.get(&kind_id)
     }
@@ -144,7 +144,7 @@ impl Registry {
 
 /// The canonical kind id: first four bytes of `blake3(name)`, little-endian.
 ///
-/// Stable across plugins and runs — it does not care *which* plugin supplies
+/// Stable across plugins and runs -- it does not care *which* plugin supplies
 /// the kind (ROADMAP 3.4).
 pub fn kind_id_for(name: &str) -> u32 {
     let hash = blake3::hash(name.as_bytes());

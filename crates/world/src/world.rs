@@ -1,6 +1,6 @@
-//! World：ECS 容器。
+//! World: the ECS container.
 //!
-//! 管理所有运行时实体。热重载时提供按 ID 查询的 API。
+//! Manages all runtime entities. Provides ID-based lookup APIs for hot reload.
 
 use std::collections::HashMap;
 
@@ -12,23 +12,24 @@ use crate::id::EntityId;
 use crate::schema::FieldValue;
 use releste_math::Rect;
 
-/// World — 所有实体的运行时容器。
+/// World -- the runtime container for all entities.
 ///
-/// 实体以 `SlotMap` 存储，按 [`EntityId`]（稳定 ID）和
-/// [`EntityKindId`]（种类 ID）双重索引。
+/// Entities are stored in a `SlotMap`, doubly indexed by [`EntityId`] (stable
+/// ID) and [`EntityKindId`] (kind ID).
 #[derive(Debug, Default)]
 pub struct World {
     entities: SlotMap<DefaultKey, Entity>,
-    /// 稳定 ID → SlotMap Key。
+    /// Stable ID -> SlotMap Key.
     id_to_key: HashMap<EntityId, DefaultKey>,
-    /// 种类 ID → 该种类所有实体的 SlotMap Key 列表。
+    /// Kind ID -> SlotMap Keys of all entities of that kind.
     kind_index: HashMap<EntityKindId, Vec<DefaultKey>>,
-    /// 玩家实体 ID（热重载冲突解决时用于推离）。
+    /// Player entity ID (used for push-out during hot reload conflict
+    /// resolution).
     player: Option<EntityId>,
 }
 
 impl World {
-    /// 创建空世界。
+    /// Create an empty world.
     pub fn new() -> Self {
         World {
             entities: SlotMap::with_key(),
@@ -38,7 +39,7 @@ impl World {
         }
     }
 
-    /// 插入实体。
+    /// Insert an entity.
     pub fn insert(&mut self, entity: Entity) -> EntityId {
         let id = entity.id;
         let kind = entity.kind_id;
@@ -48,7 +49,7 @@ impl World {
         id
     }
 
-    /// 移除实体。
+    /// Remove an entity.
     pub fn remove(&mut self, id: EntityId) -> Option<Entity> {
         let key = self.id_to_key.remove(&id)?;
         let entity = self.entities.remove(key)?;
@@ -58,21 +59,21 @@ impl World {
         Some(entity)
     }
 
-    /// 按稳定 ID 查找。
+    /// Look up by stable ID.
     pub fn get(&self, id: EntityId) -> Option<&Entity> {
         self.id_to_key
             .get(&id)
             .and_then(|key| self.entities.get(*key))
     }
 
-    /// 按稳定 ID 查找可变引用。
+    /// Look up a mutable reference by stable ID.
     pub fn get_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
         self.id_to_key
             .get(&id)
             .and_then(|key| self.entities.get_mut(*key))
     }
 
-    /// 按种类查找所有实体。
+    /// Find all entities of a kind.
     pub fn by_kind(&self, kind: EntityKindId) -> impl Iterator<Item = &Entity> {
         self.kind_index
             .get(&kind)
@@ -81,47 +82,47 @@ impl World {
             .filter_map(|key| self.entities.get(*key))
     }
 
-    /// 遍历所有实体。
+    /// Iterate over all entities.
     pub fn all(&self) -> impl Iterator<Item = &Entity> {
         self.entities.values()
     }
 
-    /// 实体总数。
+    /// Total number of entities.
     pub fn len(&self) -> usize {
         self.entities.len()
     }
 
-    /// 是否为空。
+    /// Whether the world is empty.
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
     }
 
-    /// 清除所有实体。
+    /// Remove all entities.
     pub fn clear(&mut self) {
         self.entities.clear();
         self.id_to_key.clear();
         self.kind_index.clear();
     }
 
-    /// 是否存在指定稳定 ID。
+    /// Whether the given stable ID exists.
     pub fn contains(&self, id: EntityId) -> bool {
         self.id_to_key.contains_key(&id)
     }
 
-    /// 设置玩家实体 ID。
+    /// Set the player entity ID.
     pub fn set_player(&mut self, id: EntityId) {
         self.player = Some(id);
     }
 
-    /// 玩家实体 ID。
+    /// The player entity ID.
     pub fn player(&self) -> Option<EntityId> {
         self.player
     }
 
-    /// 某实体的世界 AABB。
+    /// World AABB of an entity.
     ///
-    /// 缺少尺寸时回退为 8x8 单位（约等于半个 tile），保证
-    /// 热重载的推离逻辑总有一个可用的碰撞盒。
+    /// Falls back to 8x8 units (roughly half a tile) when the size is missing,
+    /// so the hot reload push-out logic always has a usable collision box.
     pub fn bounds(&self, id: EntityId) -> Option<releste_math::Rect> {
         let e = self.get(id)?;
         let x = get_f32(e, "x").unwrap_or(0.0);
@@ -134,17 +135,19 @@ impl World {
         ))
     }
 
-    /// 玩家的世界 AABB。
+    /// World AABB of the player.
     pub fn player_bounds(&self) -> Option<releste_math::Rect> {
         self.bounds(self.player?)
     }
 
-    /// 解决玩家与其它实体的重叠（把玩家推离）。
+    /// Resolve overlap between the player and other entities (push the player
+    /// out).
     ///
-    /// 热重载冲突处理策略 1（AGENTS.md §7.4）：玩家与新增实体
-    /// 重叠时推离，而不是弹出或卡住。
+    /// Hot reload conflict resolution strategy 1 (AGENTS.md 7.4): when the
+    /// player overlaps a newly added entity, push the player out rather than
+    /// ejecting or getting stuck.
     ///
-    /// 返回被判定为"推挤源"的实体 ID 列表。
+    /// Returns the list of entity IDs judged to be "push sources".
     pub fn resolve_overlap(&mut self) -> Vec<EntityId> {
         let Some(player_id) = self.player else {
             return Vec::new();
@@ -153,7 +156,7 @@ impl World {
             return Vec::new();
         };
 
-        // 收集与玩家重叠的实体（排除玩家自身）。
+        // Collect the entities overlapping the player (excluding the player).
         let overlapping: Vec<(EntityId, Rect)> = self
             .entities
             .values()
@@ -166,7 +169,7 @@ impl World {
             return Vec::new();
         }
 
-        // 逐个推离：取最小平移轴。
+        // Push out one by one: pick the minimum translation axis.
         let mut player_pos = player_rect.min;
         for (_id, other) in &overlapping {
             player_pos = push_out(player_pos, player_rect.size(), *other);
@@ -180,13 +183,14 @@ impl World {
         overlapping.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// 读取实体的 AABB（内部使用；公开版本见 [`World::bounds`]）。
+    /// Read the AABB of an entity (internal; see [`World::bounds`] for the
+    /// public version).
     fn entity_rect(&self, id: EntityId) -> Option<releste_math::Rect> {
         self.bounds(id)
     }
 }
 
-/// 读取 f32 属性。
+/// Read an f32 property.
 fn get_f32(e: &Entity, key: &str) -> Option<f32> {
     match e.get(key)? {
         FieldValue::Float(v) => Some(*v),
@@ -195,7 +199,7 @@ fn get_f32(e: &Entity, key: &str) -> Option<f32> {
     }
 }
 
-/// 读取 i32 属性。
+/// Read an i32 property.
 fn get_i32(e: &Entity, key: &str) -> Option<i32> {
     match e.get(key)? {
         FieldValue::Int(v) => Some(*v),
@@ -204,12 +208,13 @@ fn get_i32(e: &Entity, key: &str) -> Option<i32> {
     }
 }
 
-/// AABB 重叠判定。
+/// AABB overlap test.
 fn rects_overlap(a: releste_math::Rect, b: releste_math::Rect) -> bool {
     a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.y <= b.max.y && a.max.y >= b.min.y
 }
 
-/// 把 `pos`（尺寸 `size`）沿最小平移轴推出 `blocker`。
+/// Push `pos` (with size `size`) out of `blocker` along the minimum
+/// translation axis.
 fn push_out(
     pos: releste_math::Vec2,
     size: releste_math::Vec2,
@@ -219,10 +224,10 @@ fn push_out(
         return pos;
     }
 
-    let dx_left = blocker.min.x - (pos.x + size.x); // 推向左侧的位移
-    let dx_right = blocker.max.x - pos.x; // 推向右侧的位移
-    let dy_up = blocker.min.y - (pos.y + size.y); // 推向上方的位移
-    let dy_down = blocker.max.y - pos.y; // 推向下方的位移
+    let dx_left = blocker.min.x - (pos.x + size.x); // displacement toward the left
+    let dx_right = blocker.max.x - pos.x; // displacement toward the right
+    let dy_up = blocker.min.y - (pos.y + size.y); // displacement upward
+    let dy_down = blocker.max.y - pos.y; // displacement downward
 
     let candidates = [
         (

@@ -1,12 +1,14 @@
-# 示例地图
+# Sample maps
 
-`.map` 是**自研二进制格式**（见 [`AGENTS.md` §7.3](../AGENTS.md)），
-不纳入版本控制——仓库只包含文本源码。
+`.map` is an **engine-native binary format** (see
+[`AGENTS.md` 7.3](../AGENTS.md)) and is not kept under version control - the
+repository only carries text sources.
 
-## 从原版资源生成
+## Generating from the vanilla assets
 
 ```bash
-# 需要自备原版 Celeste 资源到 assets-src/（见 references/README.md）
+# The vanilla Celeste assets must be provided under assets-src/
+# (see references/README.md)
 cargo run -p releste-content-pipeline -- \
     --source assets-src \
     --output assets \
@@ -14,30 +16,30 @@ cargo run -p releste-content-pipeline -- \
     --verify
 ```
 
-产出的地图位于 `assets/maps/`。
+The converted maps land in `assets/maps/`.
 
-## 自己画一张
+## Authoring one yourself
 
 ```bash
-# 新建空地图
+# Create a new empty map
 cargo run -p releste-editor
 
-# 打开已有地图
+# Open an existing map
 cargo run -p releste-editor -- assets/maps/1-ForsakenCity.map
 
-# 只校验能否加载（不需要 GPU / 显示器）
+# Only check that it loads (no GPU / display needed)
 cargo run -p releste-editor -- --check assets/maps/1-ForsakenCity.map
 ```
 
-编辑器保存后，`releste-reload` 的 `FileWatcher` 会在
-debounce 窗口（默认 100ms）后触发重载，
-**玩家位置、速度、状态与携带物全部保留**（AGENTS.md §10）。
+After the editor saves, `releste-reload`'s `FileWatcher` fires once the debounce
+window (100ms by default) elapses, and **the player's position, velocity, state
+and carried objects are all preserved** (AGENTS.md 10).
 
-## 单图脚本
+## Per-room scripts
 
-每个房间可以关联一个 Lua 脚本（`.lua`），用于过场演出。
-脚本**不能直接改物理状态**——所有副作用通过
-`CutsceneBridge` 的 `SimCommand` 队列排队，下一帧由 sim 消费
-（AGENTS.md §4.5）。
+A room may be associated with a Lua script (`.lua`) for cutscenes. A script
+**cannot change physics state directly** - every side effect is queued as a
+`SimCommand` on the `CutsceneBridge` and consumed by the simulation on the next
+frame (AGENTS.md 4.5).
 
-见 [`example_cutscene.lua`](example_cutscene.lua)。
+See [`example_cutscene.lua`](example_cutscene.lua).

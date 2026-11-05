@@ -3,7 +3,7 @@
 //! The format is produced by `tools/content-pipeline`: one texture + one TOML
 //! descriptor (sprite list, rect, offset, origin).
 //!
-//! **No runtime parsing of `.meta` / `.xnb` / `.bin`** (AGENTS.md §4.6) —
+//! **No runtime parsing of `.meta` / `.xnb` / `.bin`** (AGENTS.md 4.6) -
 //! only our own format is read.
 
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ use thiserror::Error;
 /// `tools/content-pipeline` decodes packed `.data` pages into PNG offline, so
 /// in practice a descriptor carries [`TextureKind::Png`]. The remaining variants
 /// describe raw `Celeste` `.data` payloads that are copied verbatim and are **not**
-/// pixel-RLE-decoded by the pipeline yet (AGENTS.md §13).
+/// pixel-RLE-decoded by the pipeline yet (AGENTS.md 13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextureKind {
@@ -36,7 +36,7 @@ impl TextureKind {
     /// Whether it decodes to pixels directly.
     ///
     /// Only PNG does: `.data` payloads are byte-run encoded and must be
-    /// converted offline (AGENTS.md §4.6).
+    /// converted offline (AGENTS.md 4.6).
     pub fn is_decodable(self) -> bool {
         matches!(self, TextureKind::Png)
     }
@@ -158,7 +158,7 @@ impl AtlasDescriptor {
 #[derive(Debug, Clone)]
 pub struct SpriteAtlas {
     descriptor: AtlasDescriptor,
-    /// sprite name (lowercase) → (texture index, sprite index)
+    /// sprite name (lowercase) -> (texture index, sprite index)
     index: HashMap<String, (usize, usize)>,
     /// Aliases (the `LINKS` section).
     aliases: HashMap<String, String>,
@@ -167,20 +167,20 @@ pub struct SpriteAtlas {
 }
 
 impl SpriteAtlas {
-    /// 从文件加载并构建索引。
+    /// Loads from a file and builds the index.
     ///
-    /// `root` 是 `atlas/` 目录，用于解析纹理载荷的绝对路径。
+    /// `root` is the `atlas/` directory, used to resolve absolute texture payload paths.
     pub fn load(path: &Path, root: &Path) -> Result<Self, AtlasError> {
         let descriptor = AtlasDescriptor::from_file(path)?;
         Ok(Self::new(descriptor, root))
     }
 
-    /// 从已解析的描述构建索引。
+    /// Builds the index from an already-parsed descriptor.
     pub fn new(descriptor: AtlasDescriptor, root: &Path) -> Self {
         let mut index = HashMap::new();
         for (ti, tex) in descriptor.textures.iter().enumerate() {
             for (si, sprite) in tex.sprites.iter().enumerate() {
-                // sprite 查询大小写不敏感（与 Celeste 一致）。
+                // Sprite lookups are case-insensitive (matching Celeste).
                 index.insert(sprite.name.to_lowercase(), (ti, si));
             }
         }
@@ -199,19 +199,19 @@ impl SpriteAtlas {
         }
     }
 
-    /// 描述（只读）。
+    /// The descriptor (read-only).
     pub fn descriptor(&self) -> &AtlasDescriptor {
         &self.descriptor
     }
 
-    /// 图集名。
+    /// Atlas name.
     pub fn name(&self) -> &str {
         &self.descriptor.name
     }
 
-    /// 按名查 sprite。
+    /// Looks up a sprite by name.
     ///
-    /// 分隔符无关：tileset 定义里是 `tilesets/snow`，图集里是 `tilesets\snow`。
+    /// Separator-agnostic: a tileset definition writes `tilesets/snow`, the atlas writes `tilesets\snow`.
     pub fn sprite(&self, name: &str) -> Option<(&TextureGroup, &Sprite)> {
         let key = name.to_lowercase().replace('/', "\\");
         let (ti, si) = *self.index.get(&key)?;
@@ -220,15 +220,15 @@ impl SpriteAtlas {
         Some((tex, sprite))
     }
 
-    /// 按名查 sprite，未找到返回错误。
+    /// Looks up a sprite by name, returning an error if it is not found.
     pub fn require(&self, name: &str) -> Result<(&TextureGroup, &Sprite), AtlasError> {
         self.sprite(name)
             .ok_or_else(|| AtlasError::SpriteNotFound(name.to_string()))
     }
 
-    /// 该 sprite 载荷的绝对路径。
+    /// Absolute path of the payload for this sprite.
     ///
-    /// `PerSpriteCrunch` 用 sprite 自己的 `source`，其它用组级 `source`。
+    /// `PerSpriteCrunch` uses the sprite's own `source`; the others use the group-level `source`.
     pub fn payload_path(&self, tex: &TextureGroup, sprite: &Sprite) -> PathBuf {
         match (&tex.kind, &sprite.source) {
             (TextureKind::PerSpriteCrunch, Some(s)) => self.join_root(s),
@@ -236,20 +236,20 @@ impl SpriteAtlas {
         }
     }
 
-    /// 该纹理组的载荷绝对路径。
+    /// Absolute path of the payload for this texture group.
     ///
-    /// 描述里的路径以 `atlas/` 为前缀，去掉它再拼上 atlas 根目录。
+    /// Descriptor paths are prefixed with `atlas/`; strip it, then join onto the atlas root directory.
     pub fn group_payload_path(&self, tex: &TextureGroup) -> PathBuf {
         self.join_root(&tex.source)
     }
 
-    /// 把描述里的相对路径拼到 atlas 根目录上。
+    /// Joins a descriptor-relative path onto the atlas root directory.
     fn join_root(&self, rel: &str) -> PathBuf {
         let rel = rel.strip_prefix("atlas/").unwrap_or(rel);
         self.root.join(rel)
     }
 
-    /// 解析别名（`LINKS`）到真实 sprite 名。
+    /// Resolves an alias (`LINKS`) to the real sprite name.
     pub fn resolve_alias<'a>(&'a self, name: &'a str) -> &'a str {
         self.aliases
             .get(&name.to_lowercase())
@@ -257,7 +257,7 @@ impl SpriteAtlas {
             .unwrap_or(name)
     }
 
-    /// 所有 sprite 名。
+    /// All sprite names.
     pub fn sprite_names(&self) -> impl Iterator<Item = &str> {
         self.descriptor
             .textures
@@ -266,9 +266,9 @@ impl SpriteAtlas {
     }
 }
 
-/// 动画帧名：`前缀 + 零填充两位的序号`（Monocle
-/// `GetAtlasSubtextureFromAtlasAt` 的补零查找，14327-14343 —— 先试
-/// 无填充再逐级补零，本图集命名统一两位，`idle00`）。
+/// Animation frame name: `prefix + a two-digit zero-padded index` (Monocle's
+/// zero-padding lookup in `GetAtlasSubtextureFromAtlasAt`, 14327-14343 -- it tries
+/// no padding first, then pads level by level; this atlas uses two digits, `idle00`).
 pub fn frame_name(prefix: &str, index: usize) -> String {
     format!("{prefix}{:02}", index)
 }

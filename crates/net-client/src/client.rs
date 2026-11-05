@@ -1,4 +1,4 @@
-//! NetClient：客户端网络服务。
+//! NetClient: the client networking service.
 
 use releste_kernel::{Context, FrameId, Service, ServiceId};
 use releste_math::Fx;
@@ -9,14 +9,14 @@ use crate::protocol::{AvatarState, CarryMode, Down, PlayerId, SyncPayload, Up, P
 use crate::session::Session;
 use crate::transport::{Transport, TransportError, TransportEvent};
 
-/// 客户端配置。
+/// Client configuration.
 #[derive(Debug, Clone)]
 pub struct NetClientConfig {
-    /// 服务器地址（传输实现解释）。
+    /// Server address (interpreted by the transport implementation).
     pub server_addr: String,
-    /// 玩家名。
+    /// Player name.
     pub player_name: String,
-    /// 化身发送频率（Hz，默认 30）。
+    /// Avatar send rate (Hz, default 30).
     pub avatar_send_hz: u32,
 }
 
@@ -30,7 +30,7 @@ impl Default for NetClientConfig {
     }
 }
 
-/// 客户端暴露给游戏逻辑的事件。
+/// An event the client exposes to game logic.
 #[derive(Debug, Clone)]
 pub enum NetClientEvent {
     Connected(PlayerId),
@@ -44,7 +44,7 @@ pub enum NetClientEvent {
     Error(String),
 }
 
-/// 网络错误。
+/// Network error.
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
     #[error("transport: {0}")]
@@ -53,24 +53,24 @@ pub enum NetError {
     NotConnected,
 }
 
-/// 客户端网络服务。
+/// Client networking service.
 pub struct NetClient {
     transport: Box<dyn Transport>,
     config: NetClientConfig,
     session: Session,
     carry: CarryState,
-    /// 本地化身状态（由游戏循环每帧写入）。
+    /// Local avatar state (written by the game loop every frame).
     local_avatar: AvatarState,
-    /// 事件队列（游戏循环消费）。
+    /// Event queue (consumed by the game loop).
     events: Vec<NetClientEvent>,
-    /// 距上次发送化身的帧数。
+    /// Frames since the avatar was last sent.
     frames_since_avatar: u32,
-    /// 化身发送间隔（帧）。
+    /// Avatar send interval (frames).
     avatar_interval: u32,
 }
 
 impl NetClient {
-    /// 创建。
+    /// Create.
     pub fn new(transport: Box<dyn Transport>, config: NetClientConfig) -> Self {
         let hz = config.avatar_send_hz.max(1);
         let avatar_interval = (60 / hz).max(1);
@@ -86,42 +86,42 @@ impl NetClient {
         }
     }
 
-    /// 会话（只读）。
+    /// Session (read-only).
     pub fn session(&self) -> &Session {
         &self.session
     }
 
-    /// 会话（可变，用于声明同步通道）。
+    /// Session (mutable, for declaring sync channels).
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
     }
 
-    /// 携带状态。
+    /// Carry state.
     pub fn carry(&self) -> &CarryState {
         &self.carry
     }
 
-    /// 本地玩家 ID。
+    /// Local player ID.
     pub fn local_id(&self) -> Option<PlayerId> {
         self.session.local_id()
     }
 
-    /// 写入本地化身状态（游戏循环每帧调用）。
+    /// Write the local avatar state (called by the game loop every frame).
     pub fn set_local_avatar(&mut self, state: AvatarState) {
         self.local_avatar = state;
     }
 
-    /// 取出累积的事件。
+    /// Take the accumulated events.
     pub fn drain_events(&mut self) -> Vec<NetClientEvent> {
         std::mem::take(&mut self.events)
     }
 
-    /// 声明一个显式同步通道（由地图的 `[[sync_rule]]` 驱动）。
+    /// Declare an explicit sync channel (driven by the map's `[[sync_rule]]`).
     pub fn declare_sync_channel(&mut self, name: impl Into<String>) {
         self.session.allow_channel(name);
     }
 
-    /// 发送一个同步事件（仅当地图声明过）。
+    /// Send a sync event (only if the map declared it).
     pub fn send_sync(&mut self, channel: &str, payload: SyncPayload) -> Result<(), NetError> {
         if !self.session.channel_allowed(channel) {
             warn!(
@@ -138,16 +138,16 @@ impl NetClient {
         Ok(())
     }
 
-    /// 请求携带某玩家。
+    /// Request to carry a player.
     pub fn request_carry(&mut self, target: PlayerId, mode: CarryMode) -> Result<(), NetError> {
         self.transport.send(Up::CarryRequest { target, mode })?;
         Ok(())
     }
 
-    /// 接受携带请求。
+    /// Accept a carry request.
     ///
-    /// `mode` 必须与请求方发来的模式一致（协议在
-    /// [`Up::CarryRequest`] 中携带，接受方需要记住它）。
+    /// `mode` must match the mode sent by the requester (the protocol carries
+    /// it in [`Up::CarryRequest`]; the accepter needs to remember it).
     pub fn accept_carry(&mut self, initiator: PlayerId, mode: CarryMode) -> Result<(), NetError> {
         if !self.carry.accept_from(initiator, mode) {
             warn!("cannot accept carry: already in a carry relation");
@@ -156,14 +156,14 @@ impl NetClient {
         Ok(())
     }
 
-    /// 结束携带。
+    /// End the carry.
     pub fn end_carry(&mut self, initiator: PlayerId) -> Result<(), NetError> {
         self.carry.end();
         self.transport.send(Up::CarryEnd { initiator })?;
         Ok(())
     }
 
-    /// 公开的握手（`attach` 也会调用）。
+    /// Public handshake (`attach` also calls it).
     pub fn handshake(&mut self) -> Result<(), NetError> {
         self.transport.send(Up::Hello {
             protocol_version: PROTOCOL_VERSION,
@@ -172,9 +172,10 @@ impl NetClient {
         Ok(())
     }
 
-    /// 处理一条下行消息。
+    /// Handle one downstream message.
     fn handle_down(&mut self, msg: Down) {
-        // 携带相关消息单独处理（与 carry 状态机耦合）。
+        // Carry-related messages are handled separately (coupled with the carry
+        // state machine).
         match &msg {
             Down::CarryRequest(from, mode) => {
                 self.events.push(NetClientEvent::CarryRequested {
@@ -198,7 +199,8 @@ impl NetClient {
             _ => {}
         }
 
-        // 记录需要暴露的事件（在 session 消费之前取快照）。
+        // Record the events that need to be exposed (take a snapshot before the
+        // session consumes them).
         match &msg {
             Down::Welcome {
                 player_id,
@@ -250,7 +252,7 @@ impl Service for NetClient {
     }
 
     fn update(&mut self, _ctx: &mut Context, _frame: FrameId, _dt: Fx) {
-        // 1. 收包
+        // 1. Receive packets
         for event in self.transport.poll() {
             match event {
                 TransportEvent::Connected => {}
@@ -262,13 +264,13 @@ impl Service for NetClient {
             }
         }
 
-        // 2. 会话插值
+        // 2. Session interpolation
         self.session.tick();
 
-        // 3. 携带状态推进
+        // 3. Advance the carry state
         self.carry.tick();
 
-        // 4. 节流发送化身
+        // 4. Throttle avatar sending
         self.frames_since_avatar += 1;
         if self.frames_since_avatar >= self.avatar_interval {
             self.frames_since_avatar = 0;
@@ -294,7 +296,7 @@ mod tests {
         let mut client = NetClient::new(Box::new(client_t), NetClientConfig::default());
         client.handshake().unwrap();
 
-        // 服务器应答 Welcome
+        // The server replies with Welcome
         let ups = server_t.poll_up();
         assert!(matches!(ups[0], Up::Hello { .. }));
         server_t
@@ -320,9 +322,9 @@ mod tests {
     #[test]
     fn sync_requires_declaration() {
         let (mut client, _server) = connected_client();
-        // 未声明 → 不发
+        // Not declared -> do not send
         client.send_sync("door", SyncPayload::Flag(true)).unwrap();
-        // 声明后 → 发
+        // After declaring -> send
         client.declare_sync_channel("door");
         client.send_sync("door", SyncPayload::Flag(true)).unwrap();
     }
@@ -332,10 +334,10 @@ mod tests {
         let (mut client, mut server) = connected_client();
         client.update(&mut test_ctx(), FrameId::ZERO, Fx::zero()); // drain welcome
         let _ = client.drain_events();
-        // 清空 handshake
+        // Clear the handshake
         let _ = server.poll_up();
 
-        // 30Hz → 每 2 帧发一次；连跑 6 帧应有 3 次
+        // 30Hz -> send once every 2 frames; 6 consecutive frames should yield 3
         for _ in 0..6 {
             client.update(&mut test_ctx(), FrameId::ZERO, Fx::zero());
         }
@@ -345,7 +347,7 @@ mod tests {
     }
 
     fn test_ctx() -> Context<'static> {
-        // 测试用：泄漏一个事件总线以获得 'static 上下文。
+        // For tests: leak an event bus to obtain a 'static context.
         let bus: &'static mut releste_kernel::EventBus =
             Box::leak(Box::new(releste_kernel::EventBus::new()));
         Context::new(bus)

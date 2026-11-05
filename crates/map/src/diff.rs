@@ -1,4 +1,4 @@
-//! 地图 diff：生成热重载补丁。
+//! Map diff: generate hot-reload patches.
 
 use std::collections::HashMap;
 
@@ -7,7 +7,7 @@ use releste_world::EntityId;
 
 use crate::format::{MapDocument, Props, Room, SyncRule, Tileset};
 
-/// 热重载补丁。
+/// Hot-reload patch.
 #[derive(Debug, Clone)]
 pub enum Patch {
     AddEntity(releste_world::EntityData),
@@ -18,38 +18,38 @@ pub enum Patch {
     UpdateSync(Vec<SyncRule>),
 }
 
-/// 比对两份地图，生成补丁列表。
+/// Compare two maps and produce a patch list.
 pub fn diff(old: &MapDocument, new: &MapDocument) -> Vec<Patch> {
     let mut patches = Vec::new();
 
-    // 比较同步规则
+    // Compare sync rules
     if old.sync_rules != new.sync_rules {
         patches.push(Patch::UpdateSync(new.sync_rules.clone()));
     }
 
-    // 比较每个房间
+    // Compare each room
     let old_by_name: HashMap<&str, &Room> =
         old.rooms.iter().map(|r| (r.name.as_str(), r)).collect();
     let new_by_name: HashMap<&str, &Room> =
         new.rooms.iter().map(|r| (r.name.as_str(), r)).collect();
 
-    // 遍历顺序取「旧地图顺序 → 新地图顺序」，**不走 HashSet**：
-    // 补丁序列必须确定，否则同一份输入每次 diff 都得到不同顺序。
-    // 先处理已有房间的变更与删除，再补上新增房间。
+    // Iteration order follows "old map order -> new map order", **not HashSet**:
+    // the patch sequence must be deterministic, otherwise the same input gives a different order on every diff.
+    // Handle changes and removals of existing rooms first, then fill in the added rooms.
     for old_room in &old.rooms {
         match new_by_name.get(old_room.name.as_str()) {
             Some(&new_room) => patches.extend(diff_room(old_room, new_room)),
-            // 房间被整体移除：其全部实体随之消失。
+            // The room was removed entirely: all of its entities disappear with it.
             None => patches.extend(old_room.entities.iter().map(|e| Patch::RemoveEntity(e.id))),
         }
     }
 
     for new_room in &new.rooms {
-        // 已存在的房间在上一个循环里处理过，这里只收新增的。
+        // Existing rooms were handled in the previous loop; only collect the added ones here.
         if old_by_name.contains_key(new_room.name.as_str()) {
             continue;
         }
-        // 新房间：瓦片整套 + 全部实体。
+        // A new room: the whole tileset + all entities.
         patches.push(Patch::ReplaceTiles(new_room.tiles.clone()));
         patches.extend(
             new_room
@@ -62,16 +62,16 @@ pub fn diff(old: &MapDocument, new: &MapDocument) -> Vec<Patch> {
     patches
 }
 
-/// 房间级 diff。
+/// Room-level diff.
 fn diff_room(old: &Room, new: &Room) -> Vec<Patch> {
     let mut patches = Vec::new();
 
-    // Tile 集变更
+    // Tileset change
     if old.tiles != new.tiles {
         patches.push(Patch::ReplaceTiles(new.tiles.clone()));
     }
 
-    // 实体 diff
+    // Entity diff
     let old_refs: Vec<EntityRef> = old
         .entities
         .iter()
@@ -109,11 +109,11 @@ fn diff_room(old: &Room, new: &Room) -> Vec<Patch> {
     patches
 }
 
-/// 实体内部比对。
+/// Entity-internal comparison.
 ///
-/// 承载生成补丁所需的**全部**字段。少一个，[`Patch::AddEntity`]
-/// 就会静默丢掉对应数据 —— 此前 `kind` 被硬编码成空串，导致热重载
-/// 新增的所有实体共用同一个 fallback `EntityKindId`。
+/// Carries **all** fields needed to build a patch. Miss one and [`Patch::AddEntity`]
+/// silently drops the corresponding data -- previously `kind` was hard-coded to an empty string, so every
+/// entity added by hot reload shared the same fallback `EntityKindId`.
 struct EntityRef {
     id: EntityId,
     kind: String,
@@ -124,19 +124,19 @@ struct EntityRef {
     origin_x: f32,
     origin_y: f32,
     props: Props,
-    /// 节点也参与 diff：`introCrusher` 的落点、`wire` 的折线都靠它。
+    /// Nodes take part in the diff too: `introCrusher`'s landing point and `wire`'s polyline depend on them.
     nodes: Vec<(f32, f32)>,
 }
 
-/// 实体 diff。
+/// Entity diff.
 fn diff_entities(old: &[EntityRef], new: &[EntityRef]) -> Vec<Patch> {
     let old_map: HashMap<EntityId, &EntityRef> = old.iter().map(|e| (e.id, e)).collect();
     let new_map: HashMap<EntityId, &EntityRef> = new.iter().map(|e| (e.id, e)).collect();
 
     let mut patches = Vec::new();
 
-    // 三段都按 slice 出现顺序遍历，**不走 HashSet**：补丁序列必须
-    // 确定，否则同一份输入每次 diff 都会得到不同顺序的补丁。
+    // All three passes iterate in slice order, **not HashSet**: the patch sequence must be
+    // deterministic, otherwise the same input gives patches in a different order on every diff.
     for e in new {
         if !old_map.contains_key(&e.id) {
             patches.push(Patch::AddEntity(releste_world::EntityData {
@@ -221,7 +221,7 @@ mod tests {
         EntityData::new(kind, EntityId::new(id), x, y)
     }
 
-    /// 挑出所有 `AddEntity` 的负载。
+    /// Pick out the payload of every `AddEntity`.
     fn added(patches: &[Patch]) -> Vec<&EntityData> {
         patches
             .iter()
@@ -245,7 +245,7 @@ mod tests {
         assert!(patches.is_empty());
     }
 
-    /// 新增房间不能被静默忽略 —— 瓦片和实体都要进补丁。
+    /// A new room must not be silently ignored -- both tiles and entities must go into the patch.
     #[test]
     fn added_room_emits_replace_tiles_and_add_entity() {
         let old = doc(vec![]);
@@ -254,7 +254,7 @@ mod tests {
         let patches = diff(&old, &new);
         assert!(
             patches.iter().any(|p| matches!(p, Patch::ReplaceTiles(_))),
-            "新增房间应带 ReplaceTiles, got {patches:?}"
+            "a new room should emit ReplaceTiles, got {patches:?}"
         );
 
         let list = added(&patches);
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(list[0].kind, "wall");
     }
 
-    /// 删除房间要把它的全部实体撤下，否则它们会永远留在世界里。
+    /// Removing a room must retract all of its entities, otherwise they stay in the world forever.
     #[test]
     fn removed_room_emits_remove_entity_for_every_entity() {
         let old = doc(vec![room(
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(removed, vec![EntityId::new(1), EntityId::new(2)]);
     }
 
-    /// `AddEntity` 必须还原 kind 与几何信息，不能丢字段。
+    /// `AddEntity` must restore kind and geometry and must not drop fields.
     #[test]
     fn add_entity_preserves_kind_and_geometry() {
         let mut grown = entity(7, "crystal", 4.0, 4.0);
@@ -311,9 +311,9 @@ mod tests {
         assert_eq!(d.origin_y, 2.5);
     }
 
-    /// 补丁序列必须确定：同一份输入反复 diff 结果完全一致。
+    /// The patch sequence must be deterministic: diffing the same input repeatedly gives identical results.
     ///
-    /// 此前房间和实体都走 `HashSet` 迭代，顺序随进程随机状态变化。
+    /// Previously rooms and entities both iterated a `HashSet`, so the order varied with the process's random state.
     #[test]
     fn diff_sequence_is_deterministic() {
         let make = || {
@@ -324,16 +324,23 @@ mod tests {
 
         let old = make();
         let mut new = make();
-        new.rooms.remove(3); // 删除 room_3
+        new.rooms.remove(3); // remove room_3
         new.rooms
             .push(room("brand_new", vec![entity(999, "door", 0.0, 0.0)]));
 
         let render = |p: &[Patch]| p.iter().map(|p| format!("{p:?}")).collect::<Vec<String>>();
 
         let expected = render(&diff(&old, &new));
-        assert!(!expected.is_empty(), "sanity: 本例应产生补丁");
+        assert!(
+            !expected.is_empty(),
+            "sanity: this case should produce patches"
+        );
         for _ in 0..16 {
-            assert_eq!(render(&diff(&old, &new)), expected, "diff 顺序不稳定");
+            assert_eq!(
+                render(&diff(&old, &new)),
+                expected,
+                "diff order is unstable"
+            );
         }
     }
 }

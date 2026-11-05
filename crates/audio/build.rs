@@ -1,4 +1,4 @@
-//! Build script: probe for the user-provided FMOD shared library (AGENTS.md §4.7).
+//! Build script: probe for the user-provided FMOD shared library (AGENTS.md 4.7).
 //!
 //! **FMOD binaries are not vendored.** The library is only required when the
 //! `fmod` feature is enabled; if it is missing we fail in the AGENTS.md format.
@@ -72,7 +72,7 @@ fn find_fmod() -> Option<PathBuf> {
     None
 }
 
-/// The error text specified by AGENTS.md §4.7.
+/// The error text specified by AGENTS.md 4.7.
 const NOT_FOUND: &str = "\
 error: FMOD library not found.
 Download from https://www.fmod.com/download

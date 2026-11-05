@@ -1,8 +1,8 @@
 # Rust build definitions (flake-parts module).
 #
 # crane splits "compile the dependencies" from "compile this repository":
-#   buildDepsOnly  → third-party dependencies (survive source changes)
-#   buildPackage   → this workspace
+#   buildDepsOnly  -> third-party dependencies (survive source changes)
+#   buildPackage   -> this workspace
 # so `nix build` stays quick when only application code changed.
 { inputs, ... }:
 {
@@ -17,7 +17,7 @@
     let
       # Rust toolchain, read from the repository's rust-toolchain.toml via
       # fenix. cargo / rustc / rustfmt / clippy therefore come from the same
-      # toolchain rustup uses locally — no "fmt passes locally, fails in CI"
+      # toolchain rustup uses locally - no "fmt passes locally, fails in CI"
       # drift, and no dependency on whatever nixpkgs happens to package.
       #
       # `sha256` is the hash of the toolchain file; bump it whenever
@@ -101,7 +101,7 @@
       #
       # crane's buildDepsOnly appends a `-deps` suffix to pname on its own
       # (lib/buildDepsOnly.nix: pnameSuffix = "-deps"), so pname stays
-      # "releste" here — spelling out "releste-deps" yields the silly
+      # "releste" here - spelling out "releste-deps" yields the silly
       # `releste-deps-deps-0.1.0`.
       cargoArtifacts = craneLib.buildDepsOnly (
         commonArgs
@@ -115,7 +115,7 @@
       # This is what `nix run` executes. The binaries live in the store and
       # the windowed path dlopens wayland / X11 / vulkan-loader at runtime
       # (NixOS has no /usr/lib), so makeWrapper bakes the library path into
-      # every binary — headless, editor and pipeline benefit alike.
+      # every binary - headless, editor and pipeline benefit alike.
       releste = craneLib.buildPackage (
         commonArgs
         // {
@@ -140,13 +140,13 @@
       # pkg-config, so `lua` (vendored LuaJIT) and `gamepad` (gilrs) both work.
       #
       # `lua` needs `make` for vendored LuaJIT, `gamepad` needs udev +
-      # pkg-config — both come from commonArgs.
+      # pkg-config - both come from commonArgs.
       fullFeatures = "--workspace --features releste-script/lua,releste-input/gamepad";
 
       # The full variant gets its own dependency cache: its dependency graph
       # differs from the default one, and reusing those artifacts would force
       # a rebuild of the very crates the cache is meant to avoid.
-      # (crane appends `-deps` → `releste-full-deps`.)
+      # (crane appends `-deps` -> `releste-full-deps`.)
       cargoArtifactsFull = craneLib.buildDepsOnly (
         commonArgs
         // {
@@ -164,7 +164,7 @@
         }
       );
 
-      # ── Checks ────────────────────────────────────────────────
+      # -- Checks ------------------------------------------------
       # These become the targets of `nix flake check` /
       # `nix build .#checks.<system>.<name>`.
 
@@ -236,7 +236,7 @@
       #
       # They exist to test fmod_backend's generation *probing*: the real
       # libfmod.so is user-provided and never committed, so it cannot go into
-      # CI — but the "identify the generation by its symbols" logic must be
+      # CI - but the "identify the generation by its symbols" logic must be
       # testable. Three stubs, one per API generation.
       fmodStubs =
         let

@@ -1,4 +1,4 @@
-//! 实体与组件数据。
+//! Entity and component data.
 
 use std::collections::BTreeMap;
 
@@ -8,9 +8,9 @@ use crate::factory::EntityKindId;
 use crate::id::EntityId;
 use crate::schema::FieldValue;
 
-/// 运行时实体。
+/// Runtime entity.
 ///
-/// 由 `EntityFactory::build` 构造，存储在 `World` 中。
+/// Built by `EntityFactory::build` and stored in `World`.
 #[derive(Debug, Clone)]
 pub struct Entity {
     pub id: EntityId,
@@ -27,23 +27,24 @@ impl Entity {
         }
     }
 
-    /// 获取属性。
+    /// Get a property.
     pub fn get(&self, key: &str) -> Option<&FieldValue> {
         self.properties.get(key)
     }
 
-    /// 设置属性。
+    /// Set a property.
     pub fn set(&mut self, key: impl Into<String>, value: FieldValue) {
         self.properties.insert(key.into(), value);
     }
 }
 
-/// 地图中的实体数据（在构建为 [`Entity`] 之前）。
+/// Entity data from a map (before it is built into an [`Entity`]).
 ///
-/// 此结构可从 `.map` 文件反序列化。
+/// This structure can be deserialized from a `.map` file.
 ///
-/// **字段顺序就是磁盘布局**（bincode 不自描述，ROADMAP 附录 E.6）：
-/// 新字段只能追加到末尾，`legacy` 模块里为每个历史版本留冻结副本。
+/// **Field order is the on-disk layout** (bincode is not self-describing,
+/// ROADMAP Appendix E.6): new fields may only be appended to the end, and the
+/// `legacy` module keeps a frozen copy for each historical version.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityData {
     pub id: EntityId,
@@ -54,19 +55,22 @@ pub struct EntityData {
     pub height: Option<i32>,
     pub origin_x: f32,
     pub origin_y: f32,
-    /// 属性表用 `BTreeMap`：`HashMap` 的遍历顺序随进程随机，
-    /// 会让同一张地图序列化出不同字节（ROADMAP E.8 / E.9 #3）。
+    /// The property table uses `BTreeMap`: `HashMap` iteration order is random
+    /// per process, which would serialize the same map to different bytes
+    /// (ROADMAP E.8 / E.9 #3).
     pub properties: BTreeMap<String, FieldValue>,
-    /// 实体节点（v2 追加，`node` 子元素）。
+    /// Entity nodes (appended in v2, the `node` child element).
     ///
-    /// 原版 `EntityData.Nodes`（`pureCeleste.cs:113135-113198`），最常用的
-    /// 三个消费者：`IntroCrusher` 的落点（`106324-106327`）、`Wire` 的折线
-    /// （`106674-106704`）、`Bridge` 的桥墩（`107679`）。
+    /// Vanilla `EntityData.Nodes` (`pureCeleste.cs:113135-113198`); the three
+    /// most common consumers: `IntroCrusher` landing point
+    /// (`106324-106327`), `Wire` polyline (`106674-106704`), `Bridge` piers
+    /// (`107679`).
     ///
-    /// 坐标与 `x`/`y` **同一坐标系**（房间局部、可越出房间边界）：原版
-    /// 消费者写的是 `data.Nodes[0] + offset`（offset = 房间偏移，只加
-    /// 一次），与 `data.Position + offset` 完全对称 —— 节点是绝对房间
-    /// 坐标，**不是**相对实体位置的偏移。
+    /// The coordinates are in the **same coordinate space** as `x`/`y` (room
+    /// local, may extend beyond the room bounds): vanilla consumers write
+    /// `data.Nodes[0] + offset` (offset = room offset, added only once), fully
+    /// symmetric with `data.Position + offset` -- nodes are absolute room
+    /// coordinates, **not** offsets relative to the entity position.
     #[serde(default)]
     pub nodes: Vec<(f32, f32)>,
 }

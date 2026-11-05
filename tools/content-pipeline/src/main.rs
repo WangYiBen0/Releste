@@ -1,6 +1,6 @@
-//! Releste 资源管线：原版 Celeste 资源 → 引擎格式。
+//! Releste asset pipeline: vanilla Celeste assets -> engine format.
 //!
-//! **一次性转换**，不在运行时做（AGENTS.md §4.6 / §12）。
+//! **One-shot conversion**, not done at runtime (AGENTS.md 4.6 / 12).
 //!
 //! ```text
 //! cargo run -p releste-content-pipeline -- \
@@ -17,30 +17,30 @@ use clap::Parser;
 use releste_content_pipeline::{Pipeline, PipelineConfig};
 use tracing::info;
 
-/// 命令行参数。
+/// Command-line arguments.
 #[derive(Parser, Debug)]
 #[command(
     name = "content-pipeline",
-    about = "原版 Celeste 资源 → Releste 引擎格式"
+    about = "vanilla Celeste assets -> Releste engine format"
 )]
 struct Args {
-    /// 源目录（原版 Celeste 的 Content/ 目录）。
+    /// Source directory (the vanilla Celeste Content/ directory).
     #[arg(short, long, default_value = "../assets-src")]
     source: PathBuf,
 
-    /// 输出目录（引擎运行时资源）。
+    /// Output directory (engine runtime assets).
     #[arg(short, long, default_value = "../assets")]
     output: PathBuf,
 
-    /// 只转换指定分类（可重复）：atlas / dialog / maps / audio。
+    /// Convert only the given categories (repeatable): atlas / dialog / maps / audio.
     #[arg(long = "only", value_name = "CATEGORY")]
     only: Vec<String>,
 
-    /// 只校验，不写文件。
+    /// Validate only, do not write files.
     #[arg(long)]
     dry_run: bool,
 
-    /// 写完后重新读回每个 `.map`，确认运行时加载器能解析。
+    /// After writing, read every `.map` back to confirm the runtime loader can parse it.
     #[arg(long)]
     verify: bool,
 }
@@ -111,7 +111,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// 用运行时加载器重新读取输出目录下的所有 `.map`。
+/// Re-read every `.map` in the output directory with the runtime loader.
 fn verify_maps(output: &std::path::Path) -> anyhow::Result<(usize, usize, usize)> {
     let dir = output.join("maps");
     if !dir.is_dir() {

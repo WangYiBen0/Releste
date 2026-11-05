@@ -1,6 +1,6 @@
-//! 管线编排：遍历 `assets-src/`，转换到 `assets/`。
+//! Pipeline orchestration: walk `assets-src/` and convert into `assets/`.
 //!
-//! 转换映射见 AGENTS.md §12。
+//! See AGENTS.md 12 for the conversion map.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,18 +17,18 @@ use crate::dialog::DialogDocument;
 use crate::error::PipelineError;
 use crate::mapbin::{BinValue, MapBin, MapBinElement};
 
-/// 管线配置。
+/// Pipeline configuration.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    /// 源目录（原版 Celeste 资源）。
+    /// Source directory (vanilla Celeste assets).
     pub source: PathBuf,
-    /// 输出目录。
+    /// Output directory.
     pub output: PathBuf,
-    /// 只要转换这些分类（空 = 全部）。
+    /// Convert only these categories (empty = all).
     pub only: Vec<String>,
 }
 
-/// 一次运行的报告。
+/// Report for one run.
 #[derive(Debug, Default, Clone)]
 pub struct PipelineReport {
     pub atlases: usize,
@@ -39,11 +39,11 @@ pub struct PipelineReport {
     pub rooms: usize,
     pub entities: usize,
     pub banks_copied: usize,
-    /// 已离线解码成 PNG 的 `.data` 纹理数。
+    /// Number of `.data` textures already decoded to PNG offline.
     pub decoded_textures: usize,
-    /// 尚未转码、仍以原始 `.data` 复制的纹理数（见 AGENTS.md §13）。
+    /// Number of textures not yet transcoded and still copied as raw `.data` (see AGENTS.md 13).
     pub pending_textures: usize,
-    /// 转换出的 tileset 定义数（`ForegroundTiles.xml` → `tilesets.toml`）。
+    /// Number of tileset definitions produced (`ForegroundTiles.xml` -> `tilesets.toml`).
     pub tilesets: usize,
     pub warnings: Vec<String>,
 }
@@ -55,14 +55,14 @@ impl PipelineReport {
     }
 }
 
-/// 管线。
+/// Pipeline.
 pub struct Pipeline {
     config: PipelineConfig,
     report: PipelineReport,
 }
 
 impl Pipeline {
-    /// 新建。
+    /// Create a new one.
     pub fn new(config: PipelineConfig) -> Self {
         Pipeline {
             config,
@@ -70,7 +70,7 @@ impl Pipeline {
         }
     }
 
-    /// 运行全部分类。
+    /// Run all categories.
     pub fn run(&mut self) -> Result<PipelineReport, PipelineError> {
         std::fs::create_dir_all(&self.config.output)
             .map_err(|e| PipelineError::io(self.config.output.display(), e))?;
@@ -99,10 +99,10 @@ impl Pipeline {
         self.config.only.is_empty() || self.config.only.iter().any(|c| c == category)
     }
 
-    /// 保证输出路径不逃逸出输出目录。
+    /// Ensure the output path does not escape the output directory.
     fn safe_out(&self, rel: &Path) -> Result<PathBuf, PipelineError> {
         let joined = self.config.output.join(rel);
-        // 归一化：拒绝 `..` 组件。
+        // Normalize: reject `..` components.
         for comp in rel.components() {
             if matches!(comp, std::path::Component::ParentDir) {
                 return Err(PipelineError::PathEscape(rel.display().to_string()));
@@ -113,20 +113,20 @@ impl Pipeline {
 
     // ---------- Atlases ----------
 
-    /// `Graphics/{Foreground,Background}Tiles.xml` → `atlas/{tilesets,bg_tilesets}.toml`。
+    /// `Graphics/{Foreground,Background}Tiles.xml` -> `atlas/{tilesets,bg_tilesets}.toml`.
     ///
-    /// 两张表**不能合并**：同名 id 在前景/背景表里是不同贴图
-    /// （`'1'` 前景是 dirt、背景是 bgDirt，`'3'` 是 snow / bgBrickRuined），
-    /// 而每个房间的 `solids` 与 `bg` 各自只应在自己那张表里查
-    /// （原版两个独立的 `Autotiler`，`110116-110117`）。
+    /// The two tables **must not be merged**: the same id is a different sprite in the foreground/background table
+    /// (`'1'` is dirt in the foreground and bgDirt in the background; `'3'` is snow / bgBrickRuined),
+    /// and each room's `solids` and `bg` should only be looked up in their own table
+    /// (vanilla has two independent `Autotiler`s, `110116-110117`).
     ///
-    /// XML 是原始格式，只在 build time 解析（AGENTS.md §4.6）。
+    /// XML is the original format and is only parsed at build time (AGENTS.md 4.6).
     fn convert_tilesets(&mut self) -> Result<(), PipelineError> {
         self.convert_tileset_xml("Graphics/ForegroundTiles.xml", "atlas/tilesets.toml")?;
         self.convert_tileset_xml("Graphics/BackgroundTiles.xml", "atlas/bg_tilesets.toml")
     }
 
-    /// 单个 `<Tileset>` 表：XML → TOML。
+    /// One `<Tileset>` table: XML -> TOML.
     fn convert_tileset_xml(&mut self, rel_xml: &str, rel_toml: &str) -> Result<(), PipelineError> {
         let xml_path = self.config.source.join(rel_xml);
         if !xml_path.is_file() {
@@ -172,19 +172,19 @@ impl Pipeline {
         if self.report.pending_textures > 0 {
             self.report.warn(format!(
                 "{} per-sprite `.data` payloads were copied verbatim; only packed atlases \
-                 are decoded to PNG so far (see AGENTS.md §13)",
+                 are decoded to PNG so far (see AGENTS.md 13)",
                 self.report.pending_textures
             ));
         }
         Ok(())
     }
 
-    /// `Graphics/Sprites.xml` → `atlas/Gameplay.sprites.toml`。
+    /// `Graphics/Sprites.xml` -> `atlas/Gameplay.sprites.toml`.
     ///
-    /// 原版 `GFX.SpriteBank = new SpriteBank(GFX.Game, ...)`：所有动画
-    /// 都在 Game 图集（Gameplay.png，`pureCeleste.cs` 启动段的
-    /// `GFX.Load`）；本引擎的 Game 图集名就是 `Gameplay`。
-    /// 文件缺失只告警（不是每张图都有动画数据要转）。
+    /// Vanilla `GFX.SpriteBank = new SpriteBank(GFX.Game, ...)`: all animations
+    /// live in the Game atlas (Gameplay.png, the `GFX.Load` in
+    /// the startup section of `pureCeleste.cs`); this engine's Game atlas name is exactly `Gameplay`.
+    /// A missing file only warns (not every image has animation data to convert).
     fn convert_sprites(&mut self) -> Result<(), PipelineError> {
         let src = self.config.source.join("Graphics/Sprites.xml");
         let text = match std::fs::read_to_string(&src) {
@@ -212,7 +212,7 @@ impl Pipeline {
             }
         })?;
         std::fs::write(&out_path, &toml).map_err(|e| PipelineError::io(out_path.display(), e))?;
-        self.report.sprites += 0; // 动画表不是 sprite 数量；保持计数语义不变
+        self.report.sprites += 0; // an animation table is not a sprite count; keep the counting semantics unchanged
         Ok(())
     }
 
@@ -225,14 +225,14 @@ impl Pipeline {
         let out_dir = self.safe_out(&PathBuf::from("atlas"))?;
         std::fs::create_dir_all(&out_dir).map_err(|e| PipelineError::io(out_dir.display(), e))?;
 
-        // 先把像素落成 PNG，再写描述：描述里的 `kind` / `source` 必须指向
-        // 真实存在的引擎格式文件，而不是转换的输入。
+        // Write the pixels out as PNG first, then write the descriptor: the `kind` / `source` in the descriptor must point at
+        // a real engine-format file, not the conversion input.
         let mut build = build.clone();
         for tex in &mut build.textures {
             self.write_texture_payload(&stem, tex)?;
         }
 
-        // 描述文件（我们的 .atlas = TOML）
+        // Descriptor file (our .atlas = TOML)
         let descriptor = self.atlas_descriptor(&stem, &build)?;
         let out_path = out_dir.join(format!("{stem}.atlas"));
         std::fs::write(&out_path, descriptor)
@@ -243,10 +243,10 @@ impl Pipeline {
         Ok(())
     }
 
-    /// 把一个纹理组的载荷写成引擎格式，并把 `tex.source` 改写成输出文件。
+    /// Write one texture group's payload in engine format and rewrite `tex.source` to the output file.
     ///
-    /// 转换之后每个组要么是原样复制的 PNG，要么是本工具解码出来的 PNG，
-    /// 于是 [`Self::atlas_descriptor`] 只需要处理 `kind = "png"`。
+    /// After conversion every group is either a PNG copied verbatim or a PNG decoded by this tool,
+    /// so [`Self::atlas_descriptor`] only needs to handle `kind = "png"`.
     fn write_texture_payload(
         &mut self,
         stem: &str,
@@ -254,7 +254,7 @@ impl Pipeline {
     ) -> Result<(), PipelineError> {
         let source = tex.source.clone();
         match source {
-            // 独立 PNG：原样复制，`kind` 本来就是 `png`。
+            // Standalone PNG: copy verbatim; `kind` is already `png`.
             TextureSource::Png(src) => {
                 let rel = group_out_rel(stem, &tex.name, "png");
                 if src.is_file() {
@@ -269,10 +269,10 @@ impl Pipeline {
                 tex.source = TextureSource::Png(PathBuf::from(&rel));
             }
 
-            // PackerNoAtlas：每个 sprite 一个 `.data`。
-            // 这些页各自独立、且没有可用的排布（`.meta` 里的矩形互相重叠，
-            // 那是动画帧偏移），合成单页需要分页 + 运行时按 sprite 绑定纹理，
-            // 目前原样复制并保留原 kind（AGENTS.md §13）。
+            // PackerNoAtlas: one `.data` per sprite.
+            // These pages are independent and have no usable layout (the rectangles in `.meta` overlap;
+            // they are animation frame offsets), so combining them into a single page needs paging + runtime per-sprite texture binding;
+            // for now we copy verbatim and keep the original kind (AGENTS.md 13).
             TextureSource::PerSpriteDir(_) => {
                 for sprite in &tex.sprites {
                     let src = source.file_for_sprite(&sprite.name);
@@ -284,7 +284,7 @@ impl Pipeline {
                 }
             }
 
-            // Packer / PackerNoAtlas 单页：解码成 PNG。
+            // Packer / PackerNoAtlas single page: decode to PNG.
             data_source => {
                 let src = data_source.path().to_path_buf();
                 let decoded = data::decode_file(&src)?;
@@ -307,12 +307,12 @@ impl Pipeline {
             y: i16,
             w: i16,
             h: i16,
-            /// 绘制原点（源文件 offset 取负，与 MTexture 一致）。
+            /// Draw origin (source-file offset negated, matching MTexture).
             origin_x: i16,
             origin_y: i16,
             frame_w: i16,
             frame_h: i16,
-            /// 仅 `per_sprite_crunch` 用：该 sprite 自己的载荷路径。
+            /// Only used by `per_sprite_crunch`: this sprite's own payload path.
             #[serde(skip_serializing_if = "Option::is_none")]
             source: Option<String>,
         }
@@ -322,7 +322,7 @@ impl Pipeline {
             name: &'a str,
             /// `png` | `crunch` | `packed_crunch` | `per_sprite_crunch`
             kind: &'static str,
-            /// 组级载荷路径（`per_sprite_crunch` 时为组目录）。
+            /// Group-level payload path (the group directory for `per_sprite_crunch`).
             source: String,
             #[serde(skip_serializing_if = "Option::is_none")]
             width: Option<i32>,
@@ -346,7 +346,7 @@ impl Pipeline {
             .map(|t| {
                 let per_sprite = matches!(t.source, TextureSource::PerSpriteDir(_));
                 let source = if per_sprite {
-                    // 组目录（每个 sprite 一个 .data）
+                    // Group directory (one .data per sprite)
                     format!("atlas/{name}/{}", t.name)
                 } else {
                     group_out_rel(name, &t.name, t.source.payload_ext())
@@ -389,7 +389,7 @@ impl Pipeline {
             .map_err(|e| PipelineError::Serialize(format!("atlas toml: {e}")))
     }
 
-    /// 按给定的相对路径（含扩展名）复制文件到输出目录。
+    /// Copy a file into the output directory at the given relative path (including extension).
     fn copy_exact(&self, from: &Path, out_rel: &str) -> Result<(), PipelineError> {
         let to = self.safe_out(Path::new(out_rel))?;
         if let Some(parent) = to.parent() {
@@ -415,7 +415,7 @@ impl Pipeline {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "txt"))
             .filter(|p| {
-                // 跳过 `.txt.export` 之类的中间产物：仅取直接 .txt
+                // Skip intermediate products like `.txt.export`: only take direct .txt files
                 p.file_name()
                     .map(|n| !n.to_string_lossy().ends_with(".export"))
                     .unwrap_or(false)
@@ -487,12 +487,12 @@ impl Pipeline {
         Ok(())
     }
 
-    /// 把 Celeste 地图树转换为本引擎的 [`MapDocument`]。
+    /// Convert the Celeste map tree into this engine's [`MapDocument`].
     fn convert_map(&mut self, map: &MapBin) -> MapDocument {
         let area = map.name.clone();
         let area_id = area_id_of(&area);
         let mut rooms = Vec::new();
-        // 区域级 `<Style>`：清屏色 + 视差背景（v2 追加）。
+        // Area-level `<Style>`: clear color + parallax backgrounds (appended in v2).
         let style = convert_style(&map.root);
 
         for level in map.root.children_named("levels") {
@@ -514,8 +514,8 @@ impl Pipeline {
                     .unwrap_or_default();
                 let bg = lv.child("bg").map(tileset_from_element).unwrap_or_default();
 
-                // 装饰层用房间的 tile 尺寸做网格（原版 `ReadCSVIntGrid`
-                // 也是按 `LevelData.TileBounds` 的宽高开表，77247-77253）。
+                // The decoration layer uses the room's tile size as its grid (vanilla `ReadCSVIntGrid`
+                // also opens the table at `LevelData.TileBounds` width/height, 77247-77253).
                 let tile_w = ((width / TILE_PX).ceil().max(1.0)) as u32;
                 let tile_h = ((height / TILE_PX).ceil().max(1.0)) as u32;
                 let bg_scenery = lv
@@ -603,7 +603,7 @@ impl Pipeline {
         MapDocument {
             area,
             rooms,
-            // 默认不同步：地图若需要同步，由作者显式声明。
+            // Not synchronized by default: if a map needs sync, the author declares it explicitly.
             sync_rules: Vec::new(),
             style,
         }
@@ -641,7 +641,7 @@ impl Pipeline {
     }
 }
 
-/// 目录区域 ID（稳定，用于 `EntityId` 生成）。
+/// Directory area ID (stable, used for `EntityId` generation).
 fn area_id_of(area: &str) -> u32 {
     let mut h = 0u32;
     for b in area.bytes() {
@@ -650,14 +650,14 @@ fn area_id_of(area: &str) -> u32 {
     h
 }
 
-/// 组级载荷在输出目录中的相对路径。
+/// Group-level payload path relative to the output directory.
 ///
-/// 描述文件与复制逻辑共用，保证 `source` 字段指向真实文件。
+/// Shared by the descriptor file and the copy logic, to guarantee the `source` field points at a real file.
 fn group_out_rel(stem: &str, group: &str, ext: &str) -> String {
     format!("atlas/{stem}/{group}.{ext}")
 }
 
-/// 把解码结果写成 PNG（必要时先建目录）。
+/// Write the decode result as a PNG (creating directories first if needed).
 fn write_png(to: &Path, tex: &DecodedTexture) -> Result<(), PipelineError> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent).map_err(|e| PipelineError::io(parent.display(), e))?;
@@ -681,15 +681,15 @@ fn write_png(to: &Path, tex: &DecodedTexture) -> Result<(), PipelineError> {
         })
 }
 
-/// `per_sprite_crunch` 单 sprite 载荷的相对路径。
+/// Relative path of a `per_sprite_crunch` single-sprite payload.
 fn sprite_out_rel(stem: &str, group: &str, sprite: &str) -> String {
     format!("atlas/{stem}/{group}/{sprite}.data")
 }
 
-/// Celeste tile 字母表：`0` 为空，其余为 tile 索引 + 1。
+/// Celeste tile alphabet: `0` is empty, everything else is tile index + 1.
 const TILE_ALPHABET: &str = "0123456789abcdefghijklmnopqrstuvwxyz";
 
-/// 从 `<solids>` / `<bg>` 元素的 `innerText` 构造 [`Tileset`]。
+/// Build a [`Tileset`] from the `innerText` of a `<solids>` / `<bg>` element.
 fn tileset_from_element(el: &MapBinElement) -> Tileset {
     let atlas = el
         .attr("tileset")
@@ -703,7 +703,7 @@ fn tileset_from_element(el: &MapBinElement) -> Tileset {
         .unwrap_or("");
     let rows: Vec<&str> = text.split('\n').collect();
 
-    // 去掉行尾的空行（Celeste 的 innerText 常以若干换行结尾）。
+    // Drop the trailing empty lines (Celeste's innerText often ends with several newlines).
     let rows: Vec<&str> = {
         let mut r = rows;
         while r.len() > 1 && r.last().is_some_and(|s| s.trim().is_empty()) {
@@ -721,7 +721,7 @@ fn tileset_from_element(el: &MapBinElement) -> Tileset {
             let Some(pos) = TILE_ALPHABET.find(ch) else {
                 continue;
             };
-            // 源格式里 '0' 是空；'1' 表示第 1 号 tile。
+            // In the source format '0' is empty; '1' means tile number 1.
             tiles[y * width as usize + x] = pos as u16;
         }
     }
@@ -734,24 +734,24 @@ fn tileset_from_element(el: &MapBinElement) -> Tileset {
     }
 }
 
-/// 一格瓦片的像素边长（原版所有 `TileGrid` 都是 8×8）。
+/// Pixel edge length of one tile (all vanilla `TileGrid`s are 8x8).
 const TILE_PX: f32 = 8.0;
 
-/// 从 `bgtiles` / `fgtiles` 元素构造装饰层 [`Tileset`]（CSV 整数网格）。
+/// Build a decoration layer [`Tileset`] from a `bgtiles` / `fgtiles` element (a CSV integer grid).
 ///
-/// 原版 `Calc.ReadCSVIntGrid(csv, level.TileBounds.W, TileBounds.H)`
-/// （`pureCeleste.cs:20842-20862`）先把整张 `width × height` 表填成 `-1`，
-/// 再按行 `Split('\n')`、行内 `Split(',')`（丢弃空项）覆写；缺行、缺列、
-/// 空行一律保持 `-1`。随后 `TileGrid.Overlay` 只在 `tiles[i,j] >= 0` 时
-/// 才画（`11274-11285`），取值是 `Tileset` 的**扁平下标**
-/// `tiles[index % 列数, index / 列数]`（`15215-15226`）。
+/// Vanilla `Calc.ReadCSVIntGrid(csv, level.TileBounds.W, TileBounds.H)`
+/// (`pureCeleste.cs:20842-20862`) first fills the whole `width x height` table with `-1`,
+/// then overwrites it row by row via `Split('\n')` and within a row via `Split(',')` (dropping empty entries); missing rows, missing columns
+/// and empty rows all stay `-1`. Then `TileGrid.Overlay` only draws when `tiles[i,j] >= 0`
+/// (`11274-11285`), and the value is the **flat index** of `Tileset`
+/// `tiles[index % columns, index / columns]` (`15215-15226`).
 ///
-/// 引擎约定 `0` = 空（见 `format::Tileset`），所以这里把 `-1` 压成 `0`、
-/// 把原值 `v` 存成 `v + 1`；渲染侧用 `存值 - 1` 还原下标。
+/// The engine convention is `0` = empty (see `format::Tileset`), so here `-1` is squashed to `0` and
+/// the original value `v` is stored as `v + 1`; the render side recovers the index as `stored value - 1`.
 ///
-/// `atlas` 取元素自己的 `tileset` 属性：装饰层用的是 `tilesets/scenery`
-/// （`110118` `new Tileset(Game["tilesets/scenery"], 8, 8)`），
-/// 和 `solids`/`bg` 的 `Gameplay` 不是同一张表。
+/// `atlas` takes the element's own `tileset` attribute: the decoration layer uses `tilesets/scenery`
+/// (`110118` `new Tileset(Game["tilesets/scenery"], 8, 8)`),
+/// which is not the same table as `Gameplay` for `solids`/`bg`.
 fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
     let atlas = el
         .attr("tileset")
@@ -767,12 +767,12 @@ fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
 
     for (y, row) in text.split('\n').enumerate() {
         if y >= height as usize {
-            break; // 原版：k < height && k < array2.Length
+            break; // vanilla: k < height && k < array2.Length
         }
-        // `RemoveEmptyEntries`：空串被吃掉，后面的值左移（与原版一致）。
+        // `RemoveEmptyEntries`: empty strings are dropped and later values shift left (same as vanilla).
         for (x, cell) in row.split(',').filter(|c| !c.is_empty()).enumerate() {
             if x >= width as usize {
-                break; // 原版：l < width && l < array3.Length
+                break; // vanilla: l < width && l < array3.Length
             }
             let Ok(value) = cell.parse::<i32>() else {
                 warn!(
@@ -784,10 +784,10 @@ fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
                 continue;
             };
             if value < 0 {
-                continue; // -1 = "这一格不覆盖"
+                continue; // -1 = "this cell is not covered"
             }
-            // u16 存得下整张 scenery（360 格，最大下标 352）；还是溢出
-            // 就丢弃并告警 —— 绝不能让 `v + 1` 环绕成另一张贴图。
+            // u16 can hold the whole scenery table (360 cells, max index 352); if it still
+            // overflows, drop it and warn -- `v + 1` must never wrap around into another table.
             let Some(encoded) = value.checked_add(1).filter(|e| *e <= i32::from(u16::MAX)) else {
                 overflow += 1;
                 continue;
@@ -812,11 +812,11 @@ fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
     }
 }
 
-/// 把 `<fgdecals>` / `<bgdecals>` 组转换成 [`Decal`] 列表。
+/// Convert `<fgdecals>` / `<bgdecals>` groups into a [`Decal`] list.
 ///
-/// 原版每条 `DecalData` 只有 `texture` / `x` / `y` / `scaleX` / `scaleY`
-/// （`pureCeleste.cs:113199-113206`），深度由所在组决定
-/// （fg `-10500` / bg `9000`，`115079-115086`）。
+/// Each vanilla `DecalData` only has `texture` / `x` / `y` / `scaleX` / `scaleY`
+/// (`pureCeleste.cs:113199-113206`); the depth is decided by the group it is in
+/// (fg `-10500` / bg `9000`, `115079-115086`).
 fn convert_decals(group: &MapBinElement) -> Vec<Decal> {
     group
         .children
@@ -837,40 +837,40 @@ fn convert_decals(group: &MapBinElement) -> Vec<Decal> {
         .collect()
 }
 
-/// 贴花纹理名 → 图集键（`decals/` + 相对路径）。
+/// Decal texture name -> atlas key (`decals/` + relative path).
 ///
-/// 跟着原版 `Decal` 构造器走（`pureCeleste.cs:88573-88582`）：
-/// `Path.Combine("decals", 去掉扩展名).Replace('\\', '/')`。
+/// Follows the vanilla `Decal` constructor (`pureCeleste.cs:88573-88582`):
+/// `Path.Combine("decals", name without extension).Replace('\\', '/')`.
 ///
-/// 原版最后还有一道 `Regex.Replace(name, "\\d+$", "")`，把尾部数字剥掉再
-/// `GetAtlasSubtextures` 拿整组帧做动画。本引擎的图集是**逐帧精确键**，
-/// 没有子图集组，所以尾部数字保留（`flag00` 存成 `decals/…/flag00`）；
-/// 剥数字 + 组动画留到有多帧贴花时再做。
+/// Vanilla then has a final `Regex.Replace(name, "\\d+$", "")` that strips trailing digits before
+/// `GetAtlasSubtextures` grabs the whole frame group for animation. This engine's atlas is **exact per-frame keys**
+/// with no sub-atlas groups, so trailing digits are kept (`flag00` is stored as `decals/.../flag00`);
+/// stripping digits + group animation is left for when there are multi-frame decals.
 fn decal_texture(raw: &str) -> String {
     let stem = match raw.rsplit_once('.') {
-        // 后缀必须是个真扩展名（不含路径分隔符），否则 `.` 属于路径。
+        // The suffix must be a real extension (no path separator), otherwise the `.` belongs to the path.
         Some((stem, ext)) if !ext.is_empty() && !ext.contains(['/', '\\']) => stem,
         _ => raw,
     };
     format!("decals/{}", stem.replace('\\', "/"))
 }
 
-/// `<Style>` → [`MapStyle`]。
+/// `<Style>` -> [`MapStyle`].
 ///
-/// 原版只认三个东西：`color` 属性 → 清屏色（默认 `Color.Black`，
-/// `pureCeleste.cs:112310` / `112432-112435`），`<Backgrounds>` →
-/// `MapData.Background`，`<Foregrounds>` → `MapData.Foreground`
-/// （`112428-112449`）。`<Style>` 缺失时整段取原版默认（黑底、无背景）。
+/// Vanilla only recognizes three things: the `color` attribute -> clear color (default `Color.Black`,
+/// `pureCeleste.cs:112310` / `112432-112435`), `<Backgrounds>` ->
+/// `MapData.Background`, `<Foregrounds>` -> `MapData.Foreground`
+/// (`112428-112449`). When `<Style>` is missing the whole thing takes the vanilla default (black background, no backgrounds).
 fn convert_style(root: &MapBinElement) -> MapStyle {
     let Some(style) = root.child("Style") else {
         return MapStyle::default();
     };
 
-    // 房间名表：`only=` / `exclude=` 的通配符在**转换期**展开成具体
-    // 房间名（原版 `ParseLevelsList`，`pureCeleste.cs:113019-113036`，
-    // 对 `Levels` 逐个匹配后收进集合）。这里收集名字的顺序与
-    // `convert_map` 的 levels→level 循环一致，缺名时用同一个
-    // `room_{n}` 回退，保证两边指同一间房。
+    // Room name table: the wildcards in `only=` / `exclude=` are expanded at **conversion time** into concrete
+    // room names (vanilla `ParseLevelsList`, `pureCeleste.cs:113019-113036`,
+    // which matches each of `Levels` and collects the results). The order in which names are collected here matches
+    // the levels->level loop of `convert_map`, and a missing name uses the same
+    // `room_{n}` fallback, so both sides point at the same room.
     let mut room_names = Vec::new();
     for level in root.children_named("levels") {
         for lv in level.children_named("level") {
@@ -905,11 +905,11 @@ fn convert_style(root: &MapBinElement) -> MapStyle {
     out
 }
 
-/// `<Backgrounds>` / `<Foregrounds>` → [`Backdrop`] 列表。
+/// `<Backgrounds>` / `<Foregrounds>` -> [`Backdrop`] list.
 ///
-/// 原版 `CreateBackdrops`（`pureCeleste.cs:112593-112618`）：子元素叫
-/// `apply` 时，它的**子**元素继承 `apply` 的属性（`ParseBackdrop(child2, child)`），
-/// 否则按 `(child, null)` 解析。
+/// Vanilla `CreateBackdrops` (`pureCeleste.cs:112593-112618`): when a child element is named
+/// `apply`, its **children** inherit `apply`'s attributes (`ParseBackdrop(child2, child)`),
+/// otherwise it is parsed as `(child, null)`.
 fn convert_backdrops(group: &MapBinElement, room_names: &[String]) -> Vec<Backdrop> {
     let mut out = Vec::new();
     for child in &group.children {
@@ -924,17 +924,17 @@ fn convert_backdrops(group: &MapBinElement, room_names: &[String]) -> Vec<Backdr
     out
 }
 
-/// 单条背景元素 → [`Backdrop`]。
+/// One background element -> [`Backdrop`].
 ///
-/// 逐属性对齐原版 `ParseBackdrop`（`pureCeleste.cs:112648-112900`）：
-/// 每个属性都是「先看自己，自己没有再看 `above`（`<apply>` 父）」，
-/// 都没有才用 `Backdrop` 字段默认值（`109341-109430`）。
+/// Aligns attribute by attribute with vanilla `ParseBackdrop` (`pureCeleste.cs:112648-112900`):
+/// each attribute is "look at itself first; if absent, look at `above` (the `<apply>` parent)";
+/// only if neither has it, fall back to the `Backdrop` field default (`109341-109430`).
 ///
-/// 颜色走 `backdrop.Color = HexToColor(color)` 然后 `Color *= alpha`
-/// （`112788-112803`）——XNA 的 `Color * f32` 连**四个通道一起乘**，
-/// 所以存下来的 RGBA 是 `[r·a, g·a, b·a, 255·a]`，正好是本引擎
-/// `SpriteDraw` 需要的直通（未预乘）RGBA，渲染时再乘一次 alpha
-/// 才能复现原版 `SpriteBatch` 的 `SourceAlpha` 混合。
+/// Color goes through `backdrop.Color = HexToColor(color)` then `Color *= alpha`
+/// (`112788-112803`) -- XNA's `Color * f32` multiplies **all four channels**,
+/// so the stored RGBA is `[r*a, g*a, b*a, 255*a]`, which is exactly the pass-through (non-premultiplied)
+/// RGBA this engine's `SpriteDraw` needs; the renderer multiplies alpha once more
+/// to reproduce vanilla `SpriteBatch`'s `SourceAlpha` blending.
 fn parse_backdrop(
     child: &MapBinElement,
     above: Option<&MapBinElement>,
@@ -947,7 +947,7 @@ fn parse_backdrop(
         backdrop.texture = v.to_string();
     }
     if let Some(v) = attr_or(child, above, "atlas").and_then(BinValue::as_str) {
-        // 原版 `Attr("atlas", "game")`，小写参与比较（112628-112631）。
+        // Vanilla `Attr("atlas", "game")`; compared lowercased (112628-112631).
         backdrop.atlas = v.to_ascii_lowercase();
     }
 
@@ -989,24 +989,24 @@ fn parse_backdrop(
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_else(|| "alphablend".to_string());
 
-    // 房间过滤：`exclude=` / `only=`（112855-112873），通配符在转换期
-    // 展开成具体房间名（ParseLevelsList，113019-113036）。
+    // Room filtering: `exclude=` / `only=` (112855-112873); wildcards are expanded at conversion
+    // time into concrete room names (ParseLevelsList, 113019-113036).
     if let Some(list) = attr_or(child, above, "exclude").and_then(BinValue::as_str) {
         backdrop.exclude_from = expand_levels_list(list, room_names);
     }
     if let Some(list) = attr_or(child, above, "only").and_then(BinValue::as_str) {
         backdrop.only_in = expand_levels_list(list, room_names);
     }
-    // 转场可见性：`instantIn=`（默认 true）/ `instantOut=`（默认 false）
-    // （109411-109418 的字段默认、112895-112905 的属性覆盖）。
+    // Transition visibility: `instantIn=` (default true) / `instantOut=` (default false)
+    // (the field defaults at 109411-109418, overridden by the attributes at 112895-112905).
     backdrop.instant_in = attr_or(child, above, "instantIn")
         .and_then(BinValue::as_bool)
         .unwrap_or(true);
     backdrop.instant_out = attr_or(child, above, "instantOut")
         .and_then(BinValue::as_bool)
         .unwrap_or(false);
-    // 尚未移植的会话属性：需要 Session flag / 梦境 / 渐变带宽，先点名
-    // 告警（不能静默丢弃，AGENTS.md 15.9）。
+    // Session attributes not yet ported: they need Session flags / dream state / gradient band width; name them
+    // and warn first (must not be dropped silently, AGENTS.md 15.9).
     for attr in ["flag", "notflag", "always", "dreaming", "fadex", "fadey"] {
         if attr_or(child, above, attr).is_some() {
             warn!(attribute = attr, texture = %backdrop.texture,
@@ -1014,7 +1014,7 @@ fn parse_backdrop(
         }
     }
 
-    // `Color = White` 起手，有 `color` 就覆盖，再 `Color *= alpha`。
+    // Start with `Color = White`; a `color` overrides it, then `Color *= alpha`.
     let (r, g, b) = match attr_or(child, above, "color").and_then(BinValue::as_str) {
         Some(hex) => match hex_rgb(hex) {
             Some(rgb) => (rgb[0], rgb[1], rgb[2]),
@@ -1039,22 +1039,22 @@ fn parse_backdrop(
         (255.0 * alpha).round() as u8,
     ];
     if backdrop.color == [0, 0, 0, 0] {
-        // `Backdrop::effective_color()` 把全零当「没设过」→ 原版默认白。
-        // `alpha = 0` 是真·全透明（原版 `color.A <= 1` 直接不画），
-        // 用 1/255 顶掉哨兵，渲染侧仍然画不出东西。
+        // `Backdrop::effective_color()` treats all-zero as "never set" -> vanilla default white.
+        // `alpha = 0` is truly fully transparent (vanilla `color.A <= 1` simply does not draw),
+        // so use 1/255 to override the sentinel; the render side still draws nothing.
         backdrop.color = [0, 0, 0, 1];
     }
 
     backdrop
 }
 
-/// `only=` / `exclude=` 的房间列表 → 具体房间名集合。
+/// The room list from `only=` / `exclude=` -> a set of concrete room names.
 ///
-/// 原版 `ParseLevelsList`（`pureCeleste.cs:113019-113036`）：逗号分隔；
-/// 含 `*` 的项按 `^` + 转义 + `.*` + `$` 的正则对 `Levels` 逐个匹配后
-/// 收进集合，其余按字面量收进。这里用同义的通配符匹配代替正则
-/// （`Regex.Escape` 后唯一有特殊含义的就是被换掉的 `*`），输出排序
-/// 保证确定性（成员判定语义与原版 `HashSet` 一致）。
+/// Vanilla `ParseLevelsList` (`pureCeleste.cs:113019-113036`): comma-separated;
+/// entries containing `*` are matched against `Levels` one by one with a `^` + escaped + `.*` + `$` regex and
+/// collected; the rest are collected literally. Here we use an equivalent wildcard match instead of a regex
+/// (after `Regex.Escape` the only character with special meaning is the `*` we substitute), and the output is sorted
+/// to guarantee determinism (membership semantics match vanilla's `HashSet`).
 fn expand_levels_list(list: &str, room_names: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for piece in list.split(',') {
@@ -1076,7 +1076,7 @@ fn expand_levels_list(list: &str, room_names: &[String]) -> Vec<String> {
     out
 }
 
-/// `*` 通配符匹配：等价于原版 `^` + `Regex.Escape(p).Replace("\\*", ".*")` + `$`。
+/// `*` wildcard matching: equivalent to vanilla `^` + `Regex.Escape(p).Replace("\\*", ".*")` + `$`.
 fn wildcard_match(pattern: &str, name: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     let (first, last) = (parts[0], parts[parts.len() - 1]);
@@ -1096,7 +1096,7 @@ fn wildcard_match(pattern: &str, name: &str) -> bool {
     true
 }
 
-/// 属性：先看自己，再看 `<apply>` 父元素（原版每个属性都这么回落）。
+/// Attribute: look at itself first, then the `<apply>` parent element (vanilla falls back this way for every attribute).
 fn attr_or<'a>(
     child: &'a MapBinElement,
     above: Option<&'a MapBinElement>,
@@ -1105,7 +1105,7 @@ fn attr_or<'a>(
     child.attr(key).or_else(|| above.and_then(|a| a.attr(key)))
 }
 
-/// `"rgb"` / `"rrggbb"` → RGB。对应原版 `Calc.HexToColor`。
+/// `"rgb"` / `"rrggbb"` -> RGB. Corresponds to vanilla `Calc.HexToColor`.
 fn hex_rgb(hex: &str) -> Option<[u8; 3]> {
     let hex = hex.trim().trim_start_matches('#');
     if hex.len() == 3 {
@@ -1123,10 +1123,10 @@ fn hex_rgb(hex: &str) -> Option<[u8; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
-/// 把地图实体元素转换成本引擎的 [`EntityData`]。
+/// Convert map entity elements into this engine's [`EntityData`].
 fn convert_entity(area: &str, area_id: u32, room: &str, el: &MapBinElement) -> Option<EntityData> {
     let kind = el.name.clone();
-    // 排除明显非实体的分组元素。
+    // Exclude the grouping elements that are clearly not entities.
     if matches!(kind.as_str(), "entities" | "triggers" | "level") {
         return None;
     }
@@ -1144,7 +1144,7 @@ fn convert_entity(area: &str, area_id: u32, room: &str, el: &MapBinElement) -> O
     let origin_x = el.attr("originX").and_then(BinValue::as_f32).unwrap_or(0.0);
     let origin_y = el.attr("originY").and_then(BinValue::as_f32).unwrap_or(0.0);
 
-    // 稳定 ID：与运行时规则一致（area_id || room || kind || x || y）。
+    // Stable ID: same rule as the runtime (area_id || room || kind || x || y).
     let kind_id = area_id_of(&kind) ^ 0x9e37_79b9;
     let id = EntityId::generate(area_id, room, kind_id, x as i32, y as i32);
 
@@ -1159,8 +1159,8 @@ fn convert_entity(area: &str, area_id: u32, room: &str, el: &MapBinElement) -> O
         properties.insert(key.clone(), value_to_field(value));
     }
 
-    // 节点：原版把每个 `<node x= y= />` 子元素挂成实体的路径点
-    // （`wire` 的终点、`introCrusher` 的落点、`bridge` 的桥墩…）。
+    // Nodes: vanilla attaches every `<node x= y= />` child element as a waypoint of the entity
+    // (the `wire` endpoint, the `introCrusher` landing point, the `bridge` piers...).
     let mut nodes = Vec::new();
     for child in &el.children {
         if !child.name.eq_ignore_ascii_case("node") {
@@ -1180,7 +1180,7 @@ fn convert_entity(area: &str, area_id: u32, room: &str, el: &MapBinElement) -> O
         nodes.push((nx, ny));
     }
 
-    let _ = area; // area 仅用于 area_id 计算
+    let _ = area; // area is only used for the area_id computation
 
     Some(EntityData {
         id,
@@ -1196,7 +1196,7 @@ fn convert_entity(area: &str, area_id: u32, room: &str, el: &MapBinElement) -> O
     })
 }
 
-/// 任意值 → 引擎属性值。
+/// Any value -> an engine property value.
 fn value_to_field(value: &BinValue) -> FieldValue {
     match value {
         BinValue::Bool(b) => FieldValue::Bool(*b),
@@ -1204,7 +1204,7 @@ fn value_to_field(value: &BinValue) -> FieldValue {
         BinValue::Short(s) => FieldValue::Int(i32::from(*s)),
         BinValue::Int(i) => FieldValue::Int(*i),
         BinValue::Float(f) => {
-            // 多数 Celeste 数值属性其实是整数语义的浮点。
+            // Most Celeste numeric attributes are actually floating point with integer semantics.
             if f.fract() == 0.0 && f.abs() < i32::MAX as f32 {
                 FieldValue::Int(*f as i32)
             } else {
@@ -1215,7 +1215,7 @@ fn value_to_field(value: &BinValue) -> FieldValue {
     }
 }
 
-/// 任意值 → 字符串（触发器属性用）。
+/// Any value -> a string (used for trigger properties).
 fn value_to_string(value: &BinValue) -> String {
     match value {
         BinValue::Bool(b) => b.to_string(),
@@ -1227,7 +1227,7 @@ fn value_to_string(value: &BinValue) -> String {
     }
 }
 
-/// 递归收集指定扩展名的文件。
+/// Recursively collect files with the given extension.
 fn walk(dir: &Path, ext: &str) -> Result<Vec<PathBuf>, PipelineError> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -1245,14 +1245,14 @@ fn walk(dir: &Path, ext: &str) -> Result<Vec<PathBuf>, PipelineError> {
     Ok(out)
 }
 
-/// 默认同步规则（供地图作者参考的示例）。
+/// Default sync rule (an example for map authors to reference).
 ///
-/// **默认不同步**：这里返回空，同步必须由地图显式声明。
+/// **Not synchronized by default**: this returns empty; synchronization must be declared explicitly by the map.
 pub fn default_sync_rules() -> Vec<SyncRule> {
     Vec::new()
 }
 
-/// 参考：一个显式同步规则。
+/// Reference: one explicit sync rule.
 pub fn example_sync_rule(kind: &str, flag: &str) -> SyncRule {
     SyncRule {
         kind: kind.to_string(),
@@ -1261,7 +1261,7 @@ pub fn example_sync_rule(kind: &str, flag: &str) -> SyncRule {
     }
 }
 
-/// `Gameplay.sprites.toml` 的顶层结构。
+/// Top-level structure of `Gameplay.sprites.toml`.
 #[derive(serde::Serialize)]
 struct SpritesToml {
     sprite: Vec<crate::sprites_xml::SpriteDef>,

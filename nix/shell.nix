@@ -17,7 +17,7 @@
       shellHookText = config.pre-commit.shellHook;
 
       # `buildInputs` are visible at link time only. Runtime dlopen looks at
-      # `LD_LIBRARY_PATH`, and NixOS has no /usr/lib — without exporting it,
+      # `LD_LIBRARY_PATH`, and NixOS has no /usr/lib - without exporting it,
       # none of winit's wayland / X11 / xkbcommon libraries can be found and
       # the window never opens. So make them all part of `LD_LIBRARY_PATH`.
       guiLibDirs = lib.makeLibraryPath commonArgs.buildInputs;
@@ -29,7 +29,7 @@
         inputsFrom = [ config.packages.default ];
 
         packages =
-          # The very toolchain the builds use (fenix, from rust-toolchain.toml) —
+          # The very toolchain the builds use (fenix, from rust-toolchain.toml) -
           # not nixpkgs' separate cargo/rustc/rustfmt/clippy, which would drift
           # from `nix build`.
           [ rustToolchain ]
@@ -80,7 +80,7 @@
           echo "GUI: wayland / libX11 / libxkbcommon / vulkan-loader are on LD_LIBRARY_PATH,"
           echo "  so \`cargo run -p releste-game\` opens a window as-is."
           echo ""
-          echo "FMOD: this repository ships no libfmod.so — provide your own:"
+          echo "FMOD: this repository ships no libfmod.so - provide your own:"
           echo "  RELESTE_FMOD_ALLOW_MISSING=1 RELESTE_FMOD_LIB=/path/to/libfmod.so \\"
           echo "    cargo test -p releste-audio --features fmod -- --nocapture"
         '';

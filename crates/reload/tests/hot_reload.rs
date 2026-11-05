@@ -1,10 +1,12 @@
-//! 热重载端到端测试（AGENTS.md §10）。
+//! Hot reload end-to-end tests (AGENTS.md 10).
 //!
-//! 验收标准：
-//! > 改一个墙角位置，保存，看到变化，玩家没被弹出，帧率无抖动。
+//! Acceptance criterion:
+//! > move a wall corner, save, see the change, the player is not ejected, no
+//! > frame drops.
 //!
-//! 本测试用真实文件系统 + 真实 FileWatcher 走完整条链路：
-//! 写 `.map` → 监听触发 → diff → apply → 校验玩家状态未变。
+//! This test uses a real filesystem + a real FileWatcher through the whole
+//! chain: write `.map` -> watcher fires -> diff -> apply -> verify the player
+//! state is unchanged.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -25,7 +27,7 @@ fn tmp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// 一堵墙 + 玩家，模拟"正在游玩的房间"。
+/// One wall + the player, simulating "the room currently being played".
 fn world_with_wall(wall_x: f32) -> World {
     let mut w = World::new();
     let mut player = Entity::new(PLAYER_ID, KIND_PLAYER);
@@ -33,7 +35,7 @@ fn world_with_wall(wall_x: f32) -> World {
     player.set("y", FieldValue::Float(16.0));
     player.set("width", FieldValue::Int(8));
     player.set("height", FieldValue::Int(8));
-    // 玩家会话状态：热重载必须保留。
+    // Player session state: must be preserved across a hot reload.
     player.set("vx", FieldValue::Float(3.5));
     player.set("vy", FieldValue::Float(-1.25));
     player.set("dashing", FieldValue::Bool(true));
@@ -50,7 +52,7 @@ fn world_with_wall(wall_x: f32) -> World {
     w
 }
 
-/// 造一份包含一堵墙的地图。
+/// Build a map containing one wall.
 fn make_map(wall_x: f32) -> MapDocument {
     let mut entities = Vec::new();
     let mut wall = EntityData::new("wall", EntityId::new(1), wall_x, 100.0);
@@ -80,7 +82,7 @@ fn make_map(wall_x: f32) -> MapDocument {
     }
 }
 
-/// 写下地图文件。
+/// Write the map file.
 fn write_map(path: &Path, doc: &MapDocument) {
     releste_map::save_map(doc, path).expect("write map");
 }
@@ -89,7 +91,7 @@ fn player_props(w: &World) -> std::collections::BTreeMap<String, FieldValue> {
     w.get(PLAYER_ID).expect("player exists").properties.clone()
 }
 
-// ---------- 确定性部分：不依赖 inotify 时序 ----------
+// ---------- Deterministic part: does not depend on inotify timing ----------
 
 #[test]
 fn map_roundtrips_through_disk() {
@@ -149,10 +151,10 @@ fn applying_wall_edit_keeps_player_untouched() {
     assert_eq!(
         player_props(&world),
         before,
-        "player session state must survive a hot reload (AGENTS.md §10)"
+        "player session state must survive a hot reload (AGENTS.md 10)"
     );
 
-    // 墙确实动了。
+    // The wall really did move.
     let wall = world.get(EntityId::new(1)).unwrap();
     assert_eq!(wall.get("x"), Some(&FieldValue::Float(104.0)));
 
@@ -164,7 +166,7 @@ fn reload_does_not_remove_or_recreate_the_player() {
     let mut world = world_with_wall(100.0);
     let player_before = world.player();
 
-    // 一批与本房间无关的 patch。
+    // A batch of patches unrelated to this room.
     let patches = vec![
         releste_map::Patch::AddEntity(EntityData::new("spinner", EntityId::new(50), 250.0, 50.0)),
         releste_map::Patch::ReplaceTiles(Tileset::new("Gameplay", 20, 12)),
@@ -180,13 +182,14 @@ fn reload_does_not_remove_or_recreate_the_player() {
     );
 }
 
-// ---------- 依赖文件监听的完整链路 ----------
+// ---------- Full chain depending on file watching ----------
 
-/// 完整热重载链路：改文件 → 监听触发 → diff → apply。
+/// The full hot reload chain: edit file -> watcher fires -> diff -> apply.
 ///
-/// 若运行环境不支持文件通知（某些容器 / 奇异文件系统），
-/// 会跳过磁盘监听部分而不是失败——但确定性链路仍然被上面的
-/// 测试覆盖。
+/// If the environment does not support filesystem notifications (some
+/// containers / unusual filesystems), the disk-watching part is skipped rather
+/// than failing -- but the deterministic chain is still covered by the tests
+/// above.
 #[test]
 fn full_hot_reload_loop_via_file_watcher() {
     let dir = tmp_dir("watch");
@@ -205,10 +208,10 @@ fn full_hot_reload_loop_via_file_watcher() {
     let mut world = world_with_wall(100.0);
     let before = player_props(&world);
 
-    // 改一个墙角位置并保存。
+    // Move a wall corner and save.
     write_map(&path, &make_map(104.0));
 
-    // 等监听器报告这次变更。
+    // Wait for the watcher to report this change.
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut changed: Option<PathBuf> = None;
     while Instant::now() < deadline {
@@ -229,7 +232,7 @@ fn full_hot_reload_loop_via_file_watcher() {
         return;
     };
 
-    // 监听触发 → 解析 → diff → apply。
+    // Watcher fires -> parse -> diff -> apply.
     let new_doc = releste_map::load_map(&changed_path).expect("load changed map");
     let old_doc = make_map(100.0);
     let patches = releste_map::diff(&old_doc, &new_doc);
@@ -250,7 +253,7 @@ fn full_hot_reload_loop_via_file_watcher() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 快速连续写入应被 debounce 合并成一次重载。
+/// Rapid consecutive writes must be debounced into a single reload.
 #[test]
 fn rapid_writes_are_debounced() {
     let dir = tmp_dir("debounce");
@@ -266,13 +269,13 @@ fn rapid_writes_are_debounced() {
         }
     };
 
-    // 连续写 5 次。
+    // Write 5 times in a row.
     for i in 0..5 {
         write_map(&path, &make_map(100.0 + i as f32));
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // 第一次触发（debounce 窗口之后）。
+    // The first trigger (after the debounce window).
     let first = watcher.wait_timeout(Duration::from_secs(10));
     if first.is_none() {
         eprintln!("skipping: no filesystem notification observed");
@@ -280,7 +283,7 @@ fn rapid_writes_are_debounced() {
         return;
     }
 
-    // 窗口内不应再有事件（已被合并）。
+    // There should be no further event within the window (they were merged).
     let extra = watcher.wait_timeout(Duration::from_millis(300));
     assert!(
         extra.is_none(),
@@ -290,14 +293,16 @@ fn rapid_writes_are_debounced() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 边界收缩 + 玩家在外 → 整批 patch 回滚（AGENTS.md §7.4 策略 3）。
+/// Shrinking bounds + player outside -> roll back the whole patch batch
+/// (AGENTS.md 7.4 strategy 3).
 #[test]
 fn shrinking_room_past_player_rolls_back_entire_patch() {
     let mut world = world_with_wall(100.0);
     let before: Vec<(EntityId, Entity)> = world.all().map(|e| (e.id, e.clone())).collect();
 
     let shrunk = releste_math::Rect::new(Vec2::from_f32s(0.0, 0.0), Vec2::from_f32s(300.0, 300.0));
-    // 玩家在 (16,16)，把它移到边界外以触发校验。
+    // The player is at (16,16); move it outside the bounds to trigger
+    // validation.
     let mut reload = Reload::new().with_bounds(releste_math::Rect::new(
         Vec2::from_f32s(500.0, 500.0),
         Vec2::from_f32s(600.0, 600.0),
@@ -321,7 +326,7 @@ fn shrinking_room_past_player_rolls_back_entire_patch() {
     let after: Vec<(EntityId, Entity)> = world.all().map(|e| (e.id, e.clone())).collect();
     assert_eq!(after.len(), before.len());
 
-    // 反过来：边界足够大时应通过。
+    // Conversely: a sufficiently large bounds should pass.
     let mut reload_ok = Reload::new().with_bounds(shrunk);
     reload_ok
         .apply(

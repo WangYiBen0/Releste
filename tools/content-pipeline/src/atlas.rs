@@ -1,14 +1,14 @@
-//! 图集（`.meta`）转换。
+//! Atlas (`.meta`) conversion.
 //!
-//! # 源格式
-//! Celeste 的 `.meta` 是 Monocle `Atlas` 的二进制序列化。
-//! 字节布局（与反编译源码 `Atlas.ReadAtlasData` 的
-//! `Packer` / `PackerNoAtlas` 分支一致）：
+//! # Source format
+//! Celeste's `.meta` is the binary serialization of Monocle `Atlas`.
+//! Byte layout (matching the `Packer` / `PackerNoAtlas` branches of
+//! the decompiled `Atlas.ReadAtlasData`):
 //!
 //! ```text
-//! i32    version        （忽略）
-//! string images         （打包命令行，忽略）
-//! i32    unknown        （忽略）
+//! i32    version        (ignored)
+//! string images         (packing command line, ignored)
+//! i32    unknown        (ignored)
 //! i16    texture_count
 //! repeat texture_count:
 //!     string texture_name
@@ -18,42 +18,42 @@
 //!         i16 x, y, w, h
 //!         i16 offset_x, offset_y, frame_w, frame_h
 //! [optional]
-//!     string tag            （"LINKS"）
+//!     string tag            ("LINKS")
 //!     i16    link_count
 //!     repeat link_count: string key, string value
 //! ```
 //!
-//! 其中 `string` 是 7-bit varint 长度 + ASCII 字节。
+//! where `string` is a 7-bit varint length + ASCII bytes.
 //!
-//! # 纹理载荷
-//! `Packer` / `PackerNoAtlas` 用的 `.data` **不是 Crunch**——Monocle 里叫
-//! `Crunch*` 的分支读的其实是 `.png`。`.data` 是逐命令的**像素 RLE**，
-//! 解码见 [`crate::data`]。本工具离线把它解成 PNG，运行时只认 `png`。
+//! # Texture payload
+//! The `.data` used by `Packer` / `PackerNoAtlas` is **not Crunch** -- the Monocle branch called
+//! `Crunch*` actually reads a `.png`. `.data` is a per-command **pixel RLE**;
+//! see [`crate::data`] for decoding. This tool decodes it to PNG offline; the runtime only knows `png`.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::PipelineError;
 
-/// 纹理载荷来源。
+/// Texture payload source.
 ///
-/// 与 Monocle `Atlas.ReadAtlasData` 的分支对应：
-/// - `Packer`：所有 sprite 共用一个 `<name>0.data`。
-/// - `PackerNoAtlas`：**每个 sprite 一个** `<name>/<sprite>.data`。
-/// - 其它：独立 PNG。
+/// Corresponds to the branches of Monocle `Atlas.ReadAtlasData`:
+/// - `Packer`: all sprites share one `<name>0.data`.
+/// - `PackerNoAtlas`: **one per sprite**, `<name>/<sprite>.data`.
+/// - Anything else: a standalone PNG.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureSource {
-    /// 所有 sprite 共享的打包图集 `name + "0.data"`（`Packer`）。
+    /// The packed atlas shared by all sprites, `name + "0.data"` (`Packer`).
     PackedCrunch(PathBuf),
-    /// 所有 sprite 共享的单个 `name + ".data"`。
+    /// A single `name + ".data"` shared by all sprites.
     Crunch(PathBuf),
-    /// 每个 sprite 一个 `<name>/<sprite>.data`（`PackerNoAtlas`）。
+    /// One `<name>/<sprite>.data` per sprite (`PackerNoAtlas`).
     PerSpriteDir(PathBuf),
-    /// 独立 PNG。
+    /// A standalone PNG.
     Png(PathBuf),
 }
 
 impl TextureSource {
-    /// 该组纹理的根路径（目录或文件）。
+    /// Root path of this group of textures (a directory or a file).
     pub fn path(&self) -> &Path {
         match self {
             TextureSource::PackedCrunch(p)
@@ -63,7 +63,7 @@ impl TextureSource {
         }
     }
 
-    /// 磁盘上的文件扩展名（`PerSpriteDir` 为 `data`）。
+    /// File extension on disk (`data` for `PerSpriteDir`).
     pub fn payload_ext(&self) -> &'static str {
         match self {
             TextureSource::PackedCrunch(_)
@@ -73,7 +73,7 @@ impl TextureSource {
         }
     }
 
-    /// 描述文件里的 `kind` 字段。
+    /// The `kind` field in the description file.
     pub fn kind(&self) -> &'static str {
         match self {
             TextureSource::PackedCrunch(_) => "packed_crunch",
@@ -83,14 +83,14 @@ impl TextureSource {
         }
     }
 
-    /// 是否为需转码的 `.data` 载荷（非独立 PNG）。
+    /// Whether this is a `.data` payload that needs transcoding (not a standalone PNG).
     pub fn is_packer_data(&self) -> bool {
         !matches!(self, TextureSource::Png(_))
     }
 
-    /// 取某个 sprite 对应的磁盘文件。
+    /// Get the disk file for one sprite.
     ///
-    /// 仅 `PerSpriteDir` 会按 sprite 名分文件；其它返回共享路径。
+    /// Only `PerSpriteDir` splits files by sprite name; the others return the shared path.
     pub fn file_for_sprite(&self, sprite_name: &str) -> PathBuf {
         match self {
             TextureSource::PerSpriteDir(dir) => {
@@ -101,48 +101,48 @@ impl TextureSource {
     }
 }
 
-/// 单个 sprite 区域。
+/// A single sprite region.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpriteRegion {
-    /// sprite 名（如 `"10_a-00"`）。
+    /// sprite name (e.g. `"10_a-00"`).
     pub name: String,
-    /// 图集内矩形。
+    /// Rectangle inside the atlas.
     pub x: i16,
     pub y: i16,
     pub w: i16,
     pub h: i16,
-    /// 绘制原点偏移（源文件中的 `offset`，MTexture 里取负）。
+    /// Draw-origin offset (the source file's `offset`; negated in MTexture).
     pub origin_x: i16,
     pub origin_y: i16,
-    /// 逻辑帧尺寸。
+    /// Logical frame size.
     pub frame_w: i16,
     pub frame_h: i16,
 }
 
-/// 一个纹理及其 sprite 列表。
+/// One texture and its sprite list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtlasTexture {
     pub name: String,
     pub source: TextureSource,
     pub sprites: Vec<SpriteRegion>,
-    /// 纹理像素尺寸（从 `.data` 头部读取；PNG 在后续阶段填充）。
+    /// Texture pixel dimensions (read from the `.data` header; filled in later for PNG).
     pub width: Option<i32>,
     pub height: Option<i32>,
 }
 
-/// 解析结果。
+/// Parse result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtlasBuild {
-    /// 格式版本（源文件头部）。
+    /// Format version (source file header).
     pub version: i32,
-    /// 打包命令（诊断用）。
+    /// Packing command (for diagnostics).
     pub images: String,
     pub textures: Vec<AtlasTexture>,
-    /// `LINKS` 段（别名映射）。
+    /// The `LINKS` section (alias map).
     pub links: Vec<(String, String)>,
 }
 
-/// 读取 .NET `BinaryReader` 风格的 7-bit 长度前缀字符串。
+/// Read a .NET `BinaryReader`-style 7-bit length-prefixed string.
 fn read_string(cur: &mut usize, data: &[u8]) -> Result<String, PipelineError> {
     let mut len: u32 = 0;
     let mut shift = 0;
@@ -171,7 +171,7 @@ fn read_string(cur: &mut usize, data: &[u8]) -> Result<String, PipelineError> {
         .ok_or_else(|| PipelineError::parse("meta", "<buffer>", "unexpected EOF in string body"))?;
     *cur = end;
 
-    // 源文件为 ASCII；用 lossy 以免个别字节导致整体失败。
+    // The source files are ASCII; use lossy so a single stray byte does not fail everything.
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
@@ -194,9 +194,9 @@ fn read_i16(cur: &mut usize, data: &[u8]) -> Result<i16, PipelineError> {
 }
 
 impl AtlasBuild {
-    /// 解析 `.meta` 字节。
+    /// Parse `.meta` bytes.
     ///
-    /// `meta_path` 用于解析纹理相对路径。
+    /// `meta_path` is used to resolve relative texture paths.
     pub fn parse(meta_path: &Path, data: &[u8]) -> Result<Self, PipelineError> {
         let dir = meta_path.parent().unwrap_or_else(|| Path::new("."));
         let mut cur = 0usize;
@@ -260,7 +260,7 @@ impl AtlasBuild {
             });
         }
 
-        // 可选 LINKS 段
+        // Optional LINKS section
         let mut links = Vec::new();
         if cur < data.len() {
             let tag = read_string(&mut cur, data)?;
@@ -282,42 +282,42 @@ impl AtlasBuild {
         })
     }
 
-    /// 从文件读取并解析。
+    /// Read and parse from a file.
     pub fn from_file(meta_path: &Path) -> Result<Self, PipelineError> {
         let data =
             std::fs::read(meta_path).map_err(|e| PipelineError::io(meta_path.display(), e))?;
         Self::parse(meta_path, &data)
     }
 
-    /// sprite 总数。
+    /// Total sprite count.
     pub fn sprite_count(&self) -> usize {
         self.textures.iter().map(|t| t.sprites.len()).sum()
     }
 }
 
-/// 推断纹理来源（对应源格式的 `Packer` / `PackerNoAtlas` 分支）。
+/// Infer the texture source (corresponds to the `Packer` / `PackerNoAtlas` branches of the source format).
 fn resolve_texture_source(dir: &Path, name: &str) -> TextureSource {
     let normalized = name.replace('\\', "/");
 
-    // Packer：所有 sprite 共用一个 `<name>0.data`
+    // Packer: all sprites share one `<name>0.data`
     let packed = dir.join(format!("{normalized}0.data"));
     if packed.exists() {
         return TextureSource::PackedCrunch(packed);
     }
 
-    // 单纹理 `<name>.data`
+    // Single texture `<name>.data`
     let single = dir.join(format!("{normalized}.data"));
     if single.exists() {
         return TextureSource::Crunch(single);
     }
 
-    // PackerNoAtlas：`<name>/` 目录，每个 sprite 一个 `<name>/<sprite>.data`
+    // PackerNoAtlas: a `<name>/` directory with one `<name>/<sprite>.data` per sprite
     let group = dir.join(&normalized);
     if group.is_dir() {
         return TextureSource::PerSpriteDir(group);
     }
 
-    // 回退：独立 PNG
+    // Fallback: standalone PNG
     TextureSource::Png(dir.join(&normalized))
 }
 
@@ -325,7 +325,7 @@ fn resolve_texture_source(dir: &Path, name: &str) -> TextureSource {
 mod tests {
     use super::*;
 
-    /// 构造一个最小 `.meta` 字节序列。
+    /// Build a minimal `.meta` byte sequence.
     fn build_meta() -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&5i32.to_le_bytes());

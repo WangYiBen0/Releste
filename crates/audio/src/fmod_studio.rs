@@ -1,15 +1,17 @@
-//! FMOD Studio 的真实绑定（`fmod` feature）。
+//! The real FMOD Studio bindings (the `fmod` feature).
 //!
-//! # 为什么手写 dlopen 绑定
-//! AGENTS.md §4.7 要求**不 vendor** FMOD 二进制、由使用者提供动态库。
-//! 因此这里用 `libloading` 在运行期解析符号，不做链接期依赖。
+//! # Why a hand-written dlopen binding
+//! AGENTS.md 4.7 requires that FMOD binaries are **not vendored** and that the user
+//! supplies the shared library. So this uses `libloading` to resolve symbols at runtime
+//! and has no link-time dependency.
 //!
-//! # 头版本（headerversion）
-//! `FMOD_Studio_System_Create` 会校验传入的 `FMOD_STUDIO_VERSION`，
-//! 不匹配直接返回错误。不同 FMOD 发行版编号不同，因此这里**按顺序
-//! 尝试若干已知版本**并记录实际被接受的那个，而不是硬编码一个。
+//! # Headerversion
+//! `FMOD_Studio_System_Create` validates the `FMOD_STUDIO_VERSION` passed in and
+//! returns an error on a mismatch. Different FMOD releases use different numbers, so
+//! this **tries several known versions in order** and records the one actually
+//! accepted, rather than hard-coding a single value.
 //!
-//! 实测原版 Celeste 的 `lib64/libfmodstudio.so.10` 接受 `0x00011014`。
+//! Measured: the vanilla Celeste `lib64/libfmodstudio.so.10` accepts `0x00011014`.
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::path::Path;
@@ -18,22 +20,22 @@ use libloading::Library;
 
 use crate::AudioError;
 
-/// 已知的 FMOD Studio headerversion 候选，按新到旧尝试。
+/// Known FMOD Studio headerversion candidates, tried newest to oldest.
 pub const KNOWN_HEADER_VERSIONS: &[u32] = &[
     0x0002_0300, // 2.03
     0x0002_0200, // 2.02
     0x0002_0100, // 2.01
     0x0002_0000, // 2.00
-    0x0001_1014, // 1.10.14（原版 Celeste 实测）
+    0x0001_1014, // 1.10.14 (measured with the vanilla Celeste library)
     0x0001_1000,
 ];
 
-/// FMOD_RESULT 的常用值。
+/// Common values of FMOD_RESULT.
 pub const FMOD_OK: c_int = 0;
 
-// ── FMOD C API 签名 ──────────────────────────────────────────
+// -- FMOD C API signatures ------------------------------------------
 //
-// 全部 `extern "C"`；句柄一律是裸指针，由 FMOD 自己管理生命周期。
+// All `extern "C"`; handles are always raw pointers and FMOD manages their lifetime.
 type StudioSystemCreateFn = unsafe extern "C" fn(*mut *mut c_void, c_uint) -> c_int;
 type StudioSystemInitializeFn =
     unsafe extern "C" fn(*mut c_void, c_int, c_uint, c_uint, *mut c_void) -> c_int;
@@ -52,7 +54,7 @@ type EventDescriptionCreateInstanceFn =
     unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int;
 type EventInstanceStartFn = unsafe extern "C" fn(*mut c_void) -> c_int;
 
-/// 已解析的符号表。
+/// Resolved symbol table.
 struct StudioApi {
     create: StudioSystemCreateFn,
     initialize: StudioSystemInitializeFn,
@@ -68,13 +70,13 @@ struct StudioApi {
 }
 
 impl StudioApi {
-    /// 从动态库解析全部符号。
+    /// Resolves all symbols from the dynamic library.
     ///
     /// # Safety
-    /// 调用者需保证 `lib` 是货真价实的 FMOD Studio 库，
-    /// 且其生命周期长于本结构。返回的函数指针按 FMOD 的头文件签名调用。
+    /// The caller must ensure `lib` is a genuine FMOD Studio library and outlives this
+    /// struct. The returned function pointers are called with FMOD's header-file signatures.
     unsafe fn resolve(lib: &Library) -> Result<Self, AudioError> {
-        /// 取一个符号并复制出函数指针（避开生命周期束缚）。
+        /// Take a symbol and copy out the function pointer (sidestepping the lifetime bound).
         macro_rules! sym {
             ($ty:ty, $name:literal) => {{
                 let s: libloading::Symbol<$ty> =
@@ -110,46 +112,47 @@ impl StudioApi {
     }
 }
 
-/// 已加载的 bank。
+/// A loaded bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BankHandle(pub *mut c_void);
 
-// 裸指针句柄只在音频线程内使用；FMOD 自身是线程安全的。
+// The raw-pointer handle is only used on the audio thread; FMOD itself is thread-safe.
 unsafe impl Send for BankHandle {}
 
-/// FMOD Studio 系统。
+/// FMOD Studio system.
 ///
-/// 持有动态库句柄、已解析符号与 FMOD system 指针。
+/// Holds the dynamic library handle, the resolved symbols and the FMOD system pointer.
 pub struct FmodStudio {
-    /// 必须保活：`api` 里的函数指针都指向它。
+    /// Must be kept alive: the function pointers in `api` all point into it.
     _library: Library,
     api: StudioApi,
     system: *mut c_void,
-    /// 实际被接受的 headerversion。
+    /// The headerversion actually accepted.
     header_version: u32,
-    /// 已加载的 bank（防重复加载）。
+    /// Loaded banks (to prevent duplicate loading).
     banks: Vec<(String, BankHandle)>,
 }
 
-// FMOD system 是线程安全的；我们只在持有 &mut 时调用它。
+// The FMOD system is thread-safe; we only call it while holding &mut.
 unsafe impl Send for FmodStudio {}
 
 impl FmodStudio {
-    /// 打开库并创建 / 初始化 Studio system。
+    /// Opens the library and creates / initializes the Studio system.
     ///
     /// # Errors
-    /// - 库打不开或缺少必要符号 → [`AudioError::FmodUnusable`]
-    /// - 所有已知 headerversion 都被拒绝 → [`AudioError::Init`]
+    /// - The library cannot be opened or lacks a required symbol -> [`AudioError::FmodUnusable`]
+    /// - Every known headerversion was rejected -> [`AudioError::Init`]
     pub fn load(path: &Path) -> Result<Self, AudioError> {
-        // SAFETY: 加载外部动态库不受 Rust 保护。本节只解析符号并
-        // 按 FMOD 公开头文件的签名调用，句柄由 FMOD 自己管理。
+        // SAFETY: loading an external dynamic library is outside Rust's guarantees. This
+        // section only resolves symbols and calls them with FMOD's public header
+        // signatures; FMOD manages the handles itself.
         let library = unsafe { Library::new(path) }.map_err(|e| {
             AudioError::FmodUnusable(format!("failed to load {}: {e}", path.display()))
         })?;
 
         let api = unsafe { StudioApi::resolve(&library)? };
 
-        // 逐个尝试已知 headerversion。
+        // Try each known headerversion in turn.
         let mut system: *mut c_void = std::ptr::null_mut();
         let mut accepted = None;
         for &version in KNOWN_HEADER_VERSIONS {
@@ -180,9 +183,9 @@ impl FmodStudio {
         Ok(studio)
     }
 
-    /// 初始化音频输出。
+    /// Initializes the audio output.
     ///
-    /// `max_channels` 为同时播放的 channel 上限（引擎默认 32）。
+    /// `max_channels` is the cap on simultaneously playing channels (the engine default is 32).
     pub fn initialize(&mut self, max_channels: c_int) -> Result<(), AudioError> {
         // FMOD_STUDIO_INIT_NORMAL = 0, FMOD_INIT_NORMAL = 0
         let result =
@@ -201,15 +204,15 @@ impl FmodStudio {
         }
     }
 
-    /// 实际被接受的 headerversion。
+    /// The headerversion actually accepted.
     pub fn header_version(&self) -> u32 {
         self.header_version
     }
 
-    /// 加载一个 bank 文件。
+    /// Loads a bank file.
     ///
-    /// 注意：按路径解析事件必须先加载 **Master Bank** 及其
-    /// `Master Bank.strings.bank`。
+    /// Note: resolving events by path requires the **Master Bank** and its
+    /// `Master Bank.strings.bank` to be loaded first.
     pub fn load_bank(&mut self, path: &Path) -> Result<BankHandle, AudioError> {
         let key = path.display().to_string();
 
@@ -237,12 +240,12 @@ impl FmodStudio {
         Ok(handle)
     }
 
-    /// 已加载的 bank 数。
+    /// Number of loaded banks.
     pub fn bank_count(&self) -> usize {
         self.banks.len()
     }
 
-    /// 枚举一个 bank 里的事件路径。
+    /// Enumerates the event paths in a bank.
     pub fn event_paths(&self, bank: BankHandle) -> Result<Vec<String>, AudioError> {
         let mut count: c_int = 0;
         let result = unsafe { (self.api.bank_event_count)(bank.0, &mut count) };
@@ -282,9 +285,9 @@ impl FmodStudio {
         Ok(paths)
     }
 
-    /// 按路径播放一个事件（一次性实例）。
+    /// Plays an event by path (a one-shot instance).
     ///
-    /// 需要 Master Bank + strings bank 已加载。
+    /// Requires the Master Bank + strings bank to be loaded.
     pub fn play_event(&mut self, event_path: &str) -> Result<(), AudioError> {
         let c_path = CString::new(event_path).map_err(|e| AudioError::Play {
             event: event_path.to_string(),
@@ -324,7 +327,7 @@ impl FmodStudio {
         Ok(())
     }
 
-    /// 每帧调用：驱动 FMOD 内部的虚拟 voice 调度。
+    /// Called each frame: drives FMOD's internal virtual voice scheduling.
     pub fn update(&mut self) -> Result<(), AudioError> {
         let result = unsafe { (self.api.update)(self.system) };
         if result == FMOD_OK {
@@ -340,7 +343,7 @@ impl FmodStudio {
 impl Drop for FmodStudio {
     fn drop(&mut self) {
         if !self.system.is_null() {
-            // SAFETY: system 由上面的 create 获得，且只在这里释放一次。
+            // SAFETY: the system came from the create call above and is released only here, once.
             unsafe {
                 (self.api.release)(self.system);
             }
@@ -365,7 +368,7 @@ impl std::fmt::Debug for FmodStudio {
 mod tests {
     use super::*;
 
-    /// 实测值：原版 Celeste 的 libfmodstudio.so.10 接受这个版本。
+    /// Measured value: the vanilla Celeste libfmodstudio.so.10 accepts this version.
     #[test]
     fn celeste_header_version_is_in_the_candidate_list() {
         assert!(
@@ -390,7 +393,7 @@ mod tests {
         );
     }
 
-    /// 若设置了 `RELESTE_FMOD_STUDIO_LIB`，真的走一遍完整流程。
+    /// If `RELESTE_FMOD_STUDIO_LIB` is set, really run the whole pipeline.
     ///
     /// ```text
     /// RELESTE_FMOD_STUDIO_LIB=/path/libfmodstudio.so \
@@ -415,7 +418,7 @@ mod tests {
         };
         let banks_dir = Path::new(&banks_dir);
 
-        // Master Bank + strings 是路径解析的前提。
+        // The Master Bank + strings are a prerequisite for path resolution.
         let master = banks_dir.join("Master Bank.bank");
         let strings = banks_dir.join("Master Bank.strings.bank");
         if master.is_file() {
@@ -439,8 +442,9 @@ mod tests {
         }
         assert!(!events.is_empty(), "sfx.bank should contain events");
 
-        // 绝大多数应该带 event:/ 前缀。个别取不到路径是允许的
-        // （FMOD 对某些内嵌事件会返回空串），但要能报告出来。
+        // The vast majority should carry the event:/ prefix. A few without a resolvable
+        // path are allowed (FMOD returns an empty string for some embedded events), but
+        // they must be reportable.
         let odd: Vec<&String> = events
             .iter()
             .filter(|p| !p.starts_with("event:/"))
@@ -458,7 +462,7 @@ mod tests {
             events.len()
         );
 
-        // 真正播放第一个事件。
+        // Actually play the first event.
         studio
             .play_event(&events[0])
             .unwrap_or_else(|e| panic!("play {}: {e}", events[0]));

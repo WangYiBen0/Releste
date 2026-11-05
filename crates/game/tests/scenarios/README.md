@@ -1,7 +1,7 @@
 # Scenario scripts (LLM-friendly behaviour regressions)
 
 Each `.toml` is a **deterministic** replay: explicit input plus assertions.
-No plugins, no hot reload, no wall-clock dependency — the same script always
+No plugins, no hot reload, no wall-clock dependency -- the same script always
 produces the same trace.
 
 ```bash
@@ -11,7 +11,7 @@ cargo run --bin releste -- --script crates/game/tests/scenarios/walk_and_stop.to
 A failed assertion is printed (and the process exits 1):
 
 ```text
-FAIL tick=40 vx: expected 1.6000, got 1.5000 (Δ0.1000 > tol 0.0500)
+FAIL tick=40 vx: expected 1.6000, got 1.5000 (delta 0.1000 > tol 0.0500)
 scenario: 60 ticks, 10 checks, 1 failure(s)
 ```
 

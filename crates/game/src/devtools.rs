@@ -4,16 +4,16 @@
 //! Design rules (and why they are what they are):
 //!
 //! 1. **Determinism**: scenario replay loads no plugins and watches nothing;
-//!    the script states the input, so the same input yields the same trace —
+//!    the script states the input, so the same input yields the same trace --
 //!    without that, neither an LLM nor a human can reproduce anything.
 //! 2. **Machine-readable**: the trace is JSONL (one object per tick) whose
 //!    first line is a self-describing banner; the map snapshot is JSON.
 //!    Field names are stable and the unit lives in the name.
 //! 3. **Failures must be explicit**: a failed assertion prints
-//!    `tick=… field: expected … got … (Δ… > tol …)`
-//!    and exits 1 — that single line is enough for an LLM to locate the issue.
+//!    `tick=... field: expected ... got ... (delta ... > tol ...)`
+//!    and exits 1 -- that single line is enough for an LLM to locate the issue.
 //! 4. **Bad config must blow up**: every TOML struct is `deny_unknown_fields`,
-//!    so a misspelled key is an error, never a silent default (AGENTS.md §15.9).
+//!    so a misspelled key is an error, never a silent default (AGENTS.md 15.9).
 //!
 //! All three entry points are in `releste --help`:
 //!
@@ -37,7 +37,7 @@ use crate::player::Input;
 use crate::service::GameService;
 use crate::session::Session;
 
-/// Trace format version. Bump it whenever a field changes — every JSONL an
+/// Trace format version. Bump it whenever a field changes -- every JSONL an
 /// LLM receives carries this line.
 pub const TRACE_SCHEMA: &str = "releste.trace.v1";
 
@@ -57,7 +57,7 @@ pub struct Snapshot<'a> {
     pub y: f32,
     pub vx: f32,
     pub vy: f32,
-    /// Vanilla unit (px/s) = px/tick × 60.
+    /// Vanilla unit (px/s) = px/tick x 60.
     pub vx_ps: f32,
     /// Vanilla unit (px/s).
     pub vy_ps: f32,
@@ -389,7 +389,7 @@ fn check(snap: &Snapshot<'_>, base: (f32, f32), expect: &Expect, outcome: &mut S
         outcome.checks += 1;
         if (got - want).abs() > tol {
             outcome.failures.push(format!(
-                "tick={tick} {name}: expected {want:.4}, got {got:.4} (Δ{:.4} > tol {tol:.4})",
+                "tick={tick} {name}: expected {want:.4}, got {got:.4} (delta {:.4} > tol {tol:.4})",
                 (got - want).abs()
             ));
         }
@@ -450,7 +450,7 @@ fn check(snap: &Snapshot<'_>, base: (f32, f32), expect: &Expect, outcome: &mut S
 /// Write the session as the runtime sees it to JSON.
 ///
 /// Complements `releste-map --example dump_rooms` (the raw file view): this
-/// dumps what the engine **parsed** — spawn point, atlas name, tile grid (hex
+/// dumps what the engine **parsed** -- spawn point, atlas name, tile grid (hex
 /// per row), so any deviation from the `.map` is visible at a glance.
 pub fn dump_session_json(session: &Session, path: &Path) -> Result<()> {
     let doc: &MapDocument = &session.doc;
@@ -573,7 +573,7 @@ jump = true
         assert!(!input_at(&script, 4).jump);
     }
 
-    /// A misspelled key must be an error, never a silent default (§15.9).
+    /// A misspelled key must be an error, never a silent default (AGENTS.md 15.9).
     #[test]
     fn unknown_keys_are_rejected() {
         let text = r#"
@@ -588,7 +588,7 @@ jummmp = true
         );
     }
 
-    /// Float assertions use a tolerance; failures must carry Δ and tol.
+    /// Float assertions use a tolerance; failures must carry delta and tol.
     #[test]
     fn float_expectations_report_deltas() {
         let snap = Snapshot {
@@ -632,7 +632,7 @@ jummmp = true
         assert_eq!(outcome.checks, 4);
         assert_eq!(outcome.failures.len(), 2);
         assert!(
-            outcome.failures[0].contains("Δ0.5000 > tol 0.0500"),
+            outcome.failures[0].contains("delta 0.5000 > tol 0.0500"),
             "got {:?}",
             outcome.failures[0]
         );

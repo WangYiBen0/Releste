@@ -16,7 +16,7 @@ pub enum FiberState {
     Unloading,
     /// Terminal: released.
     Disposed,
-    /// Load threw. Logged and skipped — it never takes the host down, and it
+    /// Load threw. Logged and skipped -- it never takes the host down, and it
     /// never retries in a loop. [`Fiber::recover`] is the only way out.
     Failed,
 }
@@ -87,7 +87,7 @@ impl Fiber {
     /// Move to `next`, or return the current state unchanged if the edge is
     /// not in the table.
     ///
-    /// Never panics (AGENTS.md §15.8).
+    /// Never panics (AGENTS.md 15.8).
     pub fn advance(&mut self, next: FiberState) -> Result<(), FiberState> {
         if self.state.can_transition(next) {
             self.state = next;

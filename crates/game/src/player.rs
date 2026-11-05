@@ -1,209 +1,226 @@
-//! 玩家仿真：8×8 AABB 对 tile grid 的轴分离解算。
+//! Player simulation: an 8x8 AABB against the tile grid, solved with separated axes.
 //!
-//! 所有状态都是 [`Fx`]（AGENTS.md §15.7），时间步恒为
-//! [`FIXED_DT`](releste_math::FIXED_DT)。
+//! All state is [`Fx`] (AGENTS.md 15.7), and the time step is always
+//! [`FIXED_DT`](releste_math::FIXED_DT).
 //!
-//! 与原版的关系（`references/pureCeleste.cs`，行为参考）：
-//! - **已对齐**：跑动加速（1000/400/0.65）、重力 900、落速上限
-//!   160/240 缓动（`maxFall` 状态）、顶点半重力（40 阈值）、
-//!   coyote/跳跃缓冲/松键削减（Phase 4.1 已落地）。
-//! - **连续世界语义**（原版是切屏转场，这里是同一世界连续行走）：
-//!   碰撞查询覆盖 hitbox 触及的**所有**房间（骑缝时两边都查，
-//!   头不会扎进隔壁房间的实心里）；撞墙/落地吸附到**世界格边**，
-//!   与房间原点无关。中心掉出所有房间时由最近房间兜底夹回。
-//! - **跳跃已对齐**：`Jump()` 的 -105 + `JumpHBoost`（120704-120705）+
-//!   varJump 钳制（122042-122048）+ 缓冲 0.08s（110376）/ 土狼 0.1s
-//!   （119832-119839），见各常量的出处注释。
-//! - **引擎自造（无原版对应，偏差声明）**：多房间连续世界的碰撞
-//!   （`Player::hit_in` 的骑缝双查）、世界级兜底夹取
-//!   （`Player::clamp_to_world`）与固定 1/2px 推进步长（`STEP`）。
-//!   原版是**一张地图一份**瓦片网格（77231-77233）+ 单房间边界，
-//!   碰撞天然全图；引擎按房间存储瓦片，只能显式骑缝查。各函数
-//!   文档都注明了这一点。
-//! - **已实现的状态**：0 Normal（119397）、1 Climb 含体力（119398）、
-//!   2 Dash 含八向/回充/冷却（119399）；`Player::step` 按 `state` 分派。
-//! - **尚未实现的状态**（原版 `StateMachine.SetCallbacks` 119397-119411）：
-//!   3 Swim、4 Boost、5 RedDash、6 HitSquash、7 Launch、8 Pickup、
-//!   9 DreamDash、10 SummitLaunch、11 Dummy 与 12-15 的 intro 协程；
-//!   这些 `state` 值目前都会落回 Normal。ROADMAP Phase 4.1。
-//!   头发颜色的 USED/FLASH/TWO_DASHES 状态已在 `sprites::hair_color`
-//!   备好，随 dash 落地激活。
+//! Relationship to vanilla (`references/pureCeleste.cs`, behavioral reference):
+//! - **Aligned**: run acceleration (1000/400/0.65), gravity 900, fall-speed cap
+//!   160/240 easing (the `maxFall` state), apex half gravity (40 threshold),
+//!   coyote / jump buffer / release cut (landed in Phase 4.1).
+//! - **Continuous-world semantics** (vanilla uses screen transitions; here it is
+//!   continuous walking in one world): collision queries cover **every** room the
+//!   hitbox touches (on a seam both sides are checked, so the head never drives into
+//!   the solid interior of the neighboring room); wall and floor landings snap to
+//!   **world cell edges**, independent of the room origin. When the center falls out
+//!   of every room, the nearest room clamps it back.
+//! - **Jump is aligned**: `Jump()`'s -105 + `JumpHBoost` (120704-120705) + varJump
+//!   clamping (122042-122048) + 0.08s buffer (110376) / 0.1s coyote (119832-119839);
+//!   see the provenance comments on each constant.
+//! - **Engine-invented (no vanilla counterpart; deviation declared)**: collision in
+//!   a continuous multi-room world (`Player::hit_in`'s seam double check), the
+//!   world-level fallback clamp (`Player::clamp_to_world`) and the fixed 1/2px
+//!   advance step (`STEP`). Vanilla is **one tile grid per map** (77231-77233) plus a
+//!   single room boundary, so collision is naturally map-wide; the engine stores tiles
+//!   per room and can only check seams explicitly. Each function's docs note this.
+//! - **Implemented states**: 0 Normal (119397), 1 Climb with stamina (119398),
+//!   2 Dash with eight-way/refill/cooldown (119399); `Player::step` dispatches on
+//!   `state`.
+//! - **Not yet implemented states** (vanilla `StateMachine.SetCallbacks`
+//!   119397-119411): 3 Swim, 4 Boost, 5 RedDash, 6 HitSquash, 7 Launch, 8 Pickup,
+//!   9 DreamDash, 10 SummitLaunch, 11 Dummy, and the 12-15 intro coroutines; these
+//!   `state` values currently all fall back to Normal. ROADMAP Phase 4.1. The hair
+//!   color USED/FLASH/TWO_DASHES states are already prepared in `sprites::hair_color`
+//!   and activate as dash lands.
 
 use releste_map::Room;
 use releste_math::{Fx, Vec2};
 
 use crate::session::{nearest_room, room_containing, Session};
 
-/// hitbox 宽（像素，整数，供房间碰撞使用）。
+/// Hitbox width (pixels, integer, for room collision).
 ///
-/// 原版：`pureCeleste.cs:118856`
-/// `normalHitbox = new Hitbox(8f, 11f, -4f, -11f)` —— 8 宽 11 高，
-/// `Position` 是 hitbox **底中心**（脚下锚点）。
+/// Vanilla: `pureCeleste.cs:118856`
+/// `normalHitbox = new Hitbox(8f, 11f, -4f, -11f)` -- 8 wide, 11 tall; `Position` is
+/// the hitbox **bottom center** (the anchor under the feet).
 pub const PLAYER_W_PX: i32 = 8;
-/// hitbox 高（像素，整数）。出处见 [`PLAYER_W_PX`]。
+/// Hitbox height (pixels, integer). Provenance in [`PLAYER_W_PX`].
 pub const PLAYER_H_PX: i32 = 11;
-/// hitbox 宽（f32 视图，供渲染使用）。
+/// Hitbox width (f32 view, for rendering).
 pub const PLAYER_W: f32 = PLAYER_W_PX as f32;
-/// hitbox 高（f32 视图，供渲染使用）。
+/// Hitbox height (f32 view, for rendering).
 pub const PLAYER_H: f32 = PLAYER_H_PX as f32;
 
-/// 水平跑速 90 px/s（1.5 px/tick @ 60Hz）。原版 `MaxRun = 90f`
-/// （pureCeleste.cs:118386 `MaxRun = 90f`）。
+/// Horizontal run speed 90 px/s (1.5 px/tick at 60Hz). Vanilla `MaxRun = 90f`
+/// (pureCeleste.cs:118386 `MaxRun = 90f`).
 const RUN: Fx = Fx::from_ratio(3, 2);
-/// 待机/贴边分支的速度上限 25 px/s（5/12 px/tick）：原版
+/// Speed threshold for the idle / edge branch: 25 px/s (5/12 px/tick), vanilla
 /// `Math.Abs(Speed.X) <= 25f && moveX == 0`
-/// （pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`）。
+/// (pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`).
 ///
-/// **它与 [`RUN`] 不是同一个阈值**：runSlow/runFast 的分界是 45 px/s
-/// （pureCeleste.cs:120449 `Math.Abs(Speed.X) < 45f`），25 px/s 只管
-/// 「走完了没有」。混用会让减速中的
-/// 帧选错（本引擎此前就用了 45）。
+/// **This is not the same threshold as [`RUN`]**: the runSlow/runFast split is
+/// 45 px/s (pureCeleste.cs:120449 `Math.Abs(Speed.X) < 45f`); 25 px/s only decides
+/// "have we finished moving". Mixing the two selects the wrong frame while
+/// decelerating (this engine previously used 45).
 const IDLE_SPEED: Fx = Fx::from_ratio(5, 12);
-/// 水平加速度 1000 px/s²（≈0.278 px/tick²）—— 起步不是瞬间满速。
-/// 原版 `RunAccel = 1000f`（pureCeleste.cs:118388 `RunAccel = 1000f`）。
+/// Horizontal acceleration 1000 px/s^2 (~0.278 px/tick^2) -- starting from rest does
+/// not snap to top speed. Vanilla `RunAccel = 1000f`
+/// (pureCeleste.cs:118388 `RunAccel = 1000f`).
 const RUN_ACCEL: Fx = Fx::from_ratio(5, 18);
-/// 超速回归 400 px/s²：仅当 **同向超速**（|vx| > 90 且与输入同号）时用；
-/// 无输入停下、反向刹车都走 1000 的全速档（pureCeleste.cs:121965-121975）。
-/// 定义：`RunReduce = 400f`（pureCeleste.cs:118390 `RunReduce = 400f`）。
+/// Overspeed reduction 400 px/s^2: used only for **same-direction overspeed**
+/// (|vx| > 90 and the same sign as the input); easing to a stop with no input and
+/// braking in the opposite direction both use the full 1000 rate
+/// (pureCeleste.cs:121965-121975). Definition: `RunReduce = 400f`
+/// (pureCeleste.cs:118390 `RunReduce = 400f`).
 const RUN_REDUCE: Fx = Fx::from_ratio(1, 9);
-/// 空中操控系数 0.65 —— 空中加速是地面的一半多点。
-/// 原版 `AirMult = 0.65f`（pureCeleste.cs:118392 `AirMult = 0.65f`）。
+/// Air control factor 0.65 -- air acceleration is a bit more than half of ground.
+/// Vanilla `AirMult = 0.65f` (pureCeleste.cs:118392 `AirMult = 0.65f`).
 const AIR_MULT: Fx = Fx::from_ratio(13, 20);
-/// 重力 900 px/s²（0.25 px/tick²）。
-/// 原版 `Gravity = 900f`（pureCeleste.cs:118378 `Gravity = 900f`）。
+/// Gravity 900 px/s^2 (0.25 px/tick^2).
+/// Vanilla `Gravity = 900f` (pureCeleste.cs:118378 `Gravity = 900f`).
 const GRAVITY: Fx = Fx::from_ratio(1, 4);
-/// 顶点半重力：上升/下落都很慢且按住跳跃时重力减半（450 px/s²）。
-/// 原版把重力乘 0.5（pureCeleste.cs:122031 `? 0.5f : 1f`）。
+/// Apex half gravity: while rising or falling very slowly and holding jump, gravity
+/// is halved (450 px/s^2). Vanilla multiplies gravity by 0.5
+/// (pureCeleste.cs:122031 `? 0.5f : 1f`).
 const HALF_GRAVITY: Fx = Fx::from_ratio(1, 8);
-/// 普通落速上限 160 px/s（8/3 px/tick）。
+/// Normal fall-speed cap 160 px/s (8/3 px/tick).
 ///
-/// **参考值**：`MaxFall = 160f`（pureCeleste.cs:118376 `MaxFall = 160f`）。它是一个
-/// **缓动状态**（见 [`Player::max_fall`]），按住"下"时上限爬向
-/// [`FAST_MAX_FALL`]，松开再缓回来 —— 不是硬截断。
+/// **Reference value**: `MaxFall = 160f` (pureCeleste.cs:118376 `MaxFall = 160f`).
+/// It is an **eased state** (see [`Player::max_fall`]): holding "down" ramps the cap
+/// toward [`FAST_MAX_FALL`], releasing eases it back -- not a hard cut.
 const MAX_FALL: Fx = Fx::from_ratio(8, 3);
-/// 快落上限 240 px/s（4 px/tick）。参考 `FastMaxFall = 240f`
-/// （pureCeleste.cs:118382 `FastMaxFall = 240f`）。
+/// Fast-fall cap 240 px/s (4 px/tick). Reference `FastMaxFall = 240f`
+/// (pureCeleste.cs:118382 `FastMaxFall = 240f`).
 const FAST_MAX_FALL: Fx = Fx::from_int(4);
-/// 落速上限的缓动速率 300 px/s²（1/12 px/tick²）。参考 `FastMaxAccel = 300f`
-/// （pureCeleste.cs:118384 `FastMaxAccel = 300f`）。
+/// Easing rate of the fall-speed cap: 300 px/s^2 (1/12 px/tick^2). Reference
+/// `FastMaxAccel = 300f` (pureCeleste.cs:118384 `FastMaxAccel = 300f`).
 const FAST_MAX_ACCEL: Fx = Fx::from_ratio(1, 12);
-/// 顶点半重力阈值 40 px/s（2/3 px/tick）。参考 `HalfGravThreshold = 40f`
-/// （pureCeleste.cs:118380 `HalfGravThreshold = 40f`）。
+/// Apex half-gravity threshold 40 px/s (2/3 px/tick). Reference
+/// `HalfGravThreshold = 40f` (pureCeleste.cs:118380 `HalfGravThreshold = 40f`).
 const HALF_GRAV_THRESHOLD: Fx = Fx::from_ratio(2, 3);
-/// 起跳竖直速度 -105 px/s（-7/4 px/tick）。`Player.Jump`：
-/// `Speed.Y = -105f`（pureCeleste.cs:120705）。
+/// Jump vertical speed -105 px/s (-7/4 px/tick). `Player.Jump`:
+/// `Speed.Y = -105f` (pureCeleste.cs:120705).
 const JUMP_SPEED: Fx = Fx::from_ratio(-7, 4);
-/// 跳跃水平助力 40 px/s（2/3 px/tick）：`Speed.X += 40f * moveX`
-/// （pureCeleste.cs:120704）。跑动中起跳会短暂超速，再被 400 档拉回。
+/// Jump horizontal boost 40 px/s (2/3 px/tick): `Speed.X += 40f * moveX`
+/// (pureCeleste.cs:120704). Jumping while running briefly overspeeds, then gets
+/// pulled back at the 400 rate.
 const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
-/// varJump 时长 0.2s = 12 tick（pureCeleste.cs:120698）。
+/// varJump duration 0.2s = 12 ticks (pureCeleste.cs:120698).
 ///
-/// 按住跳跃期间竖直速度被钳回起跳值（122042-122048）—— 重力被完全
-/// 抵消，跳满 ≈ 12×1.75 + 105²/1800 ≈ 27px（3.4 格）；松手计时清零、
-/// 只剩重力，即得可变跳高。**没有**"松手瞬间砍速度"——削高全靠钳制。
+/// While jump is held, vertical speed is clamped back to the jump value
+/// (122042-122048) -- gravity is fully cancelled, giving a full jump of
+/// ~12x1.75 + 105^2/1800 ~ 27px (3.4 cells); releasing zeroes the timer and only
+/// gravity remains, which is the variable jump height. There is **no** "cut speed at
+/// release" -- the height is reduced purely by the clamp.
 const VAR_JUMP_TICKS: u32 = 12;
-/// 碰撞解算的推进步长：1/2 px。
+/// Advance step for collision solving: 1/2 px.
 ///
-/// **引擎自造（偏差声明）**：原版 `Actor.MoveH/MoveV` 在整数像素网格上
-/// 用 `Collider` 逐像素推进，没有"亚像素步长"这个概念。这里为了 240 px/s
-/// （4 px/tick）的冲刺也能逐格查碰撞，固定按 1/2px 分步推进 ——
-/// 行为等价于逐像素，代价是每 tick 多几次查询。
+/// **Engine-invented (deviation declared)**: vanilla `Actor.MoveH/MoveV` advances
+/// pixel by pixel on an integer-pixel grid through `Collider`, with no concept of a
+/// "subpixel step". Here, so that a 240 px/s (4 px/tick) dash still queries collision
+/// cell by cell, it advances in fixed 1/2px steps -- behaviorally equivalent to
+/// pixel-by-pixel, at the cost of a few extra queries per tick.
 const STEP: Fx = Fx::from_ratio(1, 2);
-/// 冲刺速度 240 px/s（4 px/tick）。`DashCoroutine`：`speed = value * 240f`
-/// （pureCeleste.cs:122745）。
+/// Dash speed 240 px/s (4 px/tick). `DashCoroutine`: `speed = value * 240f`
+/// (pureCeleste.cs:122745).
 const DASH_SPEED: Fx = Fx::from_int(4);
-/// 冲刺末段速度 160 px/s（8/3 px/tick）：0.15s 后 `Speed = DashDir * 160f`
-/// （122824，`DashDir.Y <= 0` 时）。
+/// Dash end speed 160 px/s (8/3 px/tick): after 0.15s `Speed = DashDir * 160f`
+/// (122824, when `DashDir.Y <= 0`).
 const DASH_END_SPEED: Fx = Fx::from_ratio(8, 3);
-/// 冲刺时长 0.15s = 9 tick（`yield return 0.15f`，122817）。
+/// Dash duration 0.15s = 9 ticks (`yield return 0.15f`, 122817).
 const DASH_TICKS: u16 = 9;
-/// 冲刺冷却 0.2s = 12 tick（`DashBegin`：`dashCooldownTimer = 0.2f`，122541）。
+/// Dash cooldown 0.2s = 12 ticks (`DashBegin`: `dashCooldownTimer = 0.2f`, 122541).
 const DASH_COOLDOWN_TICKS: u16 = 12;
-/// 地面回充后不可立刻再冲的冷却 0.1s = 6 tick（122545；原版只写不读，
-/// 一并移植保持字段齐全）。
+/// Cooldown after a ground refill during which dashing is blocked: 0.1s = 6 ticks
+/// (122545; vanilla only writes it and never reads it, ported anyway to keep the
+/// field complete).
 const DASH_REFILL_COOLDOWN_TICKS: u16 = 6;
-/// 冲刺攻击窗 0.3s = 18 tick（`dashAttackTimer = 0.3f`，122554）。
+/// Dash attack window 0.3s = 18 ticks (`dashAttackTimer = 0.3f`, 122554).
 const DASH_ATTACK_TICKS: u16 = 18;
-/// 蹬墙跳水平速度 130 px/s（13/6 px/tick，`WallJump`：`Speed.X = 130f*dir`，
-/// pureCeleste.cs:120836）。
+/// Wall jump horizontal speed 130 px/s (13/6 px/tick, `WallJump`: `Speed.X = 130f*dir`,
+/// pureCeleste.cs:120836).
 const WALLJUMP_X: Fx = Fx::from_ratio(13, 6);
-/// 蹬墙跳探测距离 5px：`CollideCheck<Solid>(Position + UnitX*dir*5)`
-/// （`WallJumpCheck`，120779-120804 的 `num = 5` 普通分支）。
+/// Wall jump probe distance 5px: `CollideCheck<Solid>(Position + UnitX*dir*5)`
+/// (`WallJumpCheck`, the `num = 5` normal branch at 120779-120804).
 const WALLJUMP_PROBE: Fx = Fx::from_int(5);
-/// 蹬墙跳后强制 moveX 的时长 0.16s = 10 tick（120832
-/// `forceMoveXTimer = 0.16f`；按住方向的防再吸附窗）。
+/// Duration of the forced moveX after a wall jump: 0.16s = 10 ticks (120832
+/// `forceMoveXTimer = 0.16f`; the anti-re-grab window while a direction is held).
 const FORCE_MOVE_X_TICKS: u16 = 10;
-/// 蹬墙跳（超级版）水平速度 170 px/s（17/6 px/tick，`SuperWallJump`：
-/// `Speed.X = 170f*dir`，pureCeleste.cs:120877）。
+/// Super wall jump horizontal speed 170 px/s (17/6 px/tick, `SuperWallJump`:
+/// `Speed.X = 170f*dir`, pureCeleste.cs:120877).
 ///
-/// 注：数值曾错写作 240（4 px/tick）—— 段注释改对了、常量没跟着改。
-/// `super_wall_jump_pins_vanilla_speeds` 现在钉住这两个值。
+/// Note: the value was once mis-written as 240 (4 px/tick) -- the section comment was
+/// fixed but the constant was not. `super_wall_jump_pins_vanilla_speeds` now pins
+/// these two values.
 const SUPER_WALLJUMP_X: Fx = Fx::from_ratio(17, 6);
-/// 蹬墙跳（超级版）竖直速度 -160 px/s（-8/3 px/tick，`varJumpSpeed =
-/// (Speed.Y = -160f)`，pureCeleste.cs:120878）。
+/// Super wall jump vertical speed -160 px/s (-8/3 px/tick, `varJumpSpeed =
+/// (Speed.Y = -160f)`, pureCeleste.cs:120878).
 const SUPER_WALLJUMP_Y: Fx = Fx::from_ratio(-8, 3);
-/// 超级跳（地面横冲刺中起跳）水平速度 260 px/s（13/3 px/tick，
-/// `SuperJump`：`Speed.X = 260f*Facing`，120748）。
+/// Super jump (jumping during a ground horizontal dash) horizontal speed 260 px/s
+/// (13/3 px/tick, `SuperJump`: `Speed.X = 260f*Facing`, 120748).
 const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
-/// 头发白闪时长 0.12s = 7 tick（`UpdateHair`：`hairFlashTimer = 0.12f`，
-/// pureCeleste.cs:120271）。
+/// Hair flash duration 0.12s = 7 ticks (`UpdateHair`: `hairFlashTimer = 0.12f`,
+/// pureCeleste.cs:120271).
 const HAIR_FLASH_TICKS: u8 = 7;
-/// 头发颜色渐入速率 6/s（`Lerp(Hair.Color, Used, 6f*dt)`，120258-120262；
-/// 每 tick lerp 系数 = 6/60 = 0.1）。
-/// 攀爬最大体力 110（`ClimbMaxStamina`，pureCeleste.cs:118504；出生即满，
-/// 118680 `Stamina = 110f`）。
+/// Hair color ease-in rate 6/s (`Lerp(Hair.Color, Used, 6f*dt)`, 120258-120262; the
+/// per-tick lerp factor = 6/60 = 0.1).
+/// Max climb stamina 110 (`ClimbMaxStamina`, pureCeleste.cs:118504; full at spawn,
+/// 118680 `Stamina = 110f`).
 const CLIMB_MAX_STAMINA: Fx = Fx::from_ratio(110, 1);
-/// 向上攀爬的体力消耗：原版字面量 `45.454544f`/s（122266-122268，
-/// 约 2.42s 耗尽 110）按 tick 折算 ÷60。
+/// Upward climb stamina drain: vanilla's literal `45.454544f`/s (122266-122268,
+/// draining 110 in ~2.42s) converted per tick by /60.
 const CLIMB_UP_DRAIN_PER_TICK: Fx = Fx::from_ratio(45454544, 60000000);
-/// 抓着不动的体力消耗 10/s（122278-122280）。
+/// Stamina drain for holding still 10/s (122278-122280).
 const CLIMB_IDLE_DRAIN_PER_TICK: Fx = Fx::from_ratio(1, 6);
-/// 攀爬跳（未离地）的体力消耗 27.5（120904-120906）。
+/// Stamina drain for a climb jump (without leaving the ground) 27.5 (120904-120906).
 const CLIMBJUMP_DRAIN: Fx = Fx::from_ratio(55, 2);
-/// 向上攀爬速度 -45 px/s（-3/4 px/tick，122220-122222）。
+/// Upward climb speed -45 px/s (-3/4 px/tick, 122220-122222).
 const CLIMB_UP_SPEED: Fx = Fx::from_ratio(-3, 4);
-/// 向下攀爬速度 80 px/s（4/3 px/tick，122228-122230）。
+/// Downward climb speed 80 px/s (4/3 px/tick, 122228-122230).
 const CLIMB_DOWN_SPEED: Fx = Fx::from_ratio(4, 3);
-/// 抓着松手下滑 30 px/s（1/2 px/tick，122246-122248 的 `num = 30f`）。
+/// Slip speed when holding without input 30 px/s (1/2 px/tick, `num = 30f` at
+/// 122246-122248).
 const CLIMB_SLIP_SPEED: Fx = Fx::from_ratio(1, 2);
-/// 爬到墙顶的蹬跃：水平 100 px/s（5/3 px/tick，`ClimbHop` 122368），
-/// 竖直钳到 ≤ -120 px/s（-2 px/tick，122372）。
+/// Hop off the top of a climbed wall: horizontal 100 px/s (5/3 px/tick, `ClimbHop`
+/// 122368), vertical clamped to <= -120 px/s (-2 px/tick, 122372).
 const CLIMB_HOP_X: Fx = Fx::from_ratio(5, 3);
 const CLIMB_HOP_Y: Fx = Fx::from_int(-2);
-/// 下蹲 hitbox：8×6，偏移 (-4,-6)（`duckHitbox`，pureCeleste.cs:118858；
-/// 底边与常规 hitbox 对齐 → 引擎左上角 y 偏移 = 11-6 = 5）。
+/// Duck hitbox: 8x6, offset (-4,-6) (`duckHitbox`, pureCeleste.cs:118858; its bottom
+/// edge aligns with the normal hitbox -> the engine's top-left y offset = 11-6 = 5).
 const DUCK_H: i32 = 6;
 const DUCK_Y_OFF: i32 = 5;
-/// 下蹲时地面减速 500 px/s²（122047-122049：`Approach(Speed.X, 0, 500*dt)`；
-/// 每 tick² 500/3600 = 5/36 px/tick²）。
+/// Ground deceleration while ducking 500 px/s^2 (122047-122049:
+/// `Approach(Speed.X, 0, 500*dt)`; per tick^2, 500/3600 = 5/36 px/tick^2).
 const DUCK_DECEL: Fx = Fx::from_ratio(5, 36);
-/// 墙滑速度从 160 缓到 20 px/s（122240：`Lerp(160, 20, wallSlideTimer/1.2)`）。
+/// Wall slide speed eased from 160 to 20 px/s (122240: `Lerp(160, 20,
+/// wallSlideTimer/1.2)`).
 const WALLSLIDE_FAST: Fx = Fx::from_ratio(8, 3);
 const WALLSLIDE_SLOW: Fx = Fx::from_ratio(1, 3);
-/// 墙滑计时满值 1.2s = 72 tick（`wallSlideTimer = 1.2f`，118760）。
+/// Wall slide timer maximum 1.2s = 72 ticks (`wallSlideTimer = 1.2f`, 118760).
 const WALLSLIDE_TICKS: u16 = 72;
-/// 攀爬起步的僵直 0.1s = 6 tick（`climbNoMoveTimer = 0.1f`，122146）。
+/// Climb start stagger 0.1s = 6 ticks (`climbNoMoveTimer = 0.1f`, 122146).
 const CLIMB_NO_MOVE_TICKS: u16 = 6;
-/// 攀爬跳后朝墙方向的助推窗 0.2s = 12 tick（`ClimbJump`：
-/// `wallBoostTimer = 0.2f`，120910-120913）。
+/// Push window toward the wall after a climb jump: 0.2s = 12 ticks (`ClimbJump`:
+/// `wallBoostTimer = 0.2f`, 120910-120913).
 const WALL_BOOST_TICKS: u16 = 12;
 const HAIR_LERP_PER_TICK: f32 = 0.1;
 
-/// 起跳输入缓冲：0.08s = 5 tick（含按下当帧）。
+/// Jump input buffer: 0.08s = 5 ticks (including the press frame).
 ///
-/// 原版 `VirtualButton` 的 `BufferTime`：Jump = 0.08f
-/// （pureCeleste.cs:110376），按下即计满、每帧递减、`Pressed` 在
-/// 计数 > 0 时为真（16715-16840）—— 落地前 4 tick 内按的跳跃，
-/// 落地瞬间仍会触发。
+/// Vanilla `VirtualButton`'s `BufferTime`: Jump = 0.08f (pureCeleste.cs:110376); it
+/// fills on press, decays every frame, and `Pressed` is true while the count > 0
+/// (16715-16840) -- a jump pressed within 4 ticks before landing still fires on
+/// landing.
 const JUMP_BUFFER_FRAMES: u32 = 5;
-/// 土狼时间：0.1s（`jumpGraceTimer`，pureCeleste.cs:119832-119839 ——
-/// 接地每帧刷满 0.1，离地后逐帧递减，> 0 即可起跳）。
+/// Coyote time: 0.1s (`jumpGraceTimer`, pureCeleste.cs:119832-119839 -- refilled to
+/// 0.1 every grounded frame, decayed every frame once airborne, and a jump is allowed
+/// while > 0).
 ///
-/// 引擎在 tick 末段递减（物理已用完上一 tick 的接地态），6 次计数
-/// 恰好给出 5 个可起跳的离地 tick，与原版逐帧等价。
+/// The engine decrements at the end of the tick (physics has already used the previous
+/// tick's grounded state), and 6 counts give exactly 5 airborne ticks in which a jump
+/// can fire, equivalent frame for frame to vanilla.
 const COYOTE_FRAMES: u32 = 6;
 
-/// 一帧的按键状态（由窗口宿主喂进来）。
+/// Button state for one frame (fed in by the window host).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Input {
     pub left: bool,
@@ -211,15 +228,15 @@ pub struct Input {
     pub up: bool,
     pub down: bool,
     pub jump: bool,
-    /// 冲刺键（原版 `Input.Dash`，默认 X，101632）。缓冲与跳跃相同
-    /// （`VirtualButton.BufferTime = 0.08f`，110376）。
+    /// Dash button (vanilla `Input.Dash`, default X, 101632). Buffering matches jump
+    /// (`VirtualButton.BufferTime = 0.08f`, 110376).
     pub dash: bool,
-    /// 抓攀键（原版 `Input.Grab`，默认 Z/V/LeftShift，101622）。
+    /// Grab button (vanilla `Input.Grab`, default Z/V/LeftShift, 101622).
     pub grab: bool,
 }
 
 impl Input {
-    /// 水平轴：-1 / 0 / +1（同时按左右则不移动）。
+    /// Horizontal axis: -1 / 0 / +1 (pressing both left and right does not move).
     pub fn axis_x(self) -> Fx {
         match (self.left, self.right) {
             (true, false) => -Fx::one(),
@@ -228,10 +245,11 @@ impl Input {
         }
     }
 
-    /// 两个输入状态的并集：同一个键任一为真即为真。
+    /// Union of two input states: a key is true if it is true in either.
     ///
-    /// 脚本里重叠的输入段按这个规则合并（`devtools::input_at`）——
-    /// 左右同按是允许的，`axis_x` 会判 0（原版 `Axis` 语义，16705-16714）。
+    /// Overlapping input segments in scripts merge by this rule (`devtools::input_at`)
+    /// -- pressing left and right together is allowed and `axis_x` returns 0 (vanilla
+    /// `Axis` semantics, 16705-16714).
     pub fn merge(self, other: Input) -> Input {
         Input {
             left: self.left || other.left,
@@ -244,8 +262,8 @@ impl Input {
         }
     }
 
-    /// 竖直轴：-1（上）/ 0 / +1（下）。原版 `Input.MoveY.Value`
-    /// （`Axis(bool, bool, bothValue)`，16705-16714：同按返回 0）。
+    /// Vertical axis: -1 (up) / 0 / +1 (down). Vanilla `Input.MoveY.Value`
+    /// (`Axis(bool, bool, bothValue)`, 16705-16714: pressing both returns 0).
     pub fn axis_y(self) -> Fx {
         match (self.up, self.down) {
             (true, false) => -Fx::one(),
@@ -255,112 +273,124 @@ impl Input {
     }
 }
 
-/// 玩家当前状态。
+/// The player's current state.
 #[derive(Debug, Clone)]
 pub struct Player {
-    /// hitbox 左上角（世界坐标）。
+    /// Hitbox top-left (world coordinates).
     pub pos: Vec2,
-    /// 上一 tick 的位置，渲染时做线性插值。
+    /// Previous tick's position, used for linear interpolation when rendering.
     pub prev_pos: Vec2,
-    /// 速度（px/tick）。
+    /// Velocity (px/tick).
     pub vel: Vec2,
-    /// 是否踩在固体上。
+    /// Whether the player is standing on a solid.
     pub on_ground: bool,
-    /// 朝向：1 右，-1 左。
+    /// Facing: 1 right, -1 left.
     pub facing: i32,
-    /// 当前落速上限（px/tick）：在 [`MAX_FALL`] 与 [`FAST_MAX_FALL`] 之间
-    /// 按 [`FAST_MAX_ACCEL`] 缓动 —— 参考 pureCeleste 的 `maxFall` 局部状态。
+    /// Current fall-speed cap (px/tick): eased between [`MAX_FALL`] and
+    /// [`FAST_MAX_FALL`] at [`FAST_MAX_ACCEL`] -- reference pureCeleste's `maxFall`
+    /// local state.
     max_fall: Fx,
-    /// 上一 tick 的跳跃键（边沿检测：按下 / 松开）。
+    /// Previous tick's jump button (edge detection: press / release).
     prev_jump: bool,
-    /// 起跳缓冲倒计时：0 = 无。按下跳跃时设满，起跳后清空。
+    /// Jump buffer countdown: 0 = none. Set full on jump press, cleared after takeoff.
     jump_buffer: u32,
-    /// 土狼时间倒计时：0 = 无。接地时重置，离地后递减。
+    /// Coyote countdown: 0 = none. Reset while grounded, decayed once airborne.
     coyote: u32,
-    /// varJump 倒计时（tick）：> 0 且按住跳跃时竖直速度被钳回起跳值
-    /// （pureCeleste.cs:122042-122048 的 `varJumpTimer`）。
+    /// varJump countdown (ticks): while > 0 and jump is held, vertical speed is
+    /// clamped back to the jump value (vanilla `varJumpTimer`,
+    /// pureCeleste.cs:122042-122048).
     var_jump: u32,
-    /// 强制 varJump 钳制的剩余 tick（原版 `AutoJump` + `AutoJumpTimer`，
-    /// 120590-120594：向上转场时自动跳一下，0.2s 内不管按键都钳住）。
+    /// Remaining ticks of forced varJump clamping (vanilla `AutoJump` +
+    /// `AutoJumpTimer`, 120590-120594: auto-jump on an up transition, clamping for
+    /// 0.2s regardless of input).
     auto_jump: u32,
-    /// 当前冲刺数（原版 `Player.Dashes`，118860 附近构造为 MaxDashes）。
+    /// Current dash count (vanilla `Player.Dashes`, constructed as MaxDashes around
+    /// 118860).
     pub dashes: u8,
-    /// 冲刺库存上限（原版 `Player.MaxDashes`；Prologue `Inventory.Prologue`
-    /// 无二段冲刺 → 1，119421）。
+    /// Dash inventory maximum (vanilla `Player.MaxDashes`; the Prologue
+    /// `Inventory.Prologue` has no second dash -> 1, 119421).
     pub max_dashes: u8,
-    /// 上一 tick 的冲刺数（原版 `lastDashes`，用于头发白闪判定，120295）。
+    /// Previous tick's dash count (vanilla `lastDashes`, used for the hair flash
+    /// check, 120295).
     last_dashes: u8,
-    /// 头发白闪剩余时间（原版 `hairFlashTimer`，120271）。
+    /// Remaining hair flash time (vanilla `hairFlashTimer`, 120271).
     hair_flash: u8,
-    /// 头发颜色的**当前**值（`UpdateHair` 逐帧 lerp 的载体，120258-120262）。
+    /// The **current** hair color (the carrier for `UpdateHair`'s per-frame lerp,
+    /// 120258-120262).
     hair_color_current: [f32; 4],
-    /// 状态机（原版 `StateMachine.State`，编号与原版一致：0 = Normal、
-    /// 2 = Dash，119397-119409；1/3/8 等未实现）。
+    /// State machine (vanilla `StateMachine.State`, numbered as vanilla: 0 = Normal,
+    /// 2 = Dash, 119397-119409; 1/3/8 etc. not implemented).
     state: u8,
-    /// 冲刺方向（原版 `DashDir`，八向单位向量，分量 ±1/0/±0.707）。
+    /// Dash direction (vanilla `DashDir`, an eight-way unit vector with components
+    /// +/-1/0/+/-0.707).
     dash_dir: Vec2,
-    /// 冲刺协程相位：0 = 进入 tick（`yield return null`，速度未设），
-    /// 1..=9 = 0.15s 等待，第 10 tick 结束（`DashCoroutine` 122731-122831）。
+    /// Dash coroutine phase: 0 = entry tick (`yield return null`, speed not yet set),
+    /// 1..=9 = the 0.15s wait, ending on tick 10 (`DashCoroutine` 122731-122831).
     dash_phase: u16,
-    /// 起跳/冲刺瞬间的速度存档（原版 `beforeDashSpeed`，122559）。
+    /// Snapshot of speed at the jump/dash instant (vanilla `beforeDashSpeed`, 122559).
     before_dash_speed: Vec2,
-    /// 冲刺冷却（原版 `dashCooldownTimer`，0.2s，122541）。
+    /// Dash cooldown (vanilla `dashCooldownTimer`, 0.2s, 122541).
     dash_cooldown: u16,
-    /// 冲刺回充冷却（原版 `dashRefillCooldownTimer`，0.1s，122545）。
+    /// Dash refill cooldown (vanilla `dashRefillCooldownTimer`, 0.1s, 122545).
     dash_refill_cooldown: u16,
-    /// 冲刺攻击窗（原版 `dashAttackTimer`，0.3s，122554）。
+    /// Dash attack window (vanilla `dashAttackTimer`, 0.3s, 122554).
     dash_attack: u16,
-    /// varJump 钳制的目标速度（原版 `varJumpSpeed` 字段：`Jump()` 设
-    /// -105（120698），`WallJump` -105（120837），`BeforeUpTransition`
-    /// -105（120588），`Rebound` -120；钳制取 `min(Speed.Y, varJumpSpeed)`，
-    /// 122134）。
+    /// Target speed for varJump clamping (vanilla `varJumpSpeed` field: `Jump()` sets
+    /// -105 (120698), `WallJump` -105 (120837), `BeforeUpTransition` -105 (120588),
+    /// `Rebound` -120; the clamp is `min(Speed.Y, varJumpSpeed)`, 122134).
     var_jump_speed: Fx,
-    /// 强制水平输入（原版 `forceMoveX` + `forceMoveXTimer`，119883-119889：
-    /// 蹬墙跳后 0.16s 内 moveX 被覆盖，防止立刻再贴墙）。
+    /// Forced horizontal input (vanilla `forceMoveX` + `forceMoveXTimer`,
+    /// 119883-119889: moveX is overridden for 0.16s after a wall jump, preventing an
+    /// immediate re-grab).
     force_move_x: i32,
     force_move_x_ticks: u16,
-    /// 本 tick 生效的水平输入（`moveX`：输入或 forceMoveX 覆盖，119883-119891）。
+    /// Horizontal input in effect this tick (`moveX`: input or the forceMoveX
+    /// override, 119883-119891).
     move_x: Fx,
-    /// 上一 tick 的冲刺键（缓冲边沿）。
+    /// Previous tick's dash button (buffer edge).
     prev_dash: bool,
-    /// 冲刺键缓冲（`Input.Dash` 的 VirtualButton.BufferTime = 0.08s，110376）。
+    /// Dash button buffer (`Input.Dash`'s VirtualButton.BufferTime = 0.08s, 110376).
     dash_buffer: u16,
-    /// 冲刺起手的停帧请求（`Celeste.Freeze(0.05f)`，122540；service 消费）。
+    /// Freeze request at dash start (`Celeste.Freeze(0.05f)`, 122540; consumed by the
+    /// service).
     pub freeze_ticks: u8,
-    /// 动画状态（原版 `Sprite`：当前动画 id、帧、计时器、是否播放中）。
+    /// Animation state (vanilla `Sprite`: current animation id, frame, timer, playing).
     pub anim_id: String,
     pub anim_frame: usize,
     anim_timer: f32,
     anim_playing: bool,
-    /// 上一条动画 id（原版 `Sprite.LastAnimationID`，pureCeleste.cs:10181）。
-    /// `PlayerSprite.Running`（111374-111388）与 `UpdateSprite` 的跑动守卫
-    /// （120461）读的都是它 —— 「是不是正在跑」**不等于**「当前动画有没有
-    /// goto」（`idle`/`edge`/`walk` 都带 `<Loop>`）。
+    /// Previous animation id (vanilla `Sprite.LastAnimationID`,
+    /// pureCeleste.cs:10181). `PlayerSprite.Running` (111374-111388) and
+    /// `UpdateSprite`'s run guard (120461) both read it -- "is it running" is **not**
+    /// the same as "does the current animation have a goto" (`idle`/`edge`/`walk` all
+    /// carry `<Loop>`).
     last_anim_id: String,
-    /// 快速跳跃/下落标志（`fastJump`，120437/120469）。
+    /// Fast jump/fall flag (`fastJump`, 120437/120469).
     fast_jump: bool,
-    /// 体力（`Stamina`，118680 出生 110；攀爬消耗、落地回满 119818-119823）。
+    /// Stamina (`Stamina`, 110 at spawn per 118680; drained by climbing, refilled on
+    /// landing 119818-119823).
     pub stamina: Fx,
-    /// 下蹲（`Ducking`；hitbox 8×6，118858）。
+    /// Ducking (`Ducking`; hitbox 8x6, 118858).
     pub ducking: bool,
-    /// 攀爬起步僵直（`climbNoMoveTimer`，0.1s，122146）。
+    /// Climb start stagger (`climbNoMoveTimer`, 0.1s, 122146).
     climb_no_move_ticks: u16,
-    /// 上一 tick 的攀爬移动方向（`lastClimbMove`，122251）。
+    /// Previous tick's climb move direction (`lastClimbMove`, 122251).
     last_climb_move: i32,
-    /// 墙滑方向/计时（`wallSlideDir`/`wallSlideTimer`，118758-118760）。
+    /// Wall slide direction/timer (`wallSlideDir`/`wallSlideTimer`, 118758-118760).
     wall_slide_dir: i32,
     wall_slide_ticks: u16,
-    /// 攀爬跳助推（`wallBoostDir`/`wallBoostTimer`，119119-119820）。
+    /// Climb jump boost (`wallBoostDir`/`wallBoostTimer`, 119119-119820).
     wall_boost_dir: i32,
     wall_boost_ticks: u16,
 }
 
-/// `Math.Sign(before.X) == Math.Sign(speed.X)`（122770）的 Fx 版。
+/// Fx version of `Math.Sign(before.X) == Math.Sign(speed.X)` (122770).
 fn vel_x_same_dir(before: &Vec2, other_x: Fx) -> bool {
     before.x != Fx::zero() && other_x != Fx::zero() && before.x.signum() == other_x.signum()
 }
 
-/// 逐通道线性插值（`Color.Lerp(a, b, amount)`；amount 为本 tick 系数）。
+/// Per-channel linear interpolation (`Color.Lerp(a, b, amount)`; amount is this tick's
+/// factor).
 fn lerp_color(current: &mut [f32; 4], target: [f32; 4], t: f32) {
     for (c, t_target) in current.iter_mut().zip(target.iter()) {
         *c += (t_target - *c) * t;
@@ -368,7 +398,7 @@ fn lerp_color(current: &mut [f32; 4], target: [f32; 4], t: f32) {
 }
 
 impl Player {
-    /// 在 `pos`（世界坐标，hitbox 左上角）生成玩家。
+    /// Spawn the player at `pos` (world coordinates, hitbox top-left).
     pub fn new(pos: Vec2) -> Self {
         Player {
             pos,
@@ -418,17 +448,19 @@ impl Player {
         }
     }
 
-    /// 推进一个固定 tick。房间身份（标题栏/相机/热重载检查）由
-    /// [`Session::room_at`] 决定；物理不选房间 —— 见 [`Player::hit_in`]。
+    /// Advance one fixed tick. Room identity (title bar / camera / hot-reload checks)
+    /// is decided by [`Session::room_at`]; physics does not pick a room -- see
+    /// [`Player::hit_in`].
     pub fn update(&mut self, input: &Input, session: &Session) {
         self.step(input, &session.doc.rooms);
     }
 
-    /// 一 tick 的可序列化状态快照（`--trace` / `--script` 用）。
+    /// A serializable state snapshot for one tick (for `--trace` / `--script`).
     ///
-    /// `tick` 由调用方给（1-based，第几次 `kernel.tick()` 之后），
-    /// `room` 是该 tick 的房间名。字段单位写在字段名里：位置 px、
-    /// 速度 px/tick，并附 px/s 的换算值方便与原版逐行对照。
+    /// `tick` is supplied by the caller (1-based, after which `kernel.tick()`), and
+    /// `room` is that tick's room name. Units are in the field names: position in px,
+    /// velocity in px/tick, with px/s conversions alongside for line-by-line comparison
+    /// with vanilla.
     pub fn snapshot<'a>(&'a self, tick: u64, room: &'a str) -> crate::devtools::Snapshot<'a> {
         crate::devtools::Snapshot {
             tick,
@@ -455,14 +487,16 @@ impl Player {
         }
     }
 
-    /// 单步仿真：公共计时头 → 状态机（Normal/Dash）→ 世界级兜底。
+    /// One simulation step: the shared timer head -> state machine (Normal/Dash) ->
+    /// world-level fallback.
     ///
-    /// 对照原版 `Player.Update`（pureCeleste.cs:119700-120168）的结构：
-    /// 计时/回充/朝向（119827-119921）→ `base.Update()` 进状态机
-    /// （119397-119409 注册：0 = NormalUpdate、2 = DashUpdate）→
-    /// MoveH/MoveV（120049-120056）→ EnforceBounds 由 service 负责。
+    /// Mirrors the structure of vanilla `Player.Update` (pureCeleste.cs:119700-120168):
+    /// timers/refill/facing (119827-119921) -> `base.Update()` into the state machine
+    /// (registered 119397-119409: 0 = NormalUpdate, 2 = DashUpdate) -> MoveH/MoveV
+    /// (120049-120056) -> EnforceBounds is handled by the service.
     ///
-    /// `rooms` 显式传入，单测可以直接构造房间几何，不必起整个 Session。
+    /// `rooms` is passed explicitly so unit tests can build room geometry directly
+    /// without spinning up a whole Session.
     pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
         self.update_head(input);
         match self.state {
@@ -474,15 +508,16 @@ impl Player {
         self.update_hair_color();
     }
 
-    /// 动画推进 + 状态映射（原版 `UpdateSprite` 在移动后调用，120068；
-    /// `Sprite.Update` 经 `base.Update` 每帧跑）。
+    /// Animation advance + state mapping (vanilla calls `UpdateSprite` after movement,
+    /// 120068; `Sprite.Update` runs every frame via `base.Update`).
     pub fn update_visuals(
         &mut self,
         table: &crate::sprites::AnimationTable,
         input: &Input,
         rooms: &[Room],
     ) {
-        // 从未播过动画 → 起始动画（sprite 元素的 `start`，10189 校验）。
+        // Never played an animation -> the start animation (the sprite element's
+        // `start`, validated at 10189).
         if self.anim_id.is_empty() {
             if let Some(def) = table.sprites.get("player") {
                 let start = def.start.clone();
@@ -493,30 +528,32 @@ impl Player {
         self.update_sprite(table, input, rooms);
     }
 
-    /// 原版 `Player.Update` 头部的公共计时与回充（119827-119921）。
+    /// The shared timers and refill at the head of vanilla `Player.Update`
+    /// (119827-119921).
     fn update_head(&mut self, input: &Input) {
-        // dashAttackTimer -= dt（119827-119830）。
+        // dashAttackTimer -= dt (119827-119830).
         self.dash_attack = self.dash_attack.saturating_sub(1);
-        // 地面回充（119855-119863）：state 3（游泳）分支不适用；站在
-        // 固体上（`on_ground` 即脚下有实心，与 `CollideCheck<Solid>(Position
-        // + UnitY)` 等价）→ RefillDash（121082-121090：只有未满时才写）。
+        // Ground refill (119855-119863): the state 3 (swim) branch does not apply;
+        // standing on a solid (`on_ground` means there is solid under the feet,
+        // equivalent to `CollideCheck<Solid>(Position + UnitY)`) -> RefillDash
+        // (121082-121090: writes only when not already full).
         if self.on_ground && self.dashes < self.max_dashes {
             self.dashes = self.max_dashes;
         }
-        // jumpGraceTimer（119830-119840）—— 已由 physics 末尾的
-        // coyote 计数承担（语义等价，见 COYOTE_FRAMES 文档）。
-        // varJumpTimer / AutoJumpTimer 递减（119864-119877）。
+        // jumpGraceTimer (119830-119840) -- already handled by the coyote counter at the
+        // end of physics (semantically equivalent; see the COYOTE_FRAMES docs).
+        // varJumpTimer / AutoJumpTimer decay (119864-119877).
         if self.var_jump > 0 {
             self.var_jump -= 1;
         }
         if self.auto_jump > 0 {
             self.auto_jump -= 1;
         }
-        // dashCooldownTimer / dashRefillCooldownTimer（119843-119848）。
+        // dashCooldownTimer / dashRefillCooldownTimer (119843-119848).
         self.dash_cooldown = self.dash_cooldown.saturating_sub(1);
         self.dash_refill_cooldown = self.dash_refill_cooldown.saturating_sub(1);
-        // 攀爬跳助推（119811-119820）：向 wallBoostDir 推 → 横速 130 +
-        // 体力 +27.5，一次性。
+        // Climb jump boost (119811-119820): push toward wallBoostDir -> horizontal speed
+        // 130 + stamina +27.5, once.
         if self.wall_boost_ticks > 0 {
             self.wall_boost_ticks -= 1;
             if self.move_x == Fx::from_int(self.wall_boost_dir) {
@@ -525,19 +562,19 @@ impl Player {
                 self.wall_boost_ticks = 0;
             }
         }
-        // 墙滑计时（119808-119812）：方向每 tick 末清零、计时递减，
-        // NormalUpdate 条件仍满足时重新置位。
+        // Wall slide timer (119808-119812): the direction is cleared at the end of each
+        // tick and the timer decays; NormalUpdate re-arms it while its condition holds.
         if self.wall_slide_dir != 0 {
             self.wall_slide_ticks = self.wall_slide_ticks.saturating_sub(1);
             self.wall_slide_dir = 0;
         }
-        // 落地回满体力 + 重置墙滑（119818-119823）。
+        // Refill stamina on landing + reset the wall slide (119818-119823).
         if self.on_ground && self.state != 1 {
             self.auto_jump = 0;
             self.stamina = CLIMB_MAX_STAMINA;
             self.wall_slide_ticks = WALLSLIDE_TICKS;
         }
-        // moveX：forceMoveX 覆盖窗（119883-119891），否则读输入。
+        // moveX: the forceMoveX override window (119883-119891), otherwise read input.
         let move_x = if self.force_move_x_ticks > 0 {
             self.force_move_x_ticks -= 1;
             Fx::from_int(self.force_move_x)
@@ -545,28 +582,31 @@ impl Player {
             input.axis_x()
         };
         self.move_x = move_x;
-        // 朝向跟随输入（119908-119917）。
+        // Facing follows input (119908-119917).
         if move_x != Fx::zero() {
             self.facing = move_x.signum();
         }
     }
 
-    /// 头发颜色：原版 `Player.UpdateHair`（pureCeleste.cs:120244-120296）
-    /// 的非渐变部分 —— 冲刺耗尽取 USED，回满瞬间（上一 tick 数量不同或
-    /// 白闪未结束）取 FLASH，否则 `Dashes == 2 ? TWO_DASHES : NORMAL`。
+    /// Hair color: the non-gradient part of vanilla `Player.UpdateHair`
+    /// (pureCeleste.cs:120244-120296) -- USED when the dash is spent, FLASH at the
+    /// instant of refill (previous tick's count differs, or the white flash is still
+    /// running), otherwise `Dashes == 2 ? TWO_DASHES : NORMAL`.
     ///
-    /// `used` 渐入（`Lerp(Hair.Color, Used, 6*dt)`，120258-120262）和
-    /// `hairFlashTimer = 0.12s`（120271）需要逐帧颜色状态，随 dash 落地
-    /// 时把本函数升级为带当前颜色的版本；现在返回离散状态，Prologue
-    /// （库存 1 段且满）恒为 NORMAL —— 与原版一致。
+    /// `used` ease-in (`Lerp(Hair.Color, Used, 6*dt)`, 120258-120262) and
+    /// `hairFlashTimer = 0.12s` (120271) need per-frame color state; when dash lands,
+    /// this function is upgraded to a version that carries the current color. For now
+    /// it returns a discrete state, and the Prologue (one full dash in inventory) is
+    /// always NORMAL -- consistent with vanilla.
     pub fn hair_color(&self) -> [f32; 4] {
-        // 逐帧 lerp 的当前值（`UpdateHair` 写进 `Hair.Color`，渲染直读）。
+        // The current per-frame lerp value (`UpdateHair` writes it into `Hair.Color`,
+        // read directly by rendering).
         self.hair_color_current
     }
 
-    /// 向上转场的前置调整（原版 `BeforeUpTransition`，
-    /// pureCeleste.cs:120590-120598）：水平清零、自动向上跳
-    /// （-105 + 0.2s 强制 varJump 钳制），落进上方的房间。
+    /// Adjustment before an up transition (vanilla `BeforeUpTransition`,
+    /// pureCeleste.cs:120590-120598): zero horizontal, auto-jump upward (-105 + 0.2s
+    /// of forced varJump clamping), landing in the room above.
     pub fn before_up_transition(&mut self) {
         self.vel.x = Fx::zero();
         self.vel.y = JUMP_SPEED;
@@ -574,16 +614,17 @@ impl Player {
         self.auto_jump = VAR_JUMP_TICKS;
     }
 
-    /// 向下转场的前置调整（原版 `BeforeDownTransition`，
-    /// pureCeleste.cs:120572-120583）：砍掉向上的速度、清 varJump。
+    /// Adjustment before a down transition (vanilla `BeforeDownTransition`,
+    /// pureCeleste.cs:120572-120583): cut any upward speed, clear varJump.
     pub fn before_down_transition(&mut self) {
         self.vel.y = self.vel.y.max(Fx::zero());
         self.var_jump = 0;
         self.auto_jump = 0;
     }
 
-    /// 世界坐标点是否在任何触及房间的实心瓦片内（Monocle
-    /// `Scene.CollideCheck<Solid>(point)` 的点语义，`SlipCheck` 用）。
+    /// Whether a world-coordinate point is inside a solid tile of any touched room
+    /// (Monocle `Scene.CollideCheck<Solid>(point)` point semantics; used by
+    /// `SlipCheck`).
     fn solid_at(rooms: &[Room], x: Fx, y: Fx) -> bool {
         let (cx, cy) = (cell(x), cell(y));
         for room in rooms {
@@ -601,18 +642,20 @@ impl Player {
         false
     }
 
-    /// 原版 `CanUnDuck`（119281-119291）：换回常规 hitbox 无碰撞即可。
+    /// Vanilla `CanUnDuck` (119281-119291): switching back to the normal hitbox must be
+    /// collision-free.
     fn can_unduck(&self, rooms: &[Room]) -> bool {
         !self.ducking || !self.hits(rooms, self.pos.x, self.pos.y)
     }
 
-    /// 原版 `CanUnDuckAt(position)`：常规 hitbox 平移 x 后无碰撞。
+    /// Vanilla `CanUnDuckAt(position)`: the normal hitbox shifted to x is
+    /// collision-free.
     fn can_unduck_at(&self, rooms: &[Room], x: Fx) -> bool {
         !self.hits(rooms, x, self.pos.y)
     }
 
-    /// 原版 `SlipCheck(addY)`（122395-122407）：朝向侧的 hitbox 顶角
-    /// 下方 4px 的点无实心、且其上方 4px 也无实心 → 墙到顶了。
+    /// Vanilla `SlipCheck(addY)` (122395-122407): no solid 4px below the facing-side
+    /// top corner of the hitbox and none 4px above it -> the wall has ended.
     fn slip_check(&self, rooms: &[Room], add_y: Fx) -> bool {
         let top = self.pos.y + Fx::from_int(self.box_dims().2 - PLAYER_H_PX);
         let (px, py) = if self.facing > 0 {
@@ -629,9 +672,9 @@ impl Player {
         false
     }
 
-    /// 原版 `ClimbCheck(dir, yAdd)`（121815-121822）的普通分支：朝墙
-    /// 2px 探测实心（ClimbBlocker 无实体 → EdgeCheck 恒 false）。
-    /// `ClimbBoundsCheck`（121799-121806）用房间边界。
+    /// The normal branch of vanilla `ClimbCheck(dir, yAdd)` (121815-121822): probe 2px
+    /// toward the wall for a solid (no ClimbBlocker entity -> EdgeCheck is always
+    /// false). `ClimbBoundsCheck` (121799-121806) uses room bounds.
     fn climb_check(&self, rooms: &[Room], dir: i32, y_add: i32) -> bool {
         let Some(room) = crate::session::room_containing(rooms, self.pos) else {
             return false;
@@ -649,13 +692,14 @@ impl Player {
         )
     }
 
-    /// 进入攀爬（原版 `StateMachine.State = 1` + `ClimbBegin`，
-    /// pureCeleste.cs:122140-122164）：横速清零、竖速 ×0.2、贴墙 2px。
+    /// Enter climbing (vanilla `StateMachine.State = 1` + `ClimbBegin`,
+    /// pureCeleste.cs:122140-122164): zero horizontal speed, vertical speed x0.2, snap
+    /// 2px to the wall.
     fn enter_climb(&mut self, rooms: &[Room]) {
         self.state = 1;
         self.auto_jump = 0;
         self.vel.x = Fx::zero();
-        self.vel.y *= Fx::from_ratio(1, 5); // Speed.Y *= 0.2f（122146）
+        self.vel.y *= Fx::from_ratio(1, 5); // Speed.Y *= 0.2f (122146)
         self.wall_slide_ticks = WALLSLIDE_TICKS;
         self.climb_no_move_ticks = CLIMB_NO_MOVE_TICKS;
         self.last_climb_move = 0;
@@ -663,12 +707,13 @@ impl Player {
             if self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
                 break;
             }
-            self.pos.x += Fx::from_int(self.facing); // 122153-122160 贴墙
+            self.pos.x += Fx::from_int(self.facing); // 122153-122160 snap to the wall
         }
     }
 
-    /// 原版 `ClimbJump()`（pureCeleste.cs:120902-120928）：未接地扣
-    /// 27.5 体力；常规 Jump；无横输入时给 0.2s 助推窗（120910-120913）。
+    /// Vanilla `ClimbJump()` (pureCeleste.cs:120902-120928): deduct 27.5 stamina when
+    /// not grounded; a normal Jump; with no horizontal input, grant a 0.2s boost window
+    /// (120910-120913).
     fn climb_jump(&mut self) {
         if !self.on_ground {
             self.stamina -= CLIMBJUMP_DRAIN;
@@ -680,19 +725,20 @@ impl Player {
         }
     }
 
-    /// 原版 `ClimbHop()`（pureCeleste.cs:122380-122402，无移动平台分支）：
-    /// 朝墙侧蹬出 100 px/s，竖直钳到 ≤ -120 px/s，清 forceMoveX。
+    /// Vanilla `ClimbHop()` (pureCeleste.cs:122380-122402, no moving-platform branch):
+    /// hop away from the wall at 100 px/s, clamp vertical to <= -120 px/s, clear
+    /// forceMoveX.
     fn climb_hop(&mut self) {
         self.vel.x = CLIMB_HOP_X * Fx::from_int(self.facing);
         self.vel.y = self.vel.y.min(CLIMB_HOP_Y);
         self.force_move_x = 0;
-        self.force_move_x_ticks = 12; // 0.2s（122377）
+        self.force_move_x_ticks = 12; // 0.2s (122377)
         self.fast_jump = false;
     }
 
-    /// 原版 `Jump()`（pureCeleste.cs:120694-120716）：竖直 -105、
-    /// 水平 +40*moveX（JumpHBoost）、varJump 计满 0.2s、varJumpSpeed
-    /// 存档、土狼与缓冲清零。（`LiftBoost` 静态地面为 0，省略。）
+    /// Vanilla `Jump()` (pureCeleste.cs:120694-120716): vertical -105, horizontal
+    /// +40*moveX (JumpHBoost), varJump filled to 0.2s, varJumpSpeed saved, coyote and
+    /// buffer zeroed. (`LiftBoost` is 0 on static ground and is omitted.)
     fn jump(&mut self, move_x: Fx) {
         self.jump_buffer = 0;
         self.coyote = 0;
@@ -705,18 +751,19 @@ impl Player {
         self.on_ground = false;
     }
 
-    /// 原版 `WallJumpCheck(dir)`（pureCeleste.cs:120779-120804）的普通
-    /// 分支（无尖刺/星羽修正，`num = 5`）：朝墙 5px 探测实心。
-    /// `ClimbBoundsCheck` / `ClimbBlocker.EdgeCheck`（120779 前置）在
-    /// 本引擎没有爬墙边界实体，恒 false/true（偏差声明：见模块文档）。
+    /// The normal branch of vanilla `WallJumpCheck(dir)` (pureCeleste.cs:120779-120804)
+    /// (no spike/star-fly corrections, `num = 5`): probe 5px toward the wall for a
+    /// solid. `ClimbBoundsCheck` / `ClimbBlocker.EdgeCheck` (the 120779 preamble) are
+    /// always false/true in this engine, which has no climb-boundary entities (deviation
+    /// declared: see the module docs).
     fn wall_jump_check(&self, rooms: &[Room], dir: i32) -> bool {
         let dx = Fx::from_int(dir) * WALLJUMP_PROBE;
         self.hits(rooms, self.pos.x + dx, self.pos.y)
     }
 
-    /// 原版 `WallJump(dir)`（pureCeleste.cs:120806-120860）：水平
-    /// 130*dir、竖直 -105、varJump 计满、`forceMoveX = dir` 0.16s
-    /// （120832-120838）、消耗跳跃缓冲、土狼清零。
+    /// Vanilla `WallJump(dir)` (pureCeleste.cs:120806-120860): horizontal 130*dir,
+    /// vertical -105, varJump filled, `forceMoveX = dir` for 0.16s (120832-120838),
+    /// consumes the jump buffer, zeroes coyote.
     fn wall_jump(&mut self, rooms: &[Room], dir: i32) {
         self.jump_buffer = 0;
         self.coyote = 0;
@@ -724,7 +771,8 @@ impl Player {
         self.auto_jump = 0;
         self.dash_attack = 0;
         if self.move_x != Fx::zero() {
-            // 120828-120838：按住方向时强制 moveX 防止立刻再贴墙。
+            // 120828-120838: force moveX while a direction is held, preventing an
+            // immediate re-grab.
             self.force_move_x = dir;
             self.force_move_x_ticks = FORCE_MOVE_X_TICKS;
         }
@@ -735,12 +783,12 @@ impl Player {
         let _ = rooms;
     }
 
-    /// 原版 `StartDash()`（pureCeleste.cs:122469-122479）+ `DashBegin`
-    /// （122534-122565）：扣一次冲刺、进入 State 2、记 `beforeDashSpeed`
-    /// 后清零速度（当 tick 不动）、起冷却与攻击窗。
+    /// Vanilla `StartDash()` (pureCeleste.cs:122469-122479) + `DashBegin`
+    /// (122534-122565): consume one dash, enter State 2, record `beforeDashSpeed`, zero
+    /// speed (no movement this tick), start the cooldown and attack window.
     fn start_dash(&mut self, input: &Input, rooms: &[Room]) {
         self.dashes = self.dashes.saturating_sub(1);
-        self.dash_buffer = 0; // Input.Dash.ConsumeBuffer()（122474）
+        self.dash_buffer = 0; // Input.Dash.ConsumeBuffer() (122474)
         self.state = 2;
         self.dash_phase = 0;
         self.dash_cooldown = DASH_COOLDOWN_TICKS;
@@ -749,22 +797,24 @@ impl Player {
         self.before_dash_speed = self.vel;
         self.vel = Vec2::ZERO;
         self.dash_dir = Vec2::ZERO;
-        // 122566-122573：空中下蹲冲刺起身；地面下推冲刺入蹲。
+        // 122566-122573: an airborne ducked dash stands up; a grounded down-push dash
+        // crouches.
         if !self.on_ground && self.ducking && self.can_unduck(rooms) {
             self.ducking = false;
         } else if !self.ducking && input.down {
             self.ducking = true;
         }
-        // 注意：原版 DashBegin **不改** onGround —— 地面冲刺保持接地，
-        // 下一 tick 的头部回充（119855-119863）照常工作。
-        // DashBegin 的 `Celeste.Freeze(0.05f)`（122540）：0.05s = 3 tick
-        // 全局停帧，由 service 消费（引擎的帧节奏里等价于跳过 3 个模拟 tick）。
+        // Note: vanilla DashBegin does **not** change onGround -- a ground dash stays
+        // grounded, and the next tick's head refill (119855-119863) works as usual.
+        // DashBegin's `Celeste.Freeze(0.05f)` (122540): 0.05s = 3 ticks of global
+        // freeze, consumed by the service (equivalent to skipping 3 simulation ticks in
+        // the engine's frame rhythm).
         self.freeze_ticks = 3;
     }
 
-    /// 原版 `GetAimVector(Facing)`（Celeste.Input，pureCeleste.cs:110554-110600，
-    /// 无辅助模式分支）：方向键合成八向；角度在 ±π/8 内吸附到正交轴；
-    /// 无输入 → 朝向方向。
+    /// Vanilla `GetAimVector(Facing)` (Celeste.Input, pureCeleste.cs:110554-110600, no
+    /// assist-mode branch): the direction keys compose an eight-way aim; angles within
+    /// +/-pi/8 snap to an orthogonal axis; with no input -> the facing direction.
     fn aim_dir(&self, input: &Input) -> Vec2 {
         let (mx, my): (f32, f32) = (
             input.axis_x().to_f32(),
@@ -777,9 +827,9 @@ impl Player {
         if mx == 0.0 && my == 0.0 {
             return Vec2::from_f32s(self.facing as f32, 0.0);
         }
-        // 角度吸附：原版对 0/π/±π/2 各留 π/8（正交轴下方）或
-        // π/8 − 0.05（斜向优先），等价实现：|x| 与 |y| 比 ≥ tan(π/8)
-        // 时取正交轴，否则取对角线。
+        // Angle snapping: vanilla leaves pi/8 below each of 0/pi/+/-pi/2 (orthogonal)
+        // or pi/8 - 0.05 (diagonal preferred); the equivalent implementation takes the
+        // orthogonal axis when the |x| to |y| ratio >= tan(pi/8), otherwise the diagonal.
         let ax = mx.abs();
         let ay = my.abs();
         if ax >= 2.414 * ay {
@@ -787,30 +837,31 @@ impl Player {
         } else if ay >= 2.414 * ax {
             Vec2::from_f32s(0.0, my.signum())
         } else {
-            // 对角线：`Math.Sign(value).SafeNormalize()`（110596）。
+            // Diagonal: `Math.Sign(value).SafeNormalize()` (110596).
             let inv = std::f32::consts::FRAC_1_SQRT_2;
             Vec2::from_f32s(mx.signum() * inv, my.signum() * inv)
         }
     }
 
-    /// State 2：`DashUpdate`（pureCeleste.cs:122598-122727）+ `DashCoroutine`
-    /// （122731-122831）的显式相位版。
+    /// State 2: an explicit-phase version of `DashUpdate` (pureCeleste.cs:122598-122727)
+    /// + `DashCoroutine` (122731-122831).
     ///
-    /// 一个 tick 的顺序与原版 `StateMachine.Update`（12185-12201）一致：
-    /// 先 `DashUpdate`（跳跃分支，122627-122676），再推进协程，最后统一
-    /// MoveH/MoveV（120049-120056）—— 墙跳/超级跳改写速度后当帧就按新
-    /// 速度移动。相位 0 执行协程首段（`yield return null` 之后的
-    /// 122756-122806：速度 = 瞄准 × 240、DashDir、朝向），相位 1..=9
-    /// 等待 0.15s，第 10 tick 执行末段（122817-122830）。冲刺期间无
-    /// 重力/跑动（`DashUpdate` 不含它们）。
+    /// One tick's order matches vanilla `StateMachine.Update` (12185-12201): first
+    /// `DashUpdate` (the jump branch, 122627-122676), then advance the coroutine, and
+    /// finally the shared MoveH/MoveV (120049-120056) -- after a wall jump / super jump
+    /// rewrites the speed, the frame moves at the new speed. Phase 0 runs the
+    /// coroutine's first segment (122756-122806, after `yield return null`: speed = aim
+    /// x 240, DashDir, facing), phases 1..=9 wait 0.15s, and tick 10 runs the last
+    /// segment (122817-122830). There is no gravity/running during a dash (`DashUpdate`
+    /// does not contain them).
     fn dash_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // ---- DashUpdate（122598-122727）----
-        // 冲刺中的跳跃分支（122627-122676）。横向冲刺（|DashDir.Y| < 0.1）
-        // 且在地面 → SuperJump（120740）；竖向冲刺（|DashDir.X| <= 0.2）
-        // → SuperWallJump（120865）；其余 → WallJump（ClimbJump 需要
-        // 抓攀，未实现，跳过 —— 偏差声明）。
+        // ---- DashUpdate (122598-122727) ----
+        // The jump branch during a dash (122627-122676). A horizontal dash
+        // (|DashDir.Y| < 0.1) while grounded -> SuperJump (120740); a vertical dash
+        // (|DashDir.X| <= 0.2) -> SuperWallJump (120865); otherwise -> WallJump
+        // (ClimbJump needs a grab, not implemented, skipped -- deviation declared).
         let jump_pressed = input.jump && !self.prev_jump;
         self.prev_jump = input.jump;
         if jump_pressed {
@@ -820,7 +871,7 @@ impl Player {
             let horizontal_dash = self.dash_dir.y.abs() < Fx::from_ratio(1, 10);
             let vertical_dash = self.dash_dir.x.abs() <= Fx::from_ratio(1, 5);
             if horizontal_dash && self.on_ground {
-                // 122632-122641 → `SuperJump`（120740-120778）。
+                // 122632-122641 -> `SuperJump` (120740-120778).
                 self.super_jump(rooms);
             } else if vertical_dash {
                 if self.wall_jump_check(rooms, 1) {
@@ -837,14 +888,15 @@ impl Player {
             }
         }
 
-        // ---- DashCoroutine（122731-122831）----
+        // ---- DashCoroutine (122731-122831) ----
         if self.state == 2 {
             if self.dash_phase == 0 {
-                // 协程首段（122756-122806）。
+                // Coroutine first segment (122756-122806).
                 let aim = self.aim_dir(input);
                 let mut speed = aim * DASH_SPEED;
-                // 水平超速保留（122770-122774）：起冲前的横向速度更快且
-                // 同向时保留原值（`beforeDashSpeed` 的墙速语义）。
+                // Horizontal overspeed retention (122770-122774): keep the original value
+                // when the horizontal speed before the dash was faster and in the same
+                // direction (the wall-speed semantics of `beforeDashSpeed`).
                 if vel_x_same_dir(&self.before_dash_speed, speed.x)
                     && self.before_dash_speed.x.abs() > speed.x.abs()
                 {
@@ -855,7 +907,8 @@ impl Player {
                 if aim.x != Fx::zero() {
                     self.facing = aim.x.signum(); // 122779-122782
                 }
-                // 122796-122802：地面下向冲刺 → 蹲滑（横速 ×1.2）。
+                // 122796-122802: a grounded downward dash -> duck slide (horizontal speed
+                // x1.2).
                 if self.on_ground
                     && self.dash_dir.x != Fx::zero()
                     && self.dash_dir.y > Fx::zero()
@@ -870,12 +923,12 @@ impl Player {
             } else {
                 self.dash_phase += 1;
                 if self.dash_phase > DASH_TICKS {
-                    // 末段（122817-122830）。
-                    self.auto_jump = 0; // AutoJumpTimer = 0f（122820）
+                    // Last segment (122817-122830).
+                    self.auto_jump = 0; // AutoJumpTimer = 0f (122820)
                     if self.dash_dir.y <= Fx::zero() {
                         self.vel = self.dash_dir * DASH_END_SPEED;
                         if self.vel.y < Fx::zero() {
-                            // 122826-122829：`if (Speed.Y < 0f) Speed.Y *= 0.75f`。
+                            // 122826-122829: `if (Speed.Y < 0f) Speed.Y *= 0.75f`.
                             self.vel.y *= Fx::from_ratio(3, 4);
                         }
                     }
@@ -884,7 +937,7 @@ impl Player {
             }
         }
 
-        // ---- MoveH / MoveV（120049-120056）----
+        // ---- MoveH / MoveV (120049-120056) ----
         self.slide_x(rooms);
         self.on_ground = false;
         self.slide_y(rooms);
@@ -893,8 +946,8 @@ impl Player {
         }
     }
 
-    /// 原版 `SuperJump()`（pureCeleste.cs:120738-120777，无滑铲/滑翔
-    /// 分支）：水平 260×Facing、竖直 -105、varJump 计满，回 State 0。
+    /// Vanilla `SuperJump()` (pureCeleste.cs:120738-120777, no super-slide/super-glide
+    /// branch): horizontal 260*Facing, vertical -105, varJump filled, back to State 0.
     fn super_jump(&mut self, rooms: &[Room]) {
         self.jump_buffer = 0;
         self.coyote = 0;
@@ -904,7 +957,7 @@ impl Player {
         self.vel.x = SUPER_JUMP_X * Fx::from_int(self.facing);
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
-        // 120753-120760：下蹲超级跳 —— 横速 ×1.25、竖速 ×0.5。
+        // 120753-120760: ducked super jump -- horizontal speed x1.25, vertical speed x0.5.
         if self.ducking {
             self.ducking = false;
             self.vel.x *= Fx::from_ratio(5, 4);
@@ -915,15 +968,14 @@ impl Player {
         let _ = rooms;
     }
 
-    /// 原版 `SuperWallJump(dir)`（pureCeleste.cs:120865-120900）：水平
-    /// 170*dir、竖直 -160（120877-120880，varJumpSpeed 同步）、
-    /// varJumpTimer = 0.25s（120870）、**AutoJump = false**（120871）、
-    /// 无 forceMoveX。
+    /// Vanilla `SuperWallJump(dir)` (pureCeleste.cs:120865-120900): horizontal 170*dir,
+    /// vertical -160 (120877-120880, with varJumpSpeed synced), varJumpTimer = 0.25s
+    /// (120870), **AutoJump = false** (120871), no forceMoveX.
     fn super_wall_jump(&mut self, dir: i32) {
         self.jump_buffer = 0;
         self.coyote = 0;
-        self.var_jump = 15; // varJumpTimer = 0.25f（120870）
-        self.auto_jump = 0; // AutoJump = false（120871）
+        self.var_jump = 15; // varJumpTimer = 0.25f (120870)
+        self.auto_jump = 0; // AutoJump = false (120871)
         self.dash_attack = 0;
         self.vel.x = SUPER_WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = SUPER_WALLJUMP_Y;
@@ -932,18 +984,20 @@ impl Player {
         self.state = 0;
     }
 
-    /// State 1：`ClimbUpdate`（pureCeleste.cs:122184-122362）。顺序：
-    /// 僵直递减 → 接地回体力 → 跳跃分支（反向蹬墙 / ClimbJump）→ 冲刺
-    /// → 松抓落地 → 离墙（顶点 ClimbHop / let-go）→ 竖直攀爬（上 -45、
-    /// 下 80、贴顶 SlipCheck 滑落 30）→ 体力消耗（上 45.45/s、静止
-    /// 10/s）→ 耗尽脱手。WallBooster/精灵汗效未移植（声明）。
+    /// State 1: `ClimbUpdate` (pureCeleste.cs:122184-122362). Order: stagger decay ->
+    /// stamina refill while grounded -> jump branch (reverse wall jump / ClimbJump) ->
+    /// dash -> release grab on landing -> leave wall (apex ClimbHop / let-go) -> vertical
+    /// climb (up -45, down 80, slip 30 when SlipCheck at the top) -> stamina drain (up
+    /// 45.45/s, still 10/s) -> let go when exhausted. WallBooster / sprite sweat effect
+    /// are not ported (declared).
     fn climb_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
         self.climb_no_move_ticks = self.climb_no_move_ticks.saturating_sub(1);
         if self.on_ground {
             self.stamina = CLIMB_MAX_STAMINA; // 122188-122191
         }
-        // 跳跃分支（122193-122205）：反向推 → 蹬墙跳；否则沿墙跳。
+        // Jump branch (122193-122205): push the other way -> wall jump; otherwise a
+        // climb jump.
         if self.jump_buffer > 0 && self.can_unduck(rooms) {
             if self.move_x == Fx::from_int(-self.facing) {
                 self.wall_jump(rooms, -self.facing);
@@ -953,32 +1007,34 @@ impl Player {
             self.state = 0;
             return;
         }
-        // 冲刺（122206-122209）。
+        // Dash (122206-122209).
         if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
             self.start_dash(input, rooms);
             return;
         }
-        // 松开抓键（122211-122216）。
+        // Grab released (122211-122216).
         if !input.grab {
             self.state = 0;
             return;
         }
-        // 已越过墙顶（122218-122231）：上升中 → ClimbHop；否则脱手。
+        // Past the top of the wall (122218-122231): while rising -> ClimbHop; otherwise
+        // let go.
         if !self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
             if self.vel.y < Fx::zero() {
-                self.climb_hop(); // 122226-122230（wallBoosting 恒 false）
+                self.climb_hop(); // 122226-122230 (wallBoosting is always false)
             }
             self.state = 0;
             return;
         }
-        // WallBooster 恒 null（无 Core 传送墙实体）→ 直接走攀爬分支。
+        // WallBooster is always null (there are no Core dream-wall entities) -> go
+        // straight to the climb branch.
         {
             let mut num = Fx::zero();
             let mut flag = false;
             if self.climb_no_move_ticks == 0 {
-                // 122224-122240 的 ClimbBlocker 分支无实体，恒 false。
+                // the ClimbBlocker branch at 122224-122240 has no entity, always false.
                 if input.axis_y() == -Fx::one() {
-                    num = CLIMB_UP_SPEED; // -45 px/s（122220-122222）
+                    num = CLIMB_UP_SPEED; // -45 px/s (122220-122222)
                     if self.hits(rooms, self.pos.x, self.pos.y - Fx::one())
                         || (self.climb_hop_blocked(rooms) && self.slip_check(rooms, -Fx::one()))
                     {
@@ -988,12 +1044,12 @@ impl Player {
                         num = Fx::zero();
                         flag = true;
                     } else if self.slip_check(rooms, Fx::zero()) {
-                        self.climb_hop(); // 122232-122236：墙顶蹬跃
+                        self.climb_hop(); // 122232-122236: hop off the top of the wall
                         self.state = 0;
                         return;
                     }
                 } else if input.axis_y() == Fx::one() {
-                    num = CLIMB_DOWN_SPEED; // 80 px/s（122228-122230）
+                    num = CLIMB_DOWN_SPEED; // 80 px/s (122228-122230)
                     if self.on_ground {
                         if self.vel.y > Fx::zero() {
                             self.vel.y = Fx::zero();
@@ -1001,19 +1057,20 @@ impl Player {
                         num = Fx::zero();
                     }
                 } else {
-                    flag = true; // 122243-122245：无竖直输入
+                    flag = true; // 122243-122245: no vertical input
                 }
             } else {
-                flag = true; // 僵直期不移动
+                flag = true; // no movement during the stagger
             }
             self.last_climb_move = num.signum(); // 122251
             if flag && self.slip_check(rooms, Fx::zero()) {
-                num = CLIMB_SLIP_SPEED; // 122252-122255：墙顶悬垂缓降 30
+                num = CLIMB_SLIP_SPEED; // 122252-122255: 30 slow descent while hanging at the top
             }
-            // 122257：`Approach(Speed.Y, num, 900*dt)`。
+            // 122257: `Approach(Speed.Y, num, 900*dt)`.
             approach(&mut self.vel.y, num, GRAVITY);
         }
-        // 122260-122264：不再下推且墙已到身前下方 → 停住。
+        // 122260-122264: no longer pushing down and the wall has ended below the front ->
+        // stop.
         if input.axis_y() != Fx::one()
             && self.vel.y > Fx::zero()
             && !self.hits(
@@ -1024,7 +1081,7 @@ impl Player {
         {
             self.vel.y = Fx::zero();
         }
-        // 体力（122266-122300）：向上 45.454544/s、静止 10/s；耗尽脱手。
+        // Stamina (122266-122300): up 45.454544/s, still 10/s; let go when exhausted.
         if self.climb_no_move_ticks == 0 {
             if self.last_climb_move == -1 {
                 self.stamina -= CLIMB_UP_DRAIN_PER_TICK;
@@ -1044,16 +1101,16 @@ impl Player {
         }
     }
 
-    /// 原版 `ClimbHopBlockedCheck()`（122409-122424）的可达部分：头顶
-    /// 6px 有实心 → 蹬跃会被挡（Follower/LedgeBlocker 无实体）。
+    /// The reachable part of vanilla `ClimbHopBlockedCheck()` (122409-122424): a solid
+    /// 6px above the head -> the hop is blocked (no Follower/LedgeBlocker entities).
     fn climb_hop_blocked(&self, rooms: &[Room]) -> bool {
         self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(6))
     }
 
-    /// 原版 `UpdateHair`（pureCeleste.cs:120247-120298）：冲刺耗尽 → 以
-    /// 6/s 渐入 USED；回满瞬间（lastDashes ≠ Dashes）→ FLASH +
-    /// `hairFlashTimer` 0.12s；期间保持 FLASH；否则按段数取
-    /// TWO_DASHES/NORMAL。State 19（星羽）与 `OverrideHairColor` 未实现。
+    /// Vanilla `UpdateHair` (pureCeleste.cs:120247-120298): dash spent -> ease into USED
+    /// at 6/s; at the instant of refill (lastDashes != Dashes) -> FLASH +
+    /// `hairFlashTimer` 0.12s; stay FLASH during it; otherwise pick TWO_DASHES/NORMAL by
+    /// the dash count. State 19 (star-fly) and `OverrideHairColor` are not implemented.
     fn update_hair_color(&mut self) {
         if self.dashes == 0 && self.dashes < self.max_dashes {
             lerp_color(
@@ -1074,13 +1131,13 @@ impl Player {
         self.last_dashes = self.dashes; // 120295
     }
 
-    /// 原版 `Sprite.Play(id, restart = false)`（pureCeleste.cs:10483-10503）：
-    /// 同 id 即无操作（pureCeleste.cs:10485 `(CurrentAnimationID != id) | restart`）；
-    /// 切换时 `LastAnimationID` 记下**旧** id
-    /// （pureCeleste.cs:10491-10492 `LastAnimationID = lastAnimationID`）、
-    /// `Animating = Delay > 0f`
-    /// （pureCeleste.cs:10494 `Animating = currentAnimation.Delay > 0f`）、
-    /// 计时与帧归零。表缺失/未知 id 仍是无操作（渲染回落静态帧）。
+    /// Vanilla `Sprite.Play(id, restart = false)` (pureCeleste.cs:10483-10503): the same
+    /// id is a no-op (pureCeleste.cs:10485 `(CurrentAnimationID != id) | restart`); on a
+    /// switch, `LastAnimationID` records the **old** id (pureCeleste.cs:10491-10492
+    /// `LastAnimationID = lastAnimationID`), `Animating = Delay > 0f`
+    /// (pureCeleste.cs:10494 `Animating = currentAnimation.Delay > 0f`), and the timer
+    /// and frame reset to zero. A missing table / unknown id is still a no-op (rendering
+    /// falls back to static frames).
     pub fn play(&mut self, table: &crate::sprites::AnimationTable, id: &str) {
         if self.anim_id == id {
             return;
@@ -1088,9 +1145,10 @@ impl Player {
         let Some(def) = table.sprites.get("player") else {
             return;
         };
-        // 字典键忽略大小写（Monocle `OrdinalIgnoreCase`，10206；XML 里是
-        // `climbup` 而 `UpdateSprite` 播 `climbUp`）；但 CurrentAnimationID
-        // 存的是**实参**（120274 行为），所以 no-op 比较用原样字符串。
+        // Dictionary keys are case-insensitive (Monocle `OrdinalIgnoreCase`, 10206; the
+        // XML has `climbup` while `UpdateSprite` plays `climbUp`); but CurrentAnimationID
+        // stores the **argument** (120274 behavior), so the no-op comparison uses the
+        // string as-is.
         let Some(anim) = def.anims.get(&id.to_ascii_lowercase()) else {
             return;
         };
@@ -1101,8 +1159,9 @@ impl Player {
         self.anim_playing = anim.delay > 0.0; // 10493 `Animating = Delay > 0f`
     }
 
-    /// 原版 `Sprite.Update`（10170-10308）：计时按帧间隔推进，循环回 0，
-    /// 非循环停在末帧并停止播放。
+    /// Vanilla `Sprite.Update` (10170-10308): advance the timer by the frame interval,
+    /// loop back to 0 for looping animations, and stop at the last frame for non-looping
+    /// ones.
     pub fn update_animation(&mut self, table: &crate::sprites::AnimationTable) {
         let Some(def) = table.sprites.get("player") else {
             return;
@@ -1113,8 +1172,8 @@ impl Player {
         if !self.anim_playing || anim.delay <= 0.0 {
             return;
         }
-        // 10234-10243：`animationTimer += DeltaTime`（Rate = 1）；
-        // `|timer| >= Delay` 才翻一帧，翻完把 Delay 从计时里减掉。
+        // 10234-10243: `animationTimer += DeltaTime` (Rate = 1); only advance a frame
+        // when `|timer| >= Delay`, then subtract Delay from the timer.
         self.anim_timer += 1.0 / 60.0;
         if self.anim_timer < anim.delay {
             return;
@@ -1122,15 +1181,15 @@ impl Player {
         self.anim_timer -= anim.delay;
         self.anim_frame += 1;
         if self.anim_frame >= anim.frames.len() {
-            // 10278-10305。
+            // 10278-10305.
             match &anim.goto {
                 Some(next) => {
-                    // Goto 分支（pureCeleste.cs:10260-10282）：
-                    // `CurrentAnimationID = currentAnimation.Goto.Choose()`（10262），
-                    // 并把**新** id 写进 `LastAnimationID`
-                    // （pureCeleste.cs:10267 `LastAnimationID = CurrentAnimationID`
-                    // —— 与 `play` 的「记旧 id」规则**不同**）；帧归 0（10275），
-                    // 计时与 `Animating` 都不动。
+                    // Goto branch (pureCeleste.cs:10260-10282):
+                    // `CurrentAnimationID = currentAnimation.Goto.Choose()` (10262), and it
+                    // writes the **new** id into `LastAnimationID`
+                    // (pureCeleste.cs:10267 `LastAnimationID = CurrentAnimationID` --
+                    // **different** from `play`'s "record the old id" rule); the frame
+                    // resets to 0 (10275) and the timer and `Animating` are untouched.
                     let key = next.to_ascii_lowercase();
                     if !table
                         .sprites
@@ -1144,8 +1203,8 @@ impl Player {
                     self.last_anim_id = next.clone();
                 }
                 None => {
-                    // pureCeleste.cs:10283-10302：`Animating = false`、帧停在末帧、
-                    // `CurrentAnimationID` 清空（纹理不重置）。
+                    // pureCeleste.cs:10283-10302: `Animating = false`, frame stays at the
+                    // last frame, `CurrentAnimationID` cleared (texture not reset).
                     self.anim_frame = anim.frames.len() - 1;
                     self.anim_playing = false;
                     self.anim_id.clear();
@@ -1154,28 +1213,30 @@ impl Player {
         }
     }
 
-    /// 当前帧的图集纹理名（缺表/缺帧 → `None`，渲染回落静态帧）。
+    /// The atlas texture name for the current frame (missing table/frame -> `None`;
+    /// rendering falls back to static frames).
     pub fn anim_frame_texture(&self, table: &crate::sprites::AnimationTable) -> Option<String> {
         let def = table.sprites.get("player")?;
         let anim = def.anims.get(&self.anim_id.to_ascii_lowercase())?;
         anim.frames.get(self.anim_frame).cloned()
     }
 
-    /// 原版 `PlayerSprite.Running`（pureCeleste.cs:111375-111388）：
-    /// **上一条**动画（`LastAnimationID`）以 `run` 开头，或正好是 `flip`。
+    /// Vanilla `PlayerSprite.Running` (pureCeleste.cs:111375-111388): the **previous**
+    /// animation (`LastAnimationID`) starts with `run`, or is exactly `flip`.
     ///
-    /// 它**不是**「当前动画有 goto」——`idle`/`edge`/`walk` 全都带 `<Loop>`，
-    /// 那样判会把「已经在跑」误判成 true，于是从 idle 起步时 `runSlow` /
-    /// `runFast` 永远播不出来，角色就只是**平移**（走路没有腿部动画）。
+    /// It is **not** "the current animation has a goto" -- `idle`/`edge`/`walk` all
+    /// carry `<Loop>`, and treating it that way misreads "already running" as true, so
+    /// starting from idle would never play `runSlow` / `runFast` and the character would
+    /// merely **slide** (walking with no leg animation).
     fn running(&self) -> bool {
         self.last_anim_id == "flip" || self.last_anim_id.starts_with("run")
     }
 
-    /// 原版 `Player.UpdateSprite`（pureCeleste.cs:120300-120508）的可及
-    /// 分支（无持有物/风/攀爬/梦境/太空/下蹲 —— 偏差声明见模块文档）：
-    /// 冲刺攻击窗 → skid/dash；地面 → push/edge/edgeBack/lookUp/idle/
-    /// skid/flip/runSlow/runFast；空中 → jumpSlow/jumpFast/fallSlow/
-    /// fallFast。
+    /// The reachable branches of vanilla `Player.UpdateSprite`
+    /// (pureCeleste.cs:120300-120508) (no held item / wind / climb / dream / space /
+    /// duck -- deviation declared in the module docs): dash attack window -> skid/dash;
+    /// grounded -> push/edge/edgeBack/lookUp/idle/skid/flip/runSlow/runFast; airborne ->
+    /// jumpSlow/jumpFast/fallSlow/fallFast.
     pub fn update_sprite(
         &mut self,
         table: &crate::sprites::AnimationTable,
@@ -1194,9 +1255,9 @@ impl Player {
                 self.play(table, "dash");
             }
         } else if self.state == 1 {
-            // 120365-120383：攀爬动画（lastClimbMove / 悬垂 / 回望）。
+            // 120365-120383: climb animations (lastClimbMove / dangling / look back).
             if self.last_climb_move < 0 {
-                self.play(table, "climbUp"); // XML id `climbup`，大小写不敏感
+                self.play(table, "climbUp"); // XML id `climbup`; case-insensitive
             } else if self.last_climb_move > 0 {
                 self.play(table, "wallslide");
             } else if !self.hits(
@@ -1204,7 +1265,7 @@ impl Player {
                 self.pos.x + Fx::from_int(self.facing * 6),
                 self.pos.y,
             ) {
-                self.play(table, "dangling"); // 120371-120373：(Facing, 6) 探测
+                self.play(table, "dangling"); // 120371-120373: probe at (Facing, 6)
             } else if self.move_x == Fx::from_int(-self.facing) {
                 self.play(table, "climbLookBackStart");
             } else {
@@ -1215,15 +1276,15 @@ impl Player {
         } else if self.state == 0 {
             if self.on_ground {
                 self.fast_jump = false;
-                // pureCeleste.cs:120398-120400：贴墙推（`Holding == null && moveX != 0 &&
-                // CollideCheck<Solid>(Position + UnitX * moveX)`；原版还有
-                // `ClimbBlocker.EdgeCheck`，本引擎暂无 ClimbBlocker）。
+                // pureCeleste.cs:120398-120400: push against a wall (`Holding == null &&
+                // moveX != 0 && CollideCheck<Solid>(Position + UnitX * moveX)`; vanilla also
+                // has `ClimbBlocker.EdgeCheck`, but this engine has no ClimbBlocker yet).
                 if self.move_x != Fx::zero()
                     && self.hits(rooms, self.pos.x + self.move_x, self.pos.y)
                 {
                     self.play(table, "push");
                 } else if self.vel.x.abs() <= IDLE_SPEED && self.move_x == Fx::zero() {
-                    // pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`。
+                    // pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`.
                     let front = self.hits(
                         rooms,
                         self.pos.x + Fx::from_int(self.facing),
@@ -1247,32 +1308,34 @@ impl Player {
                     } else if !back {
                         self.play(table, "edgeBack"); // pureCeleste.cs:120412-120414
                     } else if input.up {
-                        // pureCeleste.cs:120418 `Sprite.LastAnimationID != "lookUp"`
-                        // —— 原版只在此时才重播（lookUp 非循环，播完会清空
-                        // CurrentAnimationID；无条件重播会永远停在第 0 帧）。
+                        // pureCeleste.cs:120418 `Sprite.LastAnimationID != "lookUp"` --
+                        // vanilla replays only then (lookUp does not loop, and after it ends
+                        // CurrentAnimationID is cleared; replaying unconditionally would stay
+                        // on frame 0 forever).
                         if self.last_anim_id != "lookUp" {
                             self.play(table, "lookUp");
                         }
                     } else if !self.anim_id.is_empty() && !self.anim_id.contains("idle") {
                         // pureCeleste.cs:120423 `Sprite.CurrentAnimationID.Contains("idle")`
-                        // —— 完整条件：`CurrentAnimationID != null && (!Contains("idle")
-                        // || (== "idle_carry" && Holding == null))`（120423-120425）。
+                        // -- the full condition is: `CurrentAnimationID != null &&
+                        // (!Contains("idle") || (== "idle_carry" && Holding == null))`
+                        // (120423-120425).
                         self.play(table, "idle");
                     }
                 } else if self.move_x != Fx::zero() && self.vel.x.signum() == -self.move_x.signum()
                 {
-                    // pureCeleste.cs:120432-120440：与输入反向且还在滑
-                    // （`Math.Sign(Speed.X) == -moveX && moveX != 0`，120432）。
+                    // pureCeleste.cs:120432-120440: opposite to the input and still sliding
+                    // (`Math.Sign(Speed.X) == -moveX && moveX != 0`, 120432).
                     if self.vel.x.abs() > RUN {
                         self.play(table, "skid");
                     } else if self.anim_id != "skid" {
                         self.play(table, "flip");
                     }
                 } else if !self.running() {
-                    // pureCeleste.cs:120447 `!Sprite.Running` —— 完整条件还有
+                    // pureCeleste.cs:120447 `!Sprite.Running` -- the full condition also has
                     // `CurrentAnimationID == "runWind" || (== "runSlow_carry" &&
-                    // Holding == null)`，后两项是风/持有物，本引擎未实现
-                    // （120447-120455）。
+                    // Holding == null)`; the latter two are wind / held item, not implemented
+                    // in this engine (120447-120455).
                     if self.vel.x.abs() < Fx::from_ratio(3, 4) {
                         self.play(table, "runSlow");
                     } else {
@@ -1288,7 +1351,7 @@ impl Player {
                 }
             } else if self.fast_jump || self.vel.y >= Fx::from_ratio(8, 3) {
                 self.fast_jump = true;
-                // pureCeleste.cs:120486 `Sprite.LastAnimationID != "fallFast"`。
+                // pureCeleste.cs:120486 `Sprite.LastAnimationID != "fallFast"`.
                 if self.last_anim_id != "fallFast" {
                     self.play(table, "fallFast");
                 }
@@ -1298,20 +1361,21 @@ impl Player {
         }
     }
 
-    /// State 0（NormalUpdate，pureCeleste.cs:121824-122101）。
+    /// State 0 (NormalUpdate, pureCeleste.cs:121824-122101).
     ///
-    /// tick 内顺序对照原版：抓取/下蹲（未实现，见偏差声明）→ 冲刺触发
-    /// （121841-121843 `if (CanDash)`）→ 跑动（121965-121975）→ maxFall
-    /// （121977-121987）→ 重力（122027-122040，仅空中）→ varJump 钳制
-    /// （122042-122048）→ 跳跃判定（122053-122100，含蹬墙跳）→ 移动
-    /// 解算 → 土狼/缓冲递减。
+    /// The within-tick order mirrors vanilla: grab/duck (not implemented, see the
+    /// deviation declaration) -> dash trigger (121841-121843 `if (CanDash)`) -> running
+    /// (121965-121975) -> maxFall (121977-121987) -> gravity (122027-122040, airborne
+    /// only) -> varJump clamp (122042-122048) -> jump decision (122053-122100, including
+    /// the wall jump) -> movement solve -> coyote/buffer decay.
     fn normal_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // 抓墙（121832-121864 的 GrabCheck 分支，无拾取物）：横速非背向
-        // 且竖速 >= 0 时探测；差 1-2px 够到时原版直接 MoveVExact 上提。
-        // `ClimbTrigger` 在原版是只写字段（118714/119688/121267，无消费
-        // 点），跳过。下蹲时不抓（121832 `!Ducking`）。
+        // Wall grab (the GrabCheck branch at 121832-121864, no pickups): probe when the
+        // horizontal speed is not away from the wall and vertical speed >= 0; when it is
+        // 1-2px short, vanilla lifts the player with MoveVExact. `ClimbTrigger` is a
+        // write-only field in vanilla (118714/119688/121267, with no consumer), skipped.
+        // No grab while ducking (121832 `!Ducking`).
         if input.grab && !self.ducking && self.vel.y >= Fx::zero() {
             let behind = self.vel.x.signum() == -self.facing && self.vel.x != Fx::zero();
             if !behind {
@@ -1321,7 +1385,7 @@ impl Player {
                     return;
                 }
                 for i in 1..=2i32 {
-                    // 121854-121862：差 1-2px 时上提再抓。
+                    // 121854-121862: when 1-2px short, lift, then grab.
                     if !self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(i))
                         && self.climb_check(rooms, self.facing, -i)
                     {
@@ -1334,8 +1398,9 @@ impl Player {
             }
         }
 
-        // 下蹲的进入/退出（121996-122008）：地面按下蹲；起身需
-        // CanUnDuck，被顶住且横速为零时按原版 4px 匍匐探位（122001）。
+        // Duck enter/exit (121996-122008): press down while grounded to duck; standing up
+        // needs CanUnDuck, and when blocked with zero horizontal speed, vanilla probes a
+        // 4px crawl position (122001).
         if self.ducking {
             if self.on_ground && input.axis_y() != Fx::one() {
                 if self.can_unduck(rooms) {
@@ -1344,7 +1409,7 @@ impl Player {
                     for i in (1..=4i32).rev() {
                         let px = Fx::from_int(i);
                         if self.can_unduck_at(rooms, self.pos.x + px) {
-                            self.pos.x += Fx::from_ratio(5, 6); // MoveH(50*dt)（122004）
+                            self.pos.x += Fx::from_ratio(5, 6); // MoveH(50*dt) (122004)
                             break;
                         }
                         if self.can_unduck_at(rooms, self.pos.x - px) {
@@ -1358,21 +1423,22 @@ impl Player {
             self.ducking = true; // 122004-122008
         }
 
-        // 冲刺触发（121841-121843 + `CanDash` 119325-119340）：冲刺键
-        // 按下（缓冲窗内）且冷却结束且还有冲刺次数。
+        // Dash trigger (121841-121843 + `CanDash` 119325-119340): the dash button was
+        // pressed (within the buffer window), the cooldown has ended, and dashes remain.
         let dash_pressed = input.dash && !self.prev_dash;
         self.prev_dash = input.dash;
         if dash_pressed {
-            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime 同 0.08s（110376）
+            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime, likewise 0.08s (110376)
         }
         if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
-            self.start_dash(input, rooms); // StartDash（122469-122479）→ State 2
-            return; // 本 tick 速度为 0（DashBegin 清零），直接进入移动
+            self.start_dash(input, rooms); // StartDash (122469-122479) -> State 2
+            return; // speed is 0 this tick (DashBegin zeroes it); go straight to movement
         }
 
-        // 水平：原版两分支（121965-121975）—— 同向超速（|vx| > 90 且与
-        // 输入同号）用 400 回归；其余（无输入、反向刹车、起步）一律
-        // 1000 全速档。空中两档都乘 0.65。
+        // Horizontal: vanilla's two branches (121965-121975) -- same-direction overspeed
+        // (|vx| > 90 and the same sign as the input) uses the 400 reduction; everything
+        // else (no input, opposite braking, starting) uses the full 1000 rate. In the air
+        // both are multiplied by 0.65.
         let move_x = self.move_x;
         let mult = if self.on_ground { Fx::one() } else { AIR_MULT };
         let target = move_x * RUN;
@@ -1385,30 +1451,33 @@ impl Player {
             RUN_ACCEL * mult
         };
         approach(&mut self.vel.x, target, rate);
-        // 朝向跟随输入而不是速度（119908-119917）：贴墙按住方向时
-        // 速度为 0，朝向必须仍朝墙，起跳助力方向才对。
+        // Facing follows input, not speed (119908-119917): holding into a wall leaves
+        // speed at 0, so facing must still point at the wall for the jump boost direction
+        // to be right.
         if move_x != Fx::zero() {
             self.facing = move_x.signum();
         }
-        // 下蹲贴地刹车（122047-122049）：`Approach(Speed.X, 0, 500*dt)`。
+        // Grounded duck braking (122047-122049): `Approach(Speed.X, 0, 500*dt)`.
         if self.ducking && self.on_ground {
             approach(&mut self.vel.x, Fx::zero(), DUCK_DECEL);
         }
 
-        // 落速上限是**缓动状态**：按住"下"且已在加速下落 → 上限爬向
-        // 快落；否则回落到普通落速。速率 300 px/s²。
-        // 参考 pureCeleste：`maxFall = Approach(maxFall, 240, 300*dt)`。
+        // The fall-speed cap is an **eased state**: holding "down" while already
+        // accelerating downward -> the cap ramps toward fast fall; otherwise it eases back
+        // to normal fall speed. Rate 300 px/s^2. Reference pureCeleste:
+        // `maxFall = Approach(maxFall, 240, 300*dt)`.
         if input.down && self.vel.y >= MAX_FALL {
             approach(&mut self.max_fall, FAST_MAX_FALL, FAST_MAX_ACCEL);
         } else {
             approach(&mut self.max_fall, MAX_FALL, FAST_MAX_ACCEL);
         }
 
-        // 重力：只在空中施加（122040）。靠近顶点（|vy| < 40 px/s）且
-        // 按住跳跃（或 AutoJump）→ 重力减半（122031 的 num7）。
-        // 墙滑（122105-122139）：朝墙推（或无横输入按抓）且下落 → 目标
-        // 速度从 160 缓到 20（`Lerp(160, 20, wallSlideTimer/1.2)`，
-        // WALLSLIDE_FAST/SLOW）。墙滑方向每 tick 由条件重新置位。
+        // Gravity: applied only in the air (122040). Near the apex (|vy| < 40 px/s) while
+        // holding jump (or AutoJump) -> gravity is halved (num7 at 122031).
+        // Wall slide (122105-122139): pushing into the wall (or holding grab with no
+        // horizontal input) while falling -> the target speed eases from 160 to 20
+        // (`Lerp(160, 20, wallSlideTimer/1.2)`, WALLSLIDE_FAST/SLOW). The wall slide
+        // direction is re-armed by the condition every tick.
         if !self.on_ground {
             let mut target = self.max_fall;
             let wall_ahead = self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y);
@@ -1431,30 +1500,31 @@ impl Player {
             approach(&mut self.vel.y, target, rate);
         }
 
-        // varJump 钳制（122042-122048）：计时未尽且按住跳跃 → 竖直速度
-        // 钳回起跳值（重力被抵消）；松开 → 计时清零。这就是"可变跳高"，
-        // 没有额外的松手砍速。
+        // varJump clamp (122042-122048): while the timer is running and jump is held ->
+        // vertical speed is clamped back to the jump value (gravity cancelled); on
+        // release -> the timer is zeroed. This is "variable jump height", with no extra
+        // release speed cut.
         if self.var_jump > 0 {
             if input.jump || self.auto_jump > 0 {
-                // 122134：`Speed.Y = Math.Min(Speed.Y, varJumpSpeed)`。
+                // 122134: `Speed.Y = Math.Min(Speed.Y, varJumpSpeed)`.
                 self.vel.y = self.vel.y.min(self.var_jump_speed);
             } else {
                 self.var_jump = 0;
             }
         }
 
-        // 跳跃输入边沿：按下 → 缓冲计满（VirtualButton.BufferTime，
-        // 110376；缓冲语义 16824-16840）。
+        // Jump input edge: on press -> fill the buffer (VirtualButton.BufferTime, 110376;
+        // buffer semantics 16824-16840).
         let jump_pressed = input.jump && !self.prev_jump;
         self.prev_jump = input.jump;
         if jump_pressed {
             self.jump_buffer = JUMP_BUFFER_FRAMES;
         }
 
-        // 跳跃判定（122090-122101）：缓冲窗内 → 接地/土狼 → `Jump()`
-        // （120694-120716：竖直 -105、水平 +40*moveX（JumpHBoost）、
-        // varJump 计满 0.2s）；空中 → 蹬墙跳（122057-122100，
-        // `WallJumpCheck` 120779-120804 → `WallJump` 120806-120860）。
+        // Jump decision (122090-122101): inside the buffer window -> grounded/coyote ->
+        // `Jump()` (120694-120716: vertical -105, horizontal +40*moveX (JumpHBoost),
+        // varJump filled to 0.2s); airborne -> wall jump (122057-122100,
+        // `WallJumpCheck` 120779-120804 -> `WallJump` 120806-120860).
         if self.jump_buffer > 0 {
             if self.on_ground || self.coyote > 0 {
                 self.jump(move_x);
@@ -1471,14 +1541,16 @@ impl Player {
         if !self.on_ground {
             self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
         }
-        // 空中站起（120058-120060）：下落且头顶无阻碍 → 取消下蹲。
+        // Stand up in the air (120058-120060): falling with nothing overhead -> cancel
+        // ducking.
         if !self.on_ground && self.vel.y > Fx::zero() && self.coyote == 0 && self.can_unduck(rooms)
         {
             self.ducking = false;
         }
-        // 土狼时间 + 跳跃缓冲的过期：接地就刷新土狼；离地则两者一起递减。
-        // 缓冲要到"着陆的下一帧"才可能触发（接地状态是本 tick 尾才更新），
-        // 所以接地那一帧不递减，避免把落地的余量吃掉。
+        // Coyote time + jump buffer expiry: refresh coyote while grounded; once airborne
+        // both decay. The buffer can only fire on "the frame after landing" (the grounded
+        // state is updated at the end of the tick), so the grounded frame does not decay
+        // it, avoiding eating the landing margin.
         if self.on_ground {
             self.coyote = COYOTE_FRAMES;
         } else {
@@ -1489,17 +1561,21 @@ impl Player {
         }
     }
 
-    /// hitbox 是否与**任何**触及房间的固体相交；`Some` 返回挡路的房间。
+    /// Whether the hitbox intersects a solid in **any** touched room; `Some` returns the
+    /// blocking room.
     ///
-    /// hitbox 骑在房间接缝上时（≤8px）两边的房间都要查 —— 只查中心
-    /// 所在房间的话，头会先扎进隔壁房间的实心瓦片，等中心跨过接缝
-    /// 才发现，玩家就卡在墙里了（0-Intro 的 `lvl_0` 顶板开孔正对
-    /// `lvl_0b` 的实心地板，就是这么卡人的）。
+    /// When the hitbox straddles a room seam (<=8px) both rooms must be checked -- with
+    /// only the room containing the center, the head drives into the neighboring room's
+    /// solid tile first and it is only noticed once the center crosses the seam, leaving
+    /// the player stuck in the wall (0-Intro's `lvl_0` ceiling opening sits directly
+    /// above `lvl_0b`'s solid floor, and that is exactly how it traps the player).
     ///
-    /// 房间按各自原点把世界格换算回局部格；矩形与 hitbox 格范围
-    /// 不相交的房间直接跳过（贴边接触不算相交）。
-    /// 当前 hitbox 尺寸：下蹲时 8×6 且左上角下移 5px（底边与常规 8×11
-    /// 对齐；`duckHitbox = new Hitbox(8f, 6f, -4f, -6f)`，118858）。
+    /// Rooms convert world cells back to local cells using their own origin; a room whose
+    /// rectangle does not intersect the hitbox's cell range is skipped (flush contact
+    /// does not count as intersecting).
+    /// Current hitbox size: while ducking 8x6 with the top-left moved down 5px (its
+    /// bottom edge aligns with the normal 8x11; `duckHitbox = new Hitbox(8f, 6f, -4f,
+    /// -6f)`, 118858).
     fn box_dims(&self) -> (i32, i32, i32) {
         if self.ducking {
             (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF)
@@ -1508,8 +1584,9 @@ impl Player {
         }
     }
 
-    /// 以**当前** hitbox 在 `(x, y)` 处是否与固体相交。`y` 是常规 hitbox
-    /// 左上角 y；下蹲时探测框下移 5px（底边对齐）。
+    /// Whether the **current** hitbox intersects a solid at `(x, y)`. `y` is the normal
+    /// hitbox's top-left y; while ducking the probe box is moved down 5px (bottom edge
+    /// aligned).
     fn hit_in<'r>(&self, rooms: &'r [Room], x: Fx, y: Fx) -> Option<&'r Room> {
         let (w, h, y_off) = self.box_dims();
         let y = y + Fx::from_int(y_off);
@@ -1527,7 +1604,7 @@ impl Player {
             let lx1 = cx1.min(gx0 + cols - 1);
             let ly1 = cy1.min(gy0 + rows - 1);
             if lx0 > lx1 || ly0 > ly1 {
-                continue; // 这个房间根本不在 hitbox 的格范围里
+                continue; // this room is not in the hitbox's cell range at all
             }
             for cy in ly0..=ly1 {
                 for cx in lx0..=lx1 {
@@ -1540,12 +1617,13 @@ impl Player {
         None
     }
 
-    /// 当前 hitbox 是否与固体相交（[`Player::hit_in`] 的布尔视图）。
+    /// Whether the current hitbox intersects a solid (the boolean view of
+    /// [`Player::hit_in`]).
     pub(crate) fn hits(&self, rooms: &[Room], x: Fx, y: Fx) -> bool {
         self.hit_in(rooms, x, y).is_some()
     }
 
-    /// 沿 X 轴推进，撞到固体即贴到那列的外沿。
+    /// Advance along X, snapping to the outside edge of that column on hitting a solid.
     fn slide_x(&mut self, rooms: &[Room]) {
         let mut dx = self.vel.x;
         while dx != Fx::zero() {
@@ -1561,7 +1639,8 @@ impl Player {
         }
     }
 
-    /// 沿 Y 轴推进，撞到固体即贴到那行的外沿并记下落地。
+    /// Advance along Y, snapping to the outside edge of that row on hitting a solid and
+    /// recording the landing.
     fn slide_y(&mut self, rooms: &[Room]) {
         let mut dy = self.vel.y;
         while dy != Fx::zero() {
@@ -1580,12 +1659,14 @@ impl Player {
         }
     }
 
-    /// 世界级兜底：只有当中心不在**任何**房间里才夹取。
+    /// World-level fallback: clamp only when the center is not in **any** room.
     ///
-    /// 之前无条件把玩家夹进"中心所在房间"的矩形 —— 房间贴边处中心刚
-    /// 跨缝，夹取就把玩家拽进隔壁房间（≈4px 瞬移）。现在贴缝行走是
-    /// 连续的；只有真正掉出世界（房间之间的缝隙、热重载缩小房间）时，
-    /// 玩家才会被**最近的**房间接住，绝不会被拽去出生房间。
+    /// Previously it unconditionally clamped the player into the rectangle of the "room
+    /// containing the center" -- at a flush room edge the center had just crossed the
+    /// seam, and the clamp yanked the player into the neighboring room (~4px teleport).
+    /// Now walking along a seam is continuous; only when the player truly falls out of
+    /// the world (a gap between rooms, a hot reload shrinking a room) is it caught by the
+    /// **nearest** room, and it is never yanked to the spawn room.
     fn clamp_to_world(&mut self, rooms: &[Room]) {
         if room_containing(rooms, self.pos).is_some() {
             return;
@@ -1615,7 +1696,7 @@ impl Player {
     }
 }
 
-/// 把一步限制在 `±STEP` 内，同时不超过剩余位移。
+/// Clamp one step to `+/-STEP`, without exceeding the remaining displacement.
 fn clamp_step(d: Fx) -> Fx {
     if d > Fx::zero() {
         d.min(STEP)
@@ -1624,10 +1705,11 @@ fn clamp_step(d: Fx) -> Fx {
     }
 }
 
-/// 以每 tick 最多 `rate` 的速度把 `v` 推向 `target`，不会越过目标。
+/// Push `v` toward `target` at at most `rate` per tick, never overshooting.
 ///
-/// 加速曲线的核心：`v` 朝 `target` 移动，但一步最多 `rate`，所以
-/// 起步是渐进的；反过来 `target` 变为反向时也用它来刹车。
+/// The core of the acceleration curve: `v` moves toward `target` but at most `rate` per
+/// step, so starting is gradual; conversely it also brakes when `target` becomes
+/// reverse.
 fn approach(v: &mut Fx, target: Fx, rate: Fx) {
     let diff = target - *v;
     if diff.abs() <= rate {
@@ -1637,16 +1719,16 @@ fn approach(v: &mut Fx, target: Fx, rate: Fx) {
     }
 }
 
-/// 撞墙后把 hitbox 贴到刚进入那一列的外沿。
+/// Snap the hitbox to the outside edge of the column it just entered on hitting a wall.
 ///
-/// `cell()` 给出的是**世界**格下标，所以吸附边也是世界坐标 ——
-/// 不掺任何房间原点。旧实现把世界格下标当房间局部下标用、再补一次
-/// 原点：在 `lvl_-1`（ox=-368）碰墙会被向西弹 368px，在
-/// `lvl_2`/`lvl_3`（oy=-88）落地会被向上弹 88px —— 任何原点非零
-/// 的房间一碰墙就是一次大瞬移。
+/// `cell()` yields **world** cell indices, so the snap edge is a world coordinate too --
+/// with no room origin mixed in. The old implementation treated world cell indices as
+/// room-local indices and then added the origin back: hitting a wall in `lvl_-1`
+/// (ox=-368) bounced it 368px west, landing in `lvl_2`/`lvl_3` (oy=-88) bounced it 88px
+/// up -- any room with a non-zero origin teleported hugely on touching a wall.
 ///
-/// 直接把坐标减到格边界，而不是停在半像素上 —— 否则 1/2px 的步长
-/// 会让角色永远差一点点贴不住地面。
+/// Subtract straight to the cell boundary rather than stopping at half a pixel --
+/// otherwise the 1/2px step leaves the character forever a hair short of the ground.
 fn edge_x(nx: Fx, step: Fx) -> Fx {
     if step > Fx::zero() {
         let right = nx + Fx::from_int(PLAYER_W_PX) - Fx::from_bits(1);
@@ -1656,9 +1738,10 @@ fn edge_x(nx: Fx, step: Fx) -> Fx {
     }
 }
 
-/// 撞地 / 撞天花板后把 hitbox 贴到刚进入那一行的外沿（世界格边）。
-/// `y_off` 是下蹲时探测框的下移量：底边不变（5+6 = 11），顶边要按
-/// 框顶（ny + y_off）贴，否则下蹲上跳会穿进天花板格。
+/// Snap the hitbox to the outside edge of the row it just entered (a world cell edge) on
+/// hitting the ground or a ceiling. `y_off` is the duck probe box's downward shift: the
+/// bottom edge is unchanged (5+6 = 11), but the top edge must snap per the box top
+/// (ny + y_off), otherwise a ducked jump passes into the ceiling cell.
 fn edge_y(ny: Fx, step: Fx, y_off: i32) -> Fx {
     if step > Fx::zero() {
         let bottom = ny + Fx::from_int(y_off + PLAYER_H_PX) - Fx::from_bits(1);
@@ -1669,7 +1752,8 @@ fn edge_y(ny: Fx, step: Fx, y_off: i32) -> Fx {
     }
 }
 
-/// 世界坐标 → 世界格子下标（算术右移 = 向下取整，负数也对）。
+/// World coordinate -> world cell index (arithmetic shift right = floor, correct for
+/// negatives too).
 fn cell(v: Fx) -> i32 {
     (v.bits() >> 16).div_euclid(8)
 }
@@ -1679,7 +1763,7 @@ mod tests {
     use super::*;
     use releste_map::{RectDef, Tileset};
 
-    /// 4×4 格房间，最后一行是地板。
+    /// A 4x4 cell room whose last row is the floor.
     fn floor_room() -> Room {
         let mut tiles = Tileset::new("Gameplay", 4, 4);
         for x in 0..4 {
@@ -1721,7 +1805,8 @@ mod tests {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert!(p.on_ground, "player never landed; pos = {:?}", p.pos);
-        // 地板是第 3 行（y = 24..32），hitbox 11 高（118856）→ 顶边停在 y = 13。
+        // The floor is row 3 (y = 24..32) and the hitbox is 11 tall (118856) -> the top
+        // edge stops at y = 13.
         assert_eq!(p.pos.y.to_f32(), 13.0, "hitbox must snap onto the floor");
         assert_eq!(p.vel.y, Fx::zero());
     }
@@ -1729,7 +1814,7 @@ mod tests {
     #[test]
     fn player_walks_into_a_wall_and_stops() {
         let mut room = floor_room();
-        // 竖一堵墙在第 2 列（x = 16..24）
+        // Raise a wall in column 2 (x = 16..24)
         for y in 0..3 {
             room.tiles.set(2, y, 1);
         }
@@ -1759,7 +1844,8 @@ mod tests {
     #[test]
     fn jump_lifts_the_player() {
         let room = floor_room();
-        // 站在第 3 行地板上（top = 24）→ hitbox 顶边是 y = 13（11 高，118856）。
+        // Standing on the row-3 floor (top = 24) -> the hitbox top edge is y = 13 (11
+        // tall, 118856).
         let mut p = Player::new(Vec2::from_f32s(8.0, 13.0));
         p.on_ground = true;
         let i = Input {
@@ -1781,10 +1867,11 @@ mod tests {
         assert_eq!(cell(Fx::from_int(-9)), -2);
     }
 
-    /// 8×8 格房间，地板只铺右半边（列 4..8），左侧是空的深渊。
+    /// An 8x8 cell room whose floor is only the right half (columns 4..8), with an empty
+    /// abyss on the left.
     ///
-    /// 这样往左走就能精确地在「离开支撑」的那一刻做土狼时间实验，
-    /// 左侧没有任何固体可以兜住玩家。
+    /// Walking left this way lets the coyote test happen exactly at the instant of
+    /// "leaving support", with no solid on the left to catch the player.
     fn ledge_room() -> Room {
         let mut tiles = Tileset::new("Gameplay", 8, 8);
         for x in 4..8 {
@@ -1807,10 +1894,10 @@ mod tests {
         }
     }
 
-    /// 8 格宽、16 格高的房间，整行地板在第 15 行（y = 120..128）。
+    /// An 8-cell-wide, 16-cell-tall room with a full floor row at row 15 (y = 120..128).
     ///
-    /// 高是必要的：满按跳跃能上升约 30px，矮房间的 clamp 会截断高度，
-    /// 可变跳高的对比就失真了。
+    /// The height matters: a full jump rises about 30px, and a short room's clamp would
+    /// truncate the height and distort the variable-jump-height comparison.
     fn tall_room() -> Room {
         let mut tiles = Tileset::new("Gameplay", 8, 16);
         for x in 0..8 {
@@ -1833,9 +1920,10 @@ mod tests {
         }
     }
 
-    /// 32 格宽、16 格高的房间，整行地板在第 15 行（y = 120..128）。
+    /// A 32-cell-wide, 16-cell-tall room with a full floor row at row 15 (y = 120..128).
     ///
-    /// 够宽是必要的：跑速 / 刹车测试要跑满加速度收敛而不撞上右墙。
+    /// The width matters: the run-speed / braking tests need to reach acceleration
+    /// convergence without hitting the right wall.
     fn wide_room() -> Room {
         let mut tiles = Tileset::new("Gameplay", 32, 16);
         for x in 0..32 {
@@ -1858,7 +1946,8 @@ mod tests {
         }
     }
 
-    /// 在实心地板上放一个玩家，跑到落稳为止（`x` 必须落在地板列上）。
+    /// Place a player on a solid floor and run until it settles (`x` must land on a floor
+    /// column).
     fn settled(room: &Room, x: f32) -> Player {
         let mut p = Player::new(Vec2::from_f32s(x, 8.0));
         for _ in 0..60 {
@@ -1868,7 +1957,8 @@ mod tests {
         p
     }
 
-    /// 从悬崖房间的右半地板一直往左走，返回刚离开支撑的那一帧。
+    /// Walk left from the right half of the ledge room's floor and return the frame that
+    /// just left support.
     fn walk_off_ledge(room: &Room) -> Player {
         let mut p = settled(room, 40.0);
         let walk = Input {
@@ -1889,7 +1979,8 @@ mod tests {
         let room = ledge_room();
         let mut p = walk_off_ledge(&room);
         assert!(!p.on_ground, "player should be airborne right now");
-        // 已离地，但土狼窗口还开着 —— 这一帧按跳仍应起跳。
+        // Already airborne, but the coyote window is still open -- a jump this frame must
+        // still fire.
         let jump = Input {
             left: true,
             jump: true,
@@ -1911,7 +2002,8 @@ mod tests {
             left: true,
             ..Input::default()
         };
-        // 已经离地 1 帧，再等满整个窗口 —— 之后土狼时间必须归零。
+        // Already airborne for 1 frame; wait out the whole window -- coyote must reach
+        // zero after that.
         for _ in 0..COYOTE_FRAMES + 2 {
             p.step(&walk, std::slice::from_ref(&room));
         }
@@ -1932,15 +2024,16 @@ mod tests {
     #[test]
     fn jump_buffering_fires_on_landing() {
         let room = tall_room();
-        // 从空中落下，在**落地前一帧**按下跳跃并按住 —— 缓冲必须把这次
-        // 输入带到地面上，落地瞬间直接起跳（而不是被丢掉）。
+        // Falling from the air, press and hold jump on the **frame before landing** -- the
+        // buffer must carry that input to the ground and jump right at landing (rather
+        // than being discarded).
         let mut p = Player::new(Vec2::from_f32s(32.0, 90.0));
         let idle = Input::default();
         let buffered = Input {
             jump: true,
             ..Input::default()
         };
-        // 地板顶边 = 120，hitbox 高 8 → 落定时 pos.y = 112。
+        // Floor top = 120, hitbox height 8 -> pos.y = 112 once settled.
         let floor_top = Fx::from_int(120);
         let mut pressed = false;
         let mut fired = false;
@@ -1973,7 +2066,7 @@ mod tests {
         let mut held = settled(&room, 32.0);
         let mut released = settled(&room, 32.0);
 
-        // 同一次起跳：held 全程按住，released 下一帧就松手。
+        // Same jump: held keeps jump held throughout, released lets go the next frame.
         held.step(&hold, std::slice::from_ref(&room));
         released.step(&hold, std::slice::from_ref(&room));
 
@@ -1999,9 +2092,10 @@ mod tests {
 
     #[test]
     fn releasing_jump_mid_rise_resumes_gravity_without_a_cut() {
-        // 原版松手只停掉 varJump 钳制（122153-122155），**没有**额外的
-        // 砍速：重力从当前速度继续（122123）。跳起后第二 tick 的速度
-        // 必须正好是 起跳速 + 一帧重力，且钳制不再把它拉回去。
+        // Vanilla's release only stops the varJump clamp (122153-122155), with **no**
+        // extra speed cut: gravity continues from the current speed (122123). The second
+        // tick after jumping must be exactly jump speed + one frame of gravity, and the
+        // clamp must not pull it back.
         let room = tall_room();
         let mut p = settled(&room, 32.0);
         let jump = Input {
@@ -2032,7 +2126,8 @@ mod tests {
             right: true,
             ..Input::default()
         };
-        // 第一帧不可能已是满速 —— 那正是"瞬间赋值"要禁止的。
+        // The first frame cannot already be at top speed -- that is exactly what "instant
+        // assignment" is meant to forbid.
         p.step(&walk, std::slice::from_ref(&room));
         assert_eq!(
             p.vel.x, RUN_ACCEL,
@@ -2043,7 +2138,7 @@ mod tests {
             "the first tick must not snap to top speed: {}",
             p.vel.x
         );
-        // 若干帧后收敛到满速，且不再增长。
+        // After several frames it converges to top speed and stops growing.
         for _ in 0..60 {
             p.step(&walk, std::slice::from_ref(&room));
         }
@@ -2082,7 +2177,7 @@ mod tests {
             right: true,
             ..Input::default()
         };
-        // 同一时刻、同一初速（0），唯一差别是接地与否。
+        // Same instant, same initial speed (0); the only difference is grounded or not.
         let mut ground = settled(&room, 32.0);
         ground.vel.x = Fx::zero();
         let mut air = Player::new(Vec2::from_f32s(32.0, 8.0));
@@ -2129,9 +2224,11 @@ mod tests {
         );
     }
 
-    /// 8×8 格房间，`floor` 决定是否铺第 7 行地板；`x` 是房间原点。
+    /// An 8x8 cell room; `floor` decides whether row 7 gets a floor, and `x` is the room
+    /// origin.
     ///
-    /// 与 `ledge_room` 同款，但原点可调 —— 拼接贴边/留缝的双房间用。
+    /// Same shape as `ledge_room`, but with an adjustable origin -- for pairing two rooms
+    /// flush or with a gap between them.
     fn seam_room(x: f32, floor: bool) -> Room {
         let mut tiles = Tileset::new("Test", 8, 8);
         if floor {
@@ -2156,16 +2253,17 @@ mod tests {
         }
     }
 
-    /// 两间贴边房间（A x[0,64]、B x[64,128]，地板同高）：向右走跨缝，
-    /// 每 tick 的位移不得超过一个正常步长。
+    /// Two flush rooms (A x[0,64], B x[64,128], same floor height): walking right across
+    /// the seam, the per-tick displacement must not exceed a normal step.
     ///
-    /// 回归：旧实现每 tick 无条件把玩家夹进"中心所在房间"的矩形，
-    /// 中心刚跨过缝就把玩家拽进隔壁房间 —— 一次 ≈4px 的瞬移。
-    /// （tick 数以玩家停在 B 中部为准，不走到 B 的远缘。）
+    /// Regression: the old implementation unconditionally clamped the player into the
+    /// rectangle of the "room containing the center" every tick, so the moment the center
+    /// crossed the seam it yanked the player into the neighboring room -- a ~4px teleport.
+    /// (The tick count is tuned for the player stopping mid-B, not reaching B's far edge.)
     #[test]
     fn walking_across_a_seam_does_not_teleport() {
         let rooms = [seam_room(0.0, true), seam_room(64.0, true)];
-        // 站在 A 的地板上（第 7 行，顶 y=56 → hitbox 顶边 y=48）。
+        // Standing on A's floor (row 7, top y=56 -> hitbox top edge y=48).
         let mut p = Player::new(Vec2::from_f32s(40.0, 48.0));
         let walk = Input {
             right: true,
@@ -2184,7 +2282,7 @@ mod tests {
             max_delta <= RUN,
             "walking across the seam must stay continuous, got a {max_delta:?} px jump in one tick"
         );
-        // 而且玩家确实走进了 B（中心已过缝：pos.x > 60）。
+        // And the player really did walk into B (center past the seam: pos.x > 60).
         assert!(
             p.pos.x.to_f32() > 60.0,
             "the player should end up past the seam, at {:?}",
@@ -2192,14 +2290,17 @@ mod tests {
         );
     }
 
-    /// 两间房之间留一道缝（A x[0,64]、B x[128,192]）：掉出所有房间时
-    /// 被**最近的**房间接住，而不是被拽去出生房间（旧实现的回落目标）。
+    /// A gap between two rooms (A x[0,64], B x[128,192]): when falling out of every room,
+    /// the player is caught by the **nearest** room rather than yanked to the spawn room
+    /// (the old implementation's fallback target).
     #[test]
     fn falling_into_a_gap_is_caught_by_the_nearest_room() {
-        // 缝上没有房间；B 不参与（A 距离更近）。给 B 留地板但它不该被选中。
+        // There is no room over the gap; B does not take part (A is nearer). B gets a floor
+        // but must not be chosen.
         let rooms = [seam_room(0.0, true), seam_room(128.0, true)];
-        // 直接把玩家放进缝里（中心 74 在所有房间之外）：一 tick 内必须
-        // 被最近的房间 A 夹回右缘（64 − 8 = 56）—— 这就是兜底。
+        // Drop the player straight into the gap (center 74 is outside every room): within
+        // one tick the nearest room A must clamp it back to its right edge (64 - 8 = 56) --
+        // that is the fallback.
         let mut p = Player::new(Vec2::from_f32s(70.0, 48.0));
         p.step(&Input::default(), &rooms);
         assert_eq!(
@@ -2207,7 +2308,7 @@ mod tests {
             56.0,
             "the gap must be guarded by the nearest room's right edge"
         );
-        // 落到 A 的地板上（夹回只定 x，落地靠后续重力）。
+        // Land on A's floor (the clamp only fixes x; landing relies on subsequent gravity).
         for _ in 0..120 {
             if p.on_ground {
                 break;
@@ -2218,12 +2319,12 @@ mod tests {
             p.on_ground,
             "the guard stands the player on the room's bottom edge"
         );
-        // 绝不允许被拽去 B（x ≥ 120）。
+        // It must never be yanked to B (x >= 120).
         assert!(p.pos.x.to_f32() < 100.0, "must not teleport across the map");
     }
 
-    /// 冲刺：240 px/s（4 px/tick）跑 0.15s（9 tick），末段 160 px/s
-    /// （8/3 px/tick）；次数扣 1；落地回充；冷却 0.2s。
+    /// Dash: 240 px/s (4 px/tick) for 0.15s (9 ticks), then 160 px/s (8/3 px/tick) at the
+    /// end; the count drops by 1; refill on landing; 0.2s cooldown.
     #[test]
     fn dash_matches_vanilla_speeds_and_timing() {
         let room = wide_room();
@@ -2234,7 +2335,7 @@ mod tests {
             ..Input::default()
         };
         let x0 = p.pos.x;
-        // tick 1：StartDash + DashBegin —— 速度清零、扣次数、请求停帧。
+        // tick 1: StartDash + DashBegin -- zero speed, consume a dash, request the freeze.
         p.step(&dash, std::slice::from_ref(&room));
         assert_eq!(p.state, 2, "dash enters vanilla state 2");
         assert_eq!(p.vel, Vec2::ZERO, "DashBegin zeroes Speed (122560)");
@@ -2243,12 +2344,12 @@ mod tests {
             p.freeze_ticks, 3,
             "Celeste.Freeze(0.05f) = 3 ticks (122540)"
         );
-        // tick 2：协程首段 → 速度 = 4 px/tick。
+        // tick 2: coroutine first segment -> speed = 4 px/tick.
         p.step(&dash, std::slice::from_ref(&room));
         assert_eq!(p.vel.x, DASH_SPEED, "Speed = aim * 240 px/s (122745)");
         assert_eq!(p.dash_dir.x, Fx::one(), "DashDir snaps to the aim axis");
         let after_first = p.pos.x;
-        // tick 3..10：匀速冲刺。
+        // tick 3..10: constant-speed dash.
         for _ in 0..8 {
             p.step(&dash, std::slice::from_ref(&room));
             assert_eq!(p.vel.x, DASH_SPEED);
@@ -2258,20 +2359,21 @@ mod tests {
             32.0,
             "8 ticks at 4 px/tick"
         );
-        // tick 11：协程结束 → 末段 8/3 px/tick，回 State 0。
+        // tick 11: coroutine ends -> last segment at 8/3 px/tick, back to State 0.
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.state, 0, "the coroutine returns to Normal (122830)");
         assert_eq!(p.vel.x, DASH_END_SPEED, "Speed = DashDir * 160 (122824)");
         let _ = x0;
     }
 
-    /// 冲刺次数：空中冲刺后耗尽 → 头发向 USED 渐入；落地回充 → 白闪
-    /// 0.12s 后回 NORMAL。
+    /// Dash count: exhausting it with an air dash -> hair eases toward USED; refill on
+    /// landing -> white flash, then back to NORMAL after 0.12s.
     #[test]
     fn dash_refill_and_hair_states_follow_update_hair() {
         let room = wide_room();
         let mut p = settled(&room, 40.0);
-        // 冲刺后立刻被地面回充（119855-119863 的地面分支在头 tick 生效）。
+        // Refilled by the ground immediately after the dash (the ground branch at
+        // 119855-119863 fires in the head tick).
         let dash = Input {
             right: true,
             dash: true,
@@ -2279,8 +2381,9 @@ mod tests {
         };
         p.step(&dash, std::slice::from_ref(&room));
         assert_eq!(p.dashes, 0);
-        // 落地后的头部回充（119855-119863）：冲刺速度生效的那一 tick
-        // 仍接地（地面横冲），下一 tick 头部回充。
+        // Head refill after landing (119855-119863): the tick in which the dash speed
+        // takes effect is still grounded (ground horizontal dash), and the next tick the
+        // head refills.
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(
             p.dashes, 1,
@@ -2291,16 +2394,17 @@ mod tests {
             crate::sprites::hair_color::FLASH,
             "lastDashes != Dashes flashes white (120268-120271)"
         );
-        // 冲刺 0.2s 冷却（122541）：起手在第 1 tick，协程第 10 tick 结束
-        // （phase 10 > DASH_TICKS），冷却第 12 tick 才清零。
-        // 协程相位：tick 2 = 首段（phase 1），第 11 tick 末段结束 ——
-        // 共 10 个状态 tick（1 个进入 + 9 个 0.15s 等待）。
+        // Dash 0.2s cooldown (122541): it starts on tick 1 and the coroutine ends on tick
+        // 10 (phase 10 > DASH_TICKS), so the cooldown only reaches zero on tick 12.
+        // Coroutine phases: tick 2 = first segment (phase 1), ending its last segment on
+        // tick 11 -- 10 state ticks in all (1 entry + 9 of the 0.15s wait).
         for _ in 0..9 {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert_eq!(p.state, 0, "the dash coroutine ended (122830)");
-        // 冷却门（`CanDash` 119325-119340 的 `dashCooldownTimer <= 0`）：
-        // 把冷却重置到刚起手的值，立即再按必须被挡；等它递减完才允许。
+        // Cooldown gate (`dashCooldownTimer <= 0` in `CanDash` 119325-119340): reset the
+        // cooldown to its fresh-start value; pressing again immediately must be blocked,
+        // and it is only allowed once it has fully decayed.
         p.dash_cooldown = DASH_COOLDOWN_TICKS;
         let again = Input {
             dash: true,
@@ -2313,20 +2417,21 @@ mod tests {
         }
         p.step(&again, std::slice::from_ref(&room));
         assert_eq!(p.state, 2, "after the cooldown a fresh dash starts");
-        // 地面冲刺的下一 tick 头部又回充（119855-119863：站着就是站在
-        // 固体上）→ lastDashes(0) ≠ Dashes(1) 再次白闪 —— 这正是原版
-        // 地面冲刺的表现。
+        // The next tick after a ground dash the head refills again (119855-119863:
+        // standing means standing on a solid) -> lastDashes(0) != Dashes(1) flashes white
+        // once more -- exactly how a ground dash behaves in vanilla.
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.dashes, 1, "ground dash refills next tick");
         assert_eq!(p.hair_color(), crate::sprites::hair_color::FLASH);
-        // 白闪 0.12s = 7 tick：计时器 > 0 的每一 tick 都显示 FLASH
-        // （120286-120290 的 else 分支），归零后的**下一** tick 走离散
-        // 分支回 NORMAL。
+        // White flash 0.12s = 7 ticks: every tick with the timer > 0 shows FLASH (the else
+        // branch at 120286-120290); on the **next** tick after it reaches zero, the
+        // discrete branch returns NORMAL.
         for _ in 0..8 {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert_eq!(p.hair_color(), crate::sprites::hair_color::NORMAL);
-        // 空中耗尽 → 渐入 USED（120258-120262）：先在空中耗掉唯一一次冲刺。
+        // Air exhaustion -> ease into USED (120258-120262): first spend the only dash
+        // while airborne.
         let mut p2 = settled(&room, 40.0);
         let jump_then_dash = Input {
             jump: true,
@@ -2348,11 +2453,11 @@ mod tests {
         );
     }
 
-    /// 蹬墙跳：贴墙按跳 → 水平 130 px/s 反向、竖直 -105、forceMoveX
-    /// 0.16s 覆盖输入方向。
+    /// Wall jump: pressing jump against a wall -> horizontal 130 px/s away, vertical
+    /// -105, forceMoveX overriding the input direction for 0.16s.
     #[test]
     fn wall_jump_off_a_wall_matches_vanilla_speeds() {
-        // 左侧一列墙 + 地板。
+        // A wall column on the left + a floor.
         let mut tiles = Tileset::new("Gameplay", 10, 16);
         for y in 0..16 {
             tiles.set(0, y, 1);
@@ -2375,12 +2480,13 @@ mod tests {
             script: None,
             ..Default::default()
         };
-        // 玩家贴墙悬空（x = 8 → hitbox [8,16]，墙右缘 8）。
+        // Player hanging against the wall (x = 8 -> hitbox [8,16], wall right edge 8).
         let mut p = Player::new(Vec2::from_f32s(8.0, 100.0));
-        // 先落一 tick 贴稳（不接地也行：探针只看墙）。
+        // Drop one tick to settle flush (grounded is not required: the probe only looks at
+        // the wall).
         p.step(&Input::default(), std::slice::from_ref(&room));
-        // 按住朝墙方向起跳 —— 原版只在 moveX != 0 时设 forceMoveX
-        //（120828-120838 的 `else if (moveX != 0)`）。
+        // Jump while holding toward the wall -- vanilla sets forceMoveX only when
+        // moveX != 0 (the `else if (moveX != 0)` at 120828-120838).
         let jump = Input {
             left: true,
             jump: true,
@@ -2396,7 +2502,7 @@ mod tests {
             p.force_move_x, 1,
             "WallJump forces moveX away from the wall (120828-120838)"
         );
-        // forceMoveX 窗内反向输入被覆盖（119883-119891）。
+        // Within the forceMoveX window, opposite input is overridden (119883-119891).
         let push_left = Input {
             left: true,
             ..Input::default()
@@ -2405,7 +2511,8 @@ mod tests {
         assert_eq!(p.move_x, Fx::one(), "forceMoveX overrides input for 0.16s");
     }
 
-    /// 地面横冲刺中起跳 = 超级跳：260 px/s × Facing、-105（120740-120778）。
+    /// Jumping during a ground horizontal dash = super jump: 260 px/s * Facing, -105
+    /// (120740-120778).
     #[test]
     fn jumping_during_a_ground_dash_is_a_super_jump() {
         let room = wide_room();
@@ -2415,8 +2522,8 @@ mod tests {
             dash: true,
             ..Input::default()
         };
-        p.step(&dash, std::slice::from_ref(&room)); // 进入 State 2
-        p.step(&dash, std::slice::from_ref(&room)); // 速度生效（仍在地面）
+        p.step(&dash, std::slice::from_ref(&room)); // enter State 2
+        p.step(&dash, std::slice::from_ref(&room)); // speed takes effect (still grounded)
         assert!(p.on_ground, "ground dash keeps the player grounded");
         let jump = Input {
             jump: true,
@@ -2431,22 +2538,24 @@ mod tests {
         assert_eq!(p.vel.y, JUMP_SPEED, "SuperJump: Speed.Y = -105 (120749)");
     }
 
-    /// 原点非 (0,0) 的房间：撞墙 / 落地 / 顶头都必须吸附到**世界**格边。
+    /// A room with a non-(0,0) origin: hitting a wall / landing / hitting the ceiling must
+    /// all snap to **world** cell edges.
     ///
-    /// 回归：`edge_x`/`edge_y` 曾把世界格下标当房间局部下标用、再补一次
-    /// 房间原点 —— ox=64 的房间碰墙被向东弹 64px，oy=-88 的房间顶头
-    /// 被向上弹 88px。0-Intro 里除 `lvl_0` 外全是原点非零的房间，
-    /// 旧代码一碰墙就是一次大瞬移。
+    /// Regression: `edge_x`/`edge_y` once treated world cell indices as room-local indices
+    /// and added the room origin back -- a room with ox=64 bounced east 64px on touching a
+    /// wall, and a room with oy=-88 bounced 88px up on hitting the ceiling. In 0-Intro
+    /// every room except `lvl_0` has a non-zero origin, so the old code teleported hugely
+    /// on any wall touch.
     fn offset_room() -> Room {
         let mut tiles = Tileset::new("Test", 8, 8);
         for x in 0..8 {
-            tiles.set(x, 7, 1); // 地板：世界 y[-32,-24)
+            tiles.set(x, 7, 1); // floor: world y[-32,-24)
         }
         for y in 0..7 {
-            tiles.set(4, y, 1); // 竖墙：世界 x[96,104)
+            tiles.set(4, y, 1); // vertical wall: world x[96,104)
         }
         for x in 0..4 {
-            tiles.set(x, 2, 1); // 天花板：世界 x[64,96)、y[-72,-64)
+            tiles.set(x, 2, 1); // ceiling: world x[64,96), y[-72,-64)
         }
         Room {
             name: "off".into(),
@@ -2469,7 +2578,7 @@ mod tests {
     fn collisions_snap_to_world_edges_regardless_of_room_origin() {
         let room = offset_room();
 
-        // 落地：地板顶边 y = -32 → hitbox 顶边停在 -40。
+        // Landing: floor top y = -32 -> the hitbox top edge stops at -40.
         let mut p = Player::new(Vec2::from_f32s(72.0, -64.0));
         for _ in 0..60 {
             p.step(&Input::default(), std::slice::from_ref(&room));
@@ -2481,7 +2590,8 @@ mod tests {
             "landing must snap to the world edge of the floor (hitbox 11 tall, 118856)"
         );
 
-        // 撞墙：墙的左沿 x = 96 → hitbox 停在 88（旧实现弹到 152）。
+        // Wall hit: the wall's left edge x = 96 -> the hitbox stops at 88 (the old
+        // implementation bounced to 152).
         let walk = Input {
             right: true,
             ..Input::default()
@@ -2495,8 +2605,9 @@ mod tests {
             "wall snap must be the world edge of the blocking column"
         );
 
-        // 顶头：天花板底边 y = -64 → 头停在 -64（旧实现弹到 -152）。
-        // 站在地板上：地板顶 -32，hitbox 11 高 → 顶边 -43。
+        // Ceiling hit: ceiling bottom y = -64 -> the head stops at -64 (the old
+        // implementation bounced to -152). Standing on the floor: floor top -32, hitbox 11
+        // tall -> top edge -43.
         let mut q = Player::new(Vec2::from_f32s(72.0, -43.0));
         q.on_ground = true;
         let jump = Input {
@@ -2517,12 +2628,14 @@ mod tests {
         );
     }
 
-    /// 上间底行实心、下间顶行开孔的贴边双房间：起跳顶头必须停在
-    /// 接缝（y=0），头不许扎进上间的实心里，更不许被卡进墙里。
+    /// Two flush rooms with a solid bottom row above and an opening in the top row below:
+    /// a jump must stop its head at the seam (y=0); the head must not drive into the solid
+    /// of the upper room, and certainly must not get stuck inside a wall.
     ///
-    /// 0-Intro 实测：`lvl_0` 顶板在 x[288,400) 开着，正上方是
-    /// `lvl_0b` 的实心地板 —— 旧实现只查中心所在房间的瓦片，头先扎
-    /// 进去，等中心跨缝才发现，玩家被卡死/瞬移。
+    /// Measured in 0-Intro: `lvl_0`'s ceiling is open at x[288,400), and directly above is
+    /// `lvl_0b`'s solid floor -- the old implementation only checked the tiles of the room
+    /// containing the center, so the head drove in first and it was only noticed once the
+    /// center crossed the seam, getting the player stuck / teleported.
     #[test]
     fn a_solid_ceiling_in_the_room_above_stops_the_head_at_the_seam() {
         let lower = seam_room(0.0, true);
@@ -2531,7 +2644,8 @@ mod tests {
         upper.name = "up".into();
         let rooms = [lower, upper];
 
-        // 头在接缝下方 8px、正以 4 px/tick 上升：一两 tick 内跨过 y=0。
+        // The head is 8px below the seam and rising at 4 px/tick: it crosses y=0 within a
+        // tick or two.
         let mut p = Player::new(Vec2::from_f32s(32.0, 8.0));
         p.vel.y = -Fx::from_int(4);
         let hold = Input {
@@ -2557,8 +2671,9 @@ mod tests {
         assert!(p.on_ground, "and settle on the lower room's floor");
     }
 
-    /// 8×48 格的深竖井：地板远在底部，供落速测试在**不落地**的前提下
-    /// 观察收尾速度与缓动（384px，75 tick 内到不了底）。
+    /// An 8x48 cell deep shaft: the floor is far below, so the fall-speed tests can
+    /// observe terminal speed and easing without **landing** (384px, unreachable in 75
+    /// ticks).
     fn shaft_room() -> Room {
         let mut tiles = Tileset::new("Test", 8, 48);
         for x in 0..8 {
@@ -2581,8 +2696,8 @@ mod tests {
         }
     }
 
-    /// 参考值：普通下落的收尾速度是 160 px/s（8/3 px/tick），不是旧
-    /// 实现的 360。
+    /// Reference value: the terminal speed of a normal fall is 160 px/s (8/3 px/tick), not
+    /// the old implementation's 360.
     #[test]
     fn fall_speed_caps_at_vanilla_max_fall() {
         let room = tall_room();
@@ -2590,7 +2705,8 @@ mod tests {
         for _ in 0..40 {
             p.step(&Input::default(), std::slice::from_ref(&room));
             if p.vel.y == MAX_FALL {
-                return; // 到过收尾速度即通过（落地后 vel.y 归零，属正常）
+                return; // reaching terminal speed passes (vel.y going to zero after landing
+                        // is normal)
             }
         }
         panic!(
@@ -2599,8 +2715,8 @@ mod tests {
         );
     }
 
-    /// 按住"下"：落速上限从 160 缓动到 240 px/s（4 px/tick）；松开后
-    /// 再缓动回 160。参考 `maxFall = Approach(maxFall, 240, 300*dt)`。
+    /// Holding "down": the fall-speed cap eases from 160 to 240 px/s (4 px/tick), then
+    /// back to 160 after release. Reference `maxFall = Approach(maxFall, 240, 300*dt)`.
     #[test]
     fn holding_down_ramps_the_fall_cap_to_fast_fall_and_back() {
         let room = shaft_room();
@@ -2610,7 +2726,7 @@ mod tests {
         };
         let mut p = Player::new(Vec2::from_f32s(32.0, 8.0));
 
-        // 按住下 → 必须达到快落上限。
+        // Holding down -> the fast-fall cap must be reached.
         let mut reached_fast = false;
         for _ in 0..45 {
             p.step(&down, std::slice::from_ref(&room));
@@ -2625,7 +2741,7 @@ mod tests {
             p.vel.y
         );
 
-        // 对照：不按下时落速永远不超过普通上限。
+        // Control: without down, the fall speed never exceeds the normal cap.
         let mut q = Player::new(Vec2::from_f32s(32.0, 8.0));
         for _ in 0..45 {
             q.step(&Input::default(), std::slice::from_ref(&room));
@@ -2636,7 +2752,8 @@ mod tests {
             );
         }
 
-        // 松开下 → 上限缓回普通落速，落速跟着回落。
+        // Releasing down -> the cap eases back to normal fall speed and the fall speed
+        // follows it down.
         let mut settled_back = false;
         for _ in 0..30 {
             p.step(&Input::default(), std::slice::from_ref(&room));
@@ -2652,16 +2769,17 @@ mod tests {
         );
     }
 
-    /// 顶点半重力：|vy| < 40 px/s 且按住跳跃时，重力减半 ——
-    /// 参考 `(|Speed.Y| < 40f && Jump.Check) ? 0.5f : 1f`。
+    /// Apex half gravity: while |vy| < 40 px/s and jump is held, gravity is halved --
+    /// reference `(|Speed.Y| < 40f && Jump.Check) ? 0.5f : 1f`.
     #[test]
     fn gravity_is_halved_near_the_apex_while_jump_is_held() {
         let room = tall_room();
-        // 两个玩家都放在慢速上升段（|vy| < 2/3 px/tick），唯一差别是
-        // 跳跃键。注意两个都**没有**松键边沿，可变跳高的 cut 不参与。
+        // Both players are placed in the slow-rise band (|vy| < 2/3 px/tick); the only
+        // difference is the jump button. Note neither has a release edge, so the variable
+        // jump height cut is not involved.
         let mut held = Player::new(Vec2::from_f32s(32.0, 60.0));
         held.on_ground = false;
-        held.vel.y = -Fx::from_ratio(3, 5); // -0.6 px/tick，阈值内
+        held.vel.y = -Fx::from_ratio(3, 5); // -0.6 px/tick, within the threshold
         let mut idle = Player::new(Vec2::from_f32s(32.0, 60.0));
         idle.on_ground = false;
         idle.vel.y = held.vel.y;
@@ -2680,8 +2798,9 @@ mod tests {
             idle.vel.y
         );
     }
-    /// 下蹲：地面按下蹲进入（122004-122008）、hitbox 换 8×6 且底边
-    /// 对齐（118858）、松开后站起（121996-122003）。
+    /// Ducking: press down while grounded to enter (122004-122008), the hitbox switches
+    /// to 8x6 with its bottom edge aligned (118858), and releasing stands back up
+    /// (121996-122003).
     #[test]
     fn ducking_enters_exits_and_shrinks_the_hitbox() {
         let room = wide_room();
@@ -2701,8 +2820,9 @@ mod tests {
         assert!(!p.ducking, "release down to stand back up (121996-122003)");
     }
 
-    /// 攀爬：贴墙按抓 → State 1；悬挂持续耗体力（静止 10/s，122278）；
-    /// 落地回满（119818-119823）；松抓落地（122211-122216）。
+    /// Climb: grab against a wall -> State 1; hanging drains stamina continuously (still
+    /// 10/s, 122278); landing refills it (119818-119823); releasing the grab lets go
+    /// (122211-122216).
     #[test]
     fn climb_grabs_drains_stamina_and_lets_go() {
         let mut tiles = Tileset::new("Gameplay", 10, 16);
@@ -2750,13 +2870,16 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // 精灵动画（`Sprite` 状态机）—— 回归：走路看起来只是「平移」。
+    // Sprite animation (the `Sprite` state machine) -- regression: walking looked
+    // like it was only "sliding".
     // -----------------------------------------------------------------
 
-    /// 一份就够用的动画表：只关心 id/帧数/间隔/goto，帧名随便起。
+    /// A single animation table good enough for these tests: only id / frame count /
+    /// interval / goto matter, and the frame names are arbitrary.
     ///
-    /// 键必须小写（Monocle 字典 `OrdinalIgnoreCase`，10206）；`goto` 保留
-    /// XML 里的原样大小写（原版 `CurrentAnimationID = Goto`，10279-10284）。
+    /// Keys must be lowercase (the Monocle dictionary is `OrdinalIgnoreCase`, 10206);
+    /// `goto` keeps the exact casing from the XML (vanilla
+    /// `CurrentAnimationID = Goto`, 10279-10284).
     fn anim_table() -> crate::sprites::AnimationTable {
         use crate::sprites::{AnimDef, AnimationTable, SpriteDef};
         use std::collections::HashMap;
@@ -2770,9 +2893,9 @@ mod tests {
         }
 
         let mut anims = HashMap::new();
-        // 对照真实 Sprites.xml：idle/edge/push 都是带 `<Loop>` 的
-        // `goto=自身`，runSlow 播完 goto runFast，runFast 自循环，
-        // flip 播完 goto runFast（references/Celeste/Content/Graphics/Sprites.xml）。
+        // Follows the real Sprites.xml: idle/edge/push are `goto=self` with `<Loop>`;
+        // runSlow gotos runFast when done; runFast loops itself; flip gotos runFast when
+        // done (references/Celeste/Content/Graphics/Sprites.xml).
         anims.insert("idle".into(), a(&["idle00", "idle01"], 0.1, Some("idle")));
         anims.insert(
             "runslow".into(),
@@ -2812,13 +2935,14 @@ mod tests {
         AnimationTable { sprites }
     }
 
-    /// 往右走两步再往左走两步：必须真的播跑动动画（帧在动），而不是
-    /// 保持 idle 姿势滑过去。
+    /// Walk right two steps then left two steps: it must actually play a run animation
+    /// (frames advancing), not slide while holding the idle pose.
     ///
-    /// 回归点：`PlayerSprite.Running`（pureCeleste.cs:111374-111388）读的是
-    /// **上一条**动画（`LastAnimationID`）。曾经把它写成「当前动画有 goto」，
-    /// 而 `idle` 自带 `<Loop>`（goto=idle）→ `!Sprite.Running` 恒假 →
-    /// 120461-120470 的 `runSlow`/`runFast` 永远播不出来，角色看起来只是平移。
+    /// Regression point: `PlayerSprite.Running` (pureCeleste.cs:111374-111388) reads the
+    /// **previous** animation (`LastAnimationID`). It was once written as "the current
+    /// animation has a goto", and since `idle` carries `<Loop>` (goto=idle) ->
+    /// `!Sprite.Running` was always false -> the `runSlow`/`runFast` at 120461-120470 could
+    /// never play and the character merely appeared to slide.
     #[test]
     fn walking_left_and_right_animates_instead_of_sliding() {
         use std::collections::BTreeSet;
@@ -2835,12 +2959,15 @@ mod tests {
             ..Input::default()
         };
 
-        // 站稳：起始动画是 idle（sprite 的 start，10189）。
+        // Standing still: the start animation is idle (the sprite's start, 10189).
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.anim_id, "idle");
-        assert!(!p.running(), "刚从 idle 起手，LastAnimationID 不是 run*");
+        assert!(
+            !p.running(),
+            "just started from idle, so LastAnimationID is not run*"
+        );
 
-        // ---- 往右两步（20 tick ≈ 1/3 秒）----
+        // ---- Two steps right (20 ticks ~ 1/3 second) ----
         let x0 = p.pos.x;
         let mut seen = BTreeSet::new();
         for _ in 0..20 {
@@ -2848,24 +2975,24 @@ mod tests {
             p.update_visuals(&table, &right, std::slice::from_ref(&room));
             assert!(
                 matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
-                "往右走却播 {:?}（120464-120470）",
+                "walking right but playing {:?} (120464-120470)",
                 p.anim_id
             );
             seen.insert((p.anim_id.clone(), p.anim_frame));
         }
         assert!(
             seen.len() >= 3,
-            "右走 20 tick 只出现 {} 种 (动画, 帧) —— 帧没在推进，就是在平移",
+            "20 ticks of walking right produced only {} (animation, frame) pairs -- frames are not advancing, so it is just sliding",
             seen.len()
         );
-        assert!(p.pos.x > x0, "往右走必须真的往右移动");
+        assert!(p.pos.x > x0, "walking right must actually move right");
 
-        // ---- 转身往左：先 flip（120455-120459），flip 播完 goto runFast ----
+        // ---- Turn and go left: flip first (120455-120459); when flip ends it gotos runFast ----
         p.step(&left, std::slice::from_ref(&room));
         p.update_visuals(&table, &left, std::slice::from_ref(&room));
         assert!(
             matches!(p.anim_id.as_str(), "flip" | "skid"),
-            "高速反向应当先播 flip/skid（120441-120459），实际 {:?}",
+            "a fast reversal should play flip/skid first (120441-120459), actually {:?}",
             p.anim_id
         );
 
@@ -2878,90 +3005,98 @@ mod tests {
         }
         assert!(
             matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
-            "转身后必须回到跑动动画（flip 的 goto=runFast），实际 {:?}",
+            "after turning it must return to a run animation (flip's goto=runFast), actually {:?}",
             p.anim_id
         );
-        assert!(seen.len() >= 3, "往左同样不能是静止帧");
-        assert!(p.pos.x < x1, "往左走必须真的往左移动");
+        assert!(
+            seen.len() >= 3,
+            "going left must not be a static frame either"
+        );
+        assert!(p.pos.x < x1, "walking left must actually move left");
     }
 
-    /// `PlayerSprite.Running` 的完整语义（pureCeleste.cs:111374-111388）：
-    /// 「上一条动画」以 `run` 开头、或者正好是 `flip`。
+    /// The full semantics of `PlayerSprite.Running` (pureCeleste.cs:111374-111388): the
+    /// "previous animation" starts with `run`, or is exactly `flip`.
     #[test]
     fn running_tracks_the_previous_animation_like_vanilla() {
         let table = anim_table();
         let room = floor_room();
         let mut p = Player::new(Vec2::from_f32s(8.0, 13.0));
 
-        // 起手播 start（idle）：Play 记下的旧 id 是空串 → 不在跑。
+        // The start animation is played (idle): Play records the old id as an empty string
+        // -> not running.
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.anim_id, "idle");
         assert!(!p.running());
 
-        // idle → runSlow：Play 把**旧** id（idle）写进 LastAnimationID，
-        // 所以这一刻「还不是在跑」——正是这点让从 idle 起手的跑动动画能播
-        // （10487-10489 + 120461）。
+        // idle -> runSlow: Play writes the **old** id (idle) into LastAnimationID, so at
+        // this instant it "is not running yet" -- precisely what lets a run animation
+        // start from idle (10487-10489 + 120461).
         p.play(&table, "runSlow");
         assert_eq!(p.last_anim_id, "idle");
         assert!(!p.running());
 
-        // flip 特例：`if (LastAnimationID == "flip") return true`（111381-111384）。
+        // flip special case: `if (LastAnimationID == "flip") return true` (111381-111384).
         p.play(&table, "flip");
         assert!(p.running());
-        // flip → runFast：旧 id 仍是 flip → 正在跑。
+        // flip -> runFast: the old id is still flip -> running.
         p.play(&table, "runFast");
         assert!(p.running());
 
-        // runFast → idle：旧 id 是 run* → 这一刻仍算「在跑」。
+        // runFast -> idle: the old id is run* -> still "running" at this instant.
         p.play(&table, "idle");
         assert!(p.running());
-        // idle → runSlow：旧 id 变成 idle → 可以重播跑动动画。
+        // idle -> runSlow: the old id becomes idle -> the run animation can play again.
         p.play(&table, "runSlow");
         assert!(!p.running());
     }
 
-    /// Goto 分支（pureCeleste.cs:10260-10282）把**新** id 写进
-    /// `LastAnimationID`，与 Play 的「记旧 id」规则不同。
+    /// The goto branch (pureCeleste.cs:10260-10282) writes the **new** id into
+    /// `LastAnimationID`, unlike Play's "record the old id" rule.
     #[test]
     fn animation_goto_writes_the_target_into_last_anim_id() {
         let table = anim_table();
         let mut p = Player::new(Vec2::ZERO);
-        // runSlow：3 帧 × 0.07s ≈ 15 tick 走完，然后 goto runFast。
+        // runSlow: 3 frames x 0.07s ~ 15 ticks, then goto runFast.
         p.play(&table, "runSlow");
         for _ in 0..20 {
             p.update_animation(&table);
         }
-        assert_eq!(p.anim_id, "runFast", "runSlow 播完应当 goto runFast");
+        assert_eq!(
+            p.anim_id, "runFast",
+            "runSlow should goto runFast when done"
+        );
         assert_eq!(
             p.last_anim_id, "runFast",
-            "Goto 分支写的是新 id（pureCeleste.cs:10267）"
+            "the goto branch writes the new id (pureCeleste.cs:10267)"
         );
         assert!(p.running());
     }
 
-    /// 待机分支的速度分界是 25 px/s，**不是** runSlow/runFast 的 45 px/s
-    /// （pureCeleste.cs:120402 vs pureCeleste.cs:120449）。
+    /// The idle branch's speed threshold is 25 px/s, **not** the 45 px/s of
+    /// runSlow/runFast (pureCeleste.cs:120402 vs pureCeleste.cs:120449).
     #[test]
     fn idle_branch_uses_the_vanilla_25px_s_threshold() {
         let room = wide_room();
         let table = anim_table();
         let mut p = settled(&room, 100.0);
-        // 30 px/s：> 25（不该进 idle/edge 分支）、< 45（该是 runSlow）。
+        // 30 px/s: > 25 (must not enter the idle/edge branch), < 45 (should be runSlow).
         p.vel.x = Fx::from_ratio(1, 2);
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert!(
             matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
-            "30 px/s 落在 idle 阈值之上、runSlow 阈值之下 → 应走跑动分支，实际 {:?}",
+            "30 px/s is above the idle threshold and below the runSlow threshold -> the run branch should be taken, actually {:?}",
             p.anim_id
         );
 
-        // 20 px/s：< 25 → 进 idle/edge 分支（这里前面没有边缘，落 idle）。
+        // 20 px/s: < 25 -> enter the idle/edge branch (there is no edge ahead here, so it
+        // lands on idle).
         p.vel.x = Fx::from_ratio(1, 3);
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.anim_id, "idle");
     }
 
-    /// 蹬墙跳（超级版）钉住原版数值（pureCeleste.cs:120877-120880）。
+    /// Super wall jump pins the vanilla values (pureCeleste.cs:120877-120880).
     #[test]
     fn super_wall_jump_pins_vanilla_speeds() {
         let mut p = Player::new(Vec2::ZERO);
@@ -2969,19 +3104,21 @@ mod tests {
         assert_eq!(p.vel.x, Fx::from_ratio(17, 6), "Speed.X = 170f * dir");
         assert_eq!(p.vel.y, Fx::from_ratio(-8, 3), "Speed.Y = -160f");
         assert_eq!(p.var_jump_speed, p.vel.y, "varJumpSpeed = Speed.Y");
-        assert_eq!(p.var_jump, 15, "varJumpTimer = 0.25s（120870）");
-        assert_eq!(p.auto_jump, 0, "AutoJump = false（120871）");
+        assert_eq!(p.var_jump, 15, "varJumpTimer = 0.25s (120870)");
+        assert_eq!(p.auto_jump, 0, "AutoJump = false (120871)");
         assert_eq!(p.state, 0);
     }
 
-    /// 走左右两步的逐 tick 精灵轨迹（排查"看起来只是平移"用的手动清单）：
+    /// A per-tick sprite trace of walking two steps each way (the manual checklist for
+    /// tracking down "it only looks like sliding"):
     ///
     /// ```text
     /// cargo test -p releste-game print_walk_cycle_trace -- --ignored --nocapture
     /// ```
     ///
-    /// 只打印、不断言，所以 `#[ignore]`（AGENTS.md §9：纯渲染代码免测试、
-    /// 但要有手动清单）。修复前这里会是一路 `idle`，位置在动、腿不动。
+    /// It only prints and never asserts, hence `#[ignore]` (AGENTS.md 9: pure rendering
+    /// code is exempt from tests but needs a manual checklist). Before the fix this was
+    /// `idle` all the way: position moving, legs not.
     #[test]
     #[ignore = "diagnostic print; run with --nocapture"]
     fn print_walk_cycle_trace() {
@@ -2999,9 +3136,9 @@ mod tests {
         println!("tick  dir   pos.x   vel.x(px/s)  anim      frame  texture");
         for tick in 0..80 {
             let (dir, input) = if tick < 40 {
-                ("→", &right)
+                ("->", &right)
             } else {
-                ("←", &left)
+                ("<-", &left)
             };
             p.step(input, std::slice::from_ref(&room));
             p.update_visuals(&table, input, std::slice::from_ref(&room));

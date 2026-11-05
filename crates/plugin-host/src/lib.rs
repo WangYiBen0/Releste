@@ -8,8 +8,8 @@
 //!
 //! - [`manifest`]: `plugin.toml`, read **without** instantiating anything.
 //! - [`fiber`]: the [`fiber::Fiber`] state machine, adopted verbatim from
-//!   Cordis (`PENDING → LOADING → ACTIVE → UNLOADING → DISPOSED`, plus `FAILED`).
-//! - [`scope`]: [`scope::Scope::effect`] — LIFO disposers with mandatory labels,
+//!   Cordis (`PENDING -> LOADING -> ACTIVE -> UNLOADING -> DISPOSED`, plus `FAILED`).
+//! - [`scope`]: [`scope::Scope::effect`] -- LIFO disposers with mandatory labels,
 //!   so a teardown tree can be printed before anything is torn down.
 //! - [`registry`]: capability registration and the `inject` epoch.
 //! - [`abi`]: the frozen `#[repr(C)]` vtable shared with `.so` plugins.

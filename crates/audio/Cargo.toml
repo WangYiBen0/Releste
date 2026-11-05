@@ -6,7 +6,7 @@ build = "build.rs"
 
 [features]
 default = []
-# Real FMOD backend. Requires a user-provided libfmod (AGENTS.md §4.7).
+# Real FMOD backend. Requires a user-provided libfmod (AGENTS.md 4.7).
 # When disabled, NullBackend (silent) is used; the mixing logic stays fully usable.
 fmod = ["dep:libloading"]
 

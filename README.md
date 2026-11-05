@@ -78,27 +78,27 @@ cargo run -p releste-content-pipeline -- --source references/Celeste/Content --o
 
 | Crate                    | Responsibility                                       | Status              |
 | ------------------------ | ---------------------------------------------------- | ------------------- |
-| `crates/math`            | fixed-point `Fx` (16.16), `Vec2`, `Rect`             | ✅                  |
-| `crates/kernel`          | `Service`, `EventBus`, `FrameId`, main loop          | ✅                  |
-| `crates/world`           | ECS, stable entity IDs, Schema, overlap resolution   | ✅                  |
-| `crates/map`             | `.map` binary format (version header), diff          | ✅                  |
-| `crates/reload`          | FileWatcher (debounce), Patch, rollback              | ✅                  |
-| `crates/input`           | virtual buttons, edge detection, input buffering     | ✅                  |
-| `crates/script`          | `CutsceneBridge`, `SimCommand` queue                 | ✅                  |
-| `crates/render`          | camera, atlases, batching, wgpu backend              | ✅                  |
-| `crates/audio`           | bus mixing, same-frame dedup, priority preemption, FMOD backend | ✅       |
-| `crates/net-client`      | collaboration protocol, carry state machine, session interpolation | ✅ |
-| `crates/net-server`      | pure relay (does not understand map content)         | ✅                  |
-| `crates/plugin-host`     | `.so` plugin loader: manifest, Fiber, scope, registry, ABI | ✅             |
-| `crates/game`            | the `releste` binary: window loop, sim, plugin boot, map hot-reload | ◐ |
-| `crates/editor`          | egui editor, auto-generated Schema panels, undo stack | ✅                 |
-| `tools/content-pipeline` | vanilla assets -> engine formats                     | ✅                  |
-| `plugins-src/clock`      | sample standalone plugin (cdylib built against the ABI) | ✅               |
+| `crates/math`            | fixed-point `Fx` (16.16), `Vec2`, `Rect`             | yes                  |
+| `crates/kernel`          | `Service`, `EventBus`, `FrameId`, main loop          | yes                  |
+| `crates/world`           | ECS, stable entity IDs, Schema, overlap resolution   | yes                  |
+| `crates/map`             | `.map` binary format (version header), diff          | yes                  |
+| `crates/reload`          | FileWatcher (debounce), Patch, rollback              | yes                  |
+| `crates/input`           | virtual buttons, edge detection, input buffering     | yes                  |
+| `crates/script`          | `CutsceneBridge`, `SimCommand` queue                 | yes                  |
+| `crates/render`          | camera, atlases, batching, wgpu backend              | yes                  |
+| `crates/audio`           | bus mixing, same-frame dedup, priority preemption, FMOD backend | yes       |
+| `crates/net-client`      | collaboration protocol, carry state machine, session interpolation | yes |
+| `crates/net-server`      | pure relay (does not understand map content)         | yes                  |
+| `crates/plugin-host`     | `.so` plugin loader: manifest, Fiber, scope, registry, ABI | yes             |
+| `crates/game`            | the `releste` binary: window loop, sim, plugin boot, map hot-reload | [~] |
+| `crates/editor`          | egui editor, auto-generated Schema panels, undo stack | yes                 |
+| `tools/content-pipeline` | vanilla assets -> engine formats                     | yes                  |
+| `plugins-src/clock`      | sample standalone plugin (cdylib built against the ABI) | yes               |
 
 ## Debugging (LLM-friendly tools)
 
 Deterministic, machine-readable tools for chasing behaviour differences from
-vanilla Celeste. Full guide: `.agents/skills/releste-vanilla-audit` §6.
+vanilla Celeste. Full guide: `.agents/skills/releste-vanilla-audit` 6.
 
 ```bash
 # Per-tick player trace (JSONL, self-describing banner, px/s alongside px/tick)
@@ -115,7 +115,7 @@ cargo run -p releste-game --example citation_audit -- --coverage
 cargo run -p releste-game --example citation_audit -- --find "private void ClimbHop"
 ```
 
-Scenarios live in `crates/game/tests/scenarios/` — expectations must be
+Scenarios live in `crates/game/tests/scenarios/` - expectations must be
 derivable from `references/pureCeleste.cs` (cite the line), not copied from
 whatever the engine currently prints.
 
@@ -153,13 +153,13 @@ Get `libfmod.so` yourself from <https://www.fmod.com/download> and point
 
 ## FMOD support
 
-No FMOD binary is vendored (AGENTS.md §4.7). With the `fmod` feature enabled:
+No FMOD binary is vendored (AGENTS.md 4.7). With the `fmod` feature enabled:
 
 - **At build time**: `crates/audio/build.rs` probes for the system library and,
   if it is missing, fails with the message format AGENTS.md specifies. Set
   `RELESTE_FMOD_ALLOW_MISSING=1` to skip the probe.
 - **At run time**: `FmodBackend::new` opens the library with `libloading` and
-  **identifies the API generation from its symbols** — the three generations
+  **identifies the API generation from its symbols** - the three generations
   have mutually incompatible ABIs, and getting it wrong fails silently:
 
   | Generation      | Key symbol                  |
@@ -209,9 +209,9 @@ against `references/Celeste/lib64/`:
 
 | Library                     | Architecture | Generation  | Usable           |
 | --------------------------- | ------------ | ----------- | ---------------- |
-| `lib64/libfmodstudio.so.10` | x86-64       | Studio      | ✅               |
-| `lib64/libfmod.so.10`       | x86-64       | Ex / low-level | ✅            |
-| `lib/libfmod.so.10` (32-bit)| i386         | 3.x         | ❌ see above     |
+| `lib64/libfmodstudio.so.10` | x86-64       | Studio      | yes               |
+| `lib64/libfmod.so.10`       | x86-64       | Ex / low-level | yes            |
+| `lib/libfmod.so.10` (32-bit)| i386         | 3.x         | no see above     |
 
 The complete sequence exercised with `libfmodstudio.so.10`:
 
@@ -253,16 +253,16 @@ LD_LIBRARY_PATH="$PWD/.fmod" \
 The `lua` feature enables mlua + vendored LuaJIT (which needs `make` at build
 time).
 
-Scripts **cannot touch physics state directly** (AGENTS.md §4.5): `world.*` /
+Scripts **cannot touch physics state directly** (AGENTS.md 4.5): `world.*` /
 `camera.*` / `audio.*` / `spawn` / `set_player_state` only push `SimCommand`
 values onto a queue, which is handed to `CutsceneBridge` once the chunk finishes
 and consumed by the simulation on the next frame.
 
 See [`maps/example_cutscene.lua`](maps/example_cutscene.lua).
 
-## Crunch / `.data` payloads (AGENTS.md §13 TODO)
+## Crunch / `.data` payloads (AGENTS.md 13 TODO)
 
-The vanilla `.data` payloads are **not Crunch** — Monocle's `Crunch*` branches
+The vanilla `.data` payloads are **not Crunch** - Monocle's `Crunch*` branches
 actually read `.png`. They are per-command **pixel RLE**, and
 `tools/content-pipeline/src/data.rs` decodes the *packed* atlas pages
 (`AtlasData.Packer`) to PNG at build time, so those render directly. The

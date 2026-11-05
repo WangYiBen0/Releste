@@ -5,11 +5,11 @@ edition.workspace = true
 
 [features]
 default = []
-# Lua 过场脚本层（mlua + vendored LuaJIT）。
+# Lua cutscene scripting layer (mlua + vendored LuaJIT).
 #
-# 需要 `make` 与 C 工具链来编译 vendored LuaJIT。环境若缺少
-# `make`，保持此 feature 关闭：`CutsceneBridge` 与 `SimCommand`
-# 仍然可用，仿真层不依赖 Lua。
+# Requires `make` and a C toolchain to build vendored LuaJIT. If the
+# environment lacks `make`, keep this feature off: `CutsceneBridge` and
+# `SimCommand` remain usable, and the simulation layer does not depend on Lua.
 lua = ["dep:mlua"]
 
 [dependencies]

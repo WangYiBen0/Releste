@@ -1,7 +1,8 @@
-//! `releste-kernel`: 引擎内核。
+//! `releste-kernel`: the engine kernel.
 //!
-//! 只认识 `Service` trait、`EventBus`、`FrameId`。
-//! **不能**依赖任何业务 crate（`world`、`render`、`audio`、`script`）。
+//! It only knows the `Service` trait, `EventBus`, and `FrameId`.
+//! It **must not** depend on any business crate (`world`, `render`, `audio`,
+//! `script`).
 
 #![deny(warnings)]
 

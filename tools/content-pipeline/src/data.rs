@@ -1,77 +1,77 @@
-//! `Celeste .data` 纹理解码。
+//! `Celeste .data` texture decoding.
 //!
-//! # 源格式
+//! # Source format
 //!
-//! 此前本工具把 `.data` 当作 Crunch 压缩——**那是错的**。Monocle 里叫
-//! `Crunch*` 的分支实际读的是 `.png`；`.data` 属于 `AtlasDataFormat.Packer`
-//! /`PackerNoAtlas`，是一种逐命令的**像素 RLE**：
+//! This tool previously treated `.data` as Crunch-compressed -- **that was wrong**. The Monocle branch
+//! called `Crunch*` actually reads a `.png`; `.data` belongs to `AtlasDataFormat.Packer`
+//! /`PackerNoAtlas` and is a per-command **pixel RLE**:
 //!
 //! ```text
 //! i32 le  width
 //! i32 le  height
 //! u8      mode
-//! 重复以下命令，直到正好写出 width*height 个像素：
-//!   u8 count                                  # 本条命令覆盖的像素数（1..=255）
-//!   mode == 1（带 alpha）：
+//! Repeat the following command until exactly width*height pixels have been written:
+//!   u8 count                                  # pixels covered by this command (1..=255)
+//!   mode == 1 (with alpha):
 //!     u8 a
-//!     a > 0 → [u8 b][u8 g][u8 r]              # 5 字节：(r,g,b,a) × count
-//!     a == 0 →                               # 2 字节：(0,0,0,0) × count
-//!   mode != 1（不透明）：
-//!     [u8 b][u8 g][u8 r]                      # 4 字节：(r,g,b,255) × count
+//!     a > 0 -> [u8 b][u8 g][u8 r]             # 5 bytes: (r,g,b,a) x count
+//!     a == 0 ->                               # 2 bytes: (0,0,0,0) x count
+//!   mode != 1 (opaque):
+//!     [u8 b][u8 g][u8 r]                      # 4 bytes: (r,g,b,255) x count
 //! ```
 //!
-//! 输出为行主序、自上而下的 **预乘 alpha** RGBA8，正好 `width*height*4`
-//! 字节；命令流必须被**完全**消费，多一字节少一字节都算损坏。
+//! Output is row-major, top-down **premultiplied alpha** RGBA8, exactly `width*height*4`
+//! bytes; the command stream must be consumed **completely**; one byte too many or too few counts as corruption.
 //!
-//! 原版把这张位图原样喂给 `Texture2D(..).SetData(..)`（`SurfaceFormat.Color`
-//! = RGBA8），所以预乘是内容本身的一部分。转成 PNG 时保留原样，渲染端用
-//! `PREMULTIPLIED_ALPHA_BLENDING` 即可还原。
+//! Vanilla feeds this bitmap straight to `Texture2D(..).SetData(..)` (`SurfaceFormat.Color`
+//! = RGBA8), so premultiplication is part of the content itself. Keep it as-is when converting to PNG; the
+//! renderer can restore it with `PREMULTIPLIED_ALPHA_BLENDING`.
 //!
-//! 参考：`references/pureCeleste.cs:25469-25547`（`.data` 分支）。
+//! Reference: `references/pureCeleste.cs:25469-25547` (the `.data` branch).
 //!
-//! # 归属
-//! 原始格式只允许出现在 `tools/content-pipeline`（AGENTS.md §4.6 / §12）：
-//! 离线解码成 PNG，运行时永远看不到 `.data`。
+//! # Provenance
+//! Original formats are only allowed in `tools/content-pipeline` (AGENTS.md 4.6 / 12):
+//! decode to PNG offline, so the runtime never sees `.data`.
 
 use std::path::Path;
 
 use crate::error::PipelineError;
 
-/// 头部长度：`[i32 width][i32 height][u8 mode]`。
+/// Header length: `[i32 width][i32 height][u8 mode]`.
 const HEADER: usize = 9;
 
-/// 与原版静态缓冲区（64 MiB）一致的像素上限。
+/// Pixel cap matching vanilla's static buffer (64 MiB).
 const MAX_PIXELS: usize = 64 * 1024 * 1024 / 4;
 
-/// 解码后的单张纹理。
+/// One decoded texture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedTexture {
-    /// 像素宽度。
+    /// Pixel width.
     pub width: u32,
-    /// 像素高度。
+    /// Pixel height.
     pub height: u32,
-    /// 逐字节 RGBA8，行主序、自上而下、**预乘 alpha**。
+    /// Byte-by-byte RGBA8, row-major, top-down, **premultiplied alpha**.
     pub rgba: Vec<u8>,
 }
 
 impl DecodedTexture {
-    /// 像素总数。
+    /// Total pixel count.
     pub fn pixels(&self) -> usize {
         (self.width as usize) * (self.height as usize)
     }
 }
 
-/// 解码一个 `.data` 文件。
+/// Decode one `.data` file.
 ///
-/// I/O 错误与格式错误都会带上下文返回，绝不 panic。
+/// I/O errors and format errors are both returned with context; this never panics.
 pub fn decode_file(path: &Path) -> Result<DecodedTexture, PipelineError> {
     let bytes = std::fs::read(path).map_err(|e| PipelineError::io(path.display(), e))?;
     decode(&bytes, &path.display().to_string())
 }
 
-/// 解码 `.data` 字节流。
+/// Decode a `.data` byte stream.
 ///
-/// `where_` 只用于错误信息（通常是文件路径）。
+/// `where_` is only used in error messages (usually the file path).
 pub fn decode(bytes: &[u8], where_: &str) -> Result<DecodedTexture, PipelineError> {
     if bytes.len() < HEADER {
         return Err(PipelineError::parse(
@@ -119,8 +119,8 @@ pub fn decode(bytes: &[u8], where_: &str) -> Result<DecodedTexture, PipelineErro
             as usize;
         pos += 1;
 
-        // 先把这条命令的字节读完，再写像素：这样 `count == 0` 只是"不画"，
-        // 而不会让 `pos` 卡在原地造成死循环。
+        // Read all the bytes of this command before writing pixels: this way `count == 0` just means "draw nothing"
+        // instead of leaving `pos` stuck in place and causing an infinite loop.
         let pixel = if mode == 1 {
             let alpha = *bytes
                 .get(pos)
@@ -133,7 +133,7 @@ pub fn decode(bytes: &[u8], where_: &str) -> Result<DecodedTexture, PipelineErro
                     .get(pos..pos + 3)
                     .ok_or_else(|| PipelineError::parse("data", where_, "truncated RGB triple"))?;
                 pos += 3;
-                // 载荷顺序是 B,G,R
+                // The payload order is B,G,R
                 [bgr[2], bgr[1], bgr[0], alpha]
             }
         } else {
@@ -184,7 +184,7 @@ pub fn decode(bytes: &[u8], where_: &str) -> Result<DecodedTexture, PipelineErro
 mod tests {
     use super::*;
 
-    /// 构造 mode==1（带 alpha）流。
+    /// Build a mode==1 (with alpha) stream.
     fn pack_alpha(width: i32, height: i32, runs: &[(u8, u8, u8, u8, u8)]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&width.to_le_bytes());
@@ -200,7 +200,7 @@ mod tests {
         out
     }
 
-    /// 构造 mode==0（不透明）流。
+    /// Build a mode==0 (opaque) stream.
     fn pack_opaque(width: i32, height: i32, runs: &[(u8, u8, u8, u8)]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&width.to_le_bytes());
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn decodes_opaque_run() {
-        // 2x2 全部同色
+        // 2x2, all the same color
         let bytes = pack_opaque(2, 2, &[(4, 0x10, 0x20, 0x30)]);
         let tex = decode(&bytes, "<test>").unwrap();
         assert_eq!((tex.width, tex.height), (2, 2));
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn decodes_alpha_run_and_transparency() {
-        // 3 像素：不透明红 ×2，透明 ×1
+        // 3 pixels: opaque red x2, transparent x1
         let bytes = pack_alpha(3, 1, &[(2, 0xaa, 0x01, 0x02, 0x03), (1, 0, 0, 0, 0)]);
         let tex = decode(&bytes, "<test>").unwrap();
         assert_eq!(
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_command_stream() {
-        // 声称 4 个像素但只给了 1 个命令的头部
+        // Claims 4 pixels but only supplies the header of 1 command
         let bytes = pack_alpha(2, 2, &[(2, 0xff, 0, 0, 0)]);
         assert!(decode(&bytes, "<test>").is_err());
     }
@@ -263,9 +263,9 @@ mod tests {
 
     #[test]
     fn zero_count_command_is_consumed_without_writing() {
-        // count == 0 后面必须继续读，直到把 4 个像素画完
+        // After count == 0 we must keep reading until all 4 pixels are drawn
         let mut bytes = pack_alpha(2, 2, &[(0, 0xff, 1, 2, 3)]);
-        // 追加真正画满 4 像素的命令
+        // Append a command that actually draws all 4 pixels
         bytes.push(4);
         bytes.push(0xff);
         bytes.extend_from_slice(&[1, 2, 3]);
@@ -274,8 +274,8 @@ mod tests {
         assert_eq!(&tex.rgba[0..4], &[3, 2, 1, 0xff]);
     }
 
-    /// 用真实转换产物做黄金校验：`assets/` 是构建输入（gitignored），
-    /// 缺失时跳过，`nix build .#checks.unit-tests` 仍能过。
+    /// Golden-check against the real conversion output: `assets/` is a build input (gitignored),
+    /// skipped when absent, and `nix build .#checks.unit-tests` still passes.
     #[test]
     fn decodes_real_gameplay_page_when_present() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!((tex.width, tex.height), (4096, 4096));
         assert_eq!(tex.rgba.len(), 4096 * 4096 * 4);
 
-        // 预乘不变式：RGB 是按 alpha 缩过的，所以任意通道都不得超过 A。
+        // Premultiplied invariant: RGB is scaled by alpha, so no channel may exceed A.
         let rgba = &tex.rgba;
         let (mut violations, mut i) = (0usize, 0usize);
         while i + 3 < rgba.len() {

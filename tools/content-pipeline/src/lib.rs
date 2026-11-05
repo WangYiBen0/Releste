@@ -1,18 +1,18 @@
-//! 资源管线：原版 Celeste 资源 → 引擎格式。
+//! Asset pipeline: vanilla Celeste assets -> engine format.
 //!
-//! # 核心不变量（AGENTS.md §4.6）
-//! **原版格式只在构建期出现。** 运行时 `crates/` 里不能出现
-//! `.bin` / `.xnb` / `.meta` 的解析代码——只有本工具可以。
+//! # Core invariant (AGENTS.md 4.6)
+//! **Original formats appear only at build time.** Runtime `crates/` must not contain
+//! parsing code for `.bin` / `.xnb` / `.meta` -- only this tool may.
 //!
-//! # 转换映射（AGENTS.md §12）
+//! # Conversion map (AGENTS.md 12)
 //! ```text
 //! assets-src/                        assets/
-//!   Graphics/Atlases/    →             atlas/*.atlas
-//!   Graphics/ForegroundTiles.xml →     atlas/tilesets.toml
-//!   Maps/*.bin           →             maps/*.map
-//!   Dialog/*.txt         →             dialog/*.toml
-//!   Fonts/*.fnt          →             fonts/*.font
-//!   FMOD/Desktop/*.bank  →             audio/*.bank（原样复制）
+//!   Graphics/Atlases/    ->            atlas/*.atlas
+//!   Graphics/ForegroundTiles.xml ->    atlas/tilesets.toml
+//!   Maps/*.bin           ->            maps/*.map
+//!   Dialog/*.txt         ->            dialog/*.toml
+//!   Fonts/*.fnt          ->            fonts/*.font
+//!   FMOD/Desktop/*.bank  ->            audio/*.bank (copied verbatim)
 //! ```
 
 #![deny(warnings)]

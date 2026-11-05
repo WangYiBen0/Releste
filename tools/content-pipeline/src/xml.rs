@@ -1,52 +1,52 @@
-//! 最小 XML 扫描器：只覆盖 `ForegroundTiles.xml` 这一类机器生成的文件。
+//! Minimal XML scanner: covers only machine-generated files like `ForegroundTiles.xml`.
 //!
-//! 这个子集非常规则：`<Tileset id path copy ignores>` + `<set mask tiles/>`，
-//! 没有嵌套超过两层、没有 CDATA、没有实体引用。这里不引第三方 XML 库
-//! （AGENTS.md §15.1：不在 `[workspace.dependencies]` 里的依赖要先讨论），
-//! 换成一个小扫描器 + golden 测试钉住真实文件。
+//! The subset is very regular: `<Tileset id path copy ignores>` + `<set mask tiles/>`,`
+//! never nested more than two levels, no CDATA, no entity references. We do not pull in a third-party XML
+//! library (AGENTS.md 15.1: dependencies not in `[workspace.dependencies]` must be discussed first);
+//! instead a small scanner plus golden tests pin the real file.
 //!
-//! 已知限制（都是这一类文件的边界，写在这里）：
-//! - 属性值必须带引号（单引号或双引号）。
-//! - 不支持 `>` 出现在属性值里。
-//! - 属性值以 `/` 结尾会被误判成自闭合标签。
-//! - 注释 `<!-- ... -->` 整段跳过。
+//! Known limitations (all boundaries of this family of files, listed here):
+//! - Attribute values must be quoted (single or double quotes).
+//! - A `>` inside an attribute value is not supported.
+//! - An attribute value ending in `/` is misread as a self-closing tag.
+//! - Comments `<!-- ... -->` are skipped whole.
 
-/// 一个 `<Tileset>` 元素：属性 + `<set>` 子元素。
+/// A `<Tileset>` element: attributes + `<set>` children.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TilesetElement {
-    /// `id` 属性（tileset id，单字符）。
+    /// The `id` attribute (tileset id, single character).
     pub id: String,
-    /// `path` 属性（tileset 纹理路径）。
+    /// The `path` attribute (tileset texture path).
     pub path: Option<String>,
-    /// `copy` 属性（继承哪个 tileset 的定义）。
+    /// The `copy` attribute (which tileset's definition to inherit).
     pub copy: Option<String>,
-    /// `ignores` 属性（不视为固体的 tile id 列表）。
+    /// The `ignores` attribute (tile ids not treated as solid).
     pub ignores: Option<String>,
-    /// `<set mask tiles/>` 子元素。
+    /// `<set mask tiles/>` children.
     pub sets: Vec<SetElement>,
 }
 
-/// 一个 `<set>` 子元素。
+/// A `<set>` child element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetElement {
-    /// `mask` 属性（`x0x-111-x1x` 或 `center` / `padding`）。
+    /// The `mask` attribute (`x0x-111-x1x` or `center` / `padding`).
     pub mask: String,
-    /// `tiles` 属性（`0,0;1,0;2,0`）。
+    /// The `tiles` attribute (`0,0;1,0;2,0`).
     pub tiles: String,
 }
 
-/// 解析失败。
+/// Parse failure.
 #[derive(Debug, thiserror::Error)]
 pub enum XmlError {
-    /// 标签没有闭合。
+    /// A tag was not closed.
     #[error("unterminated tag at byte {0}")]
     Unterminated(usize),
-    /// 属性没有值。
+    /// An attribute has no value.
     #[error("attribute without a value at byte {0}")]
     MalformedAttribute(usize),
 }
 
-/// 解析出文档里的全部 `<Tileset>` 元素（按出现顺序）。
+/// Parse all `<Tileset>` elements in the document (in order of appearance).
 pub fn parse_tilesets(xml: &str) -> Result<Vec<TilesetElement>, XmlError> {
     let bytes = xml.as_bytes();
     let mut out = Vec::new();
@@ -72,7 +72,7 @@ pub fn parse_tilesets(xml: &str) -> Result<Vec<TilesetElement>, XmlError> {
     Ok(out)
 }
 
-/// 跳过一段注释，返回 `-->` 之后的下标。
+/// Skip one comment and return the index after `-->`.
 fn skip_comment(xml: &str, start: usize) -> Result<usize, XmlError> {
     let end = xml[start..]
         .find("-->")
@@ -82,8 +82,8 @@ fn skip_comment(xml: &str, start: usize) -> Result<usize, XmlError> {
     Ok(end)
 }
 
-/// 解析一个 `<Tileset ...> ... </Tileset>`（或自闭合的 `<Tileset .../>`），
-/// 返回元素与结束后的下标。
+/// Parse one `<Tileset ...> ... </Tileset>` (or self-closing `<Tileset .../>`),
+/// returning the element and the index after its end.
 fn parse_tileset(xml: &str, start: usize) -> Result<(TilesetElement, usize), XmlError> {
     let open_end = xml[start..]
         .find('>')
@@ -98,7 +98,7 @@ fn parse_tileset(xml: &str, start: usize) -> Result<(TilesetElement, usize), Xml
     let copy = attribute(attributes, "copy").map(str::to_string);
     let ignores = attribute(attributes, "ignores").map(str::to_string);
 
-    // 自闭合（`<Tileset id="n" copy="z" path="scifi"/>`）：没有 body。
+    // Self-closing (`<Tileset id="n" copy="z" path="scifi"/>`): no body.
     if attributes.ends_with('/') {
         return Ok((
             TilesetElement {
@@ -143,7 +143,7 @@ fn parse_tileset(xml: &str, start: usize) -> Result<(TilesetElement, usize), Xml
     Ok((element, close + "</Tileset>".len()))
 }
 
-/// 从一段属性文本里取 `name="value"`（或 `name='value'`）。
+/// Extract `name="value"` (or `name='value'`) from an attribute string.
 fn attribute<'a>(attributes: &'a str, name: &str) -> Option<&'a str> {
     let pattern = format!("{name}=");
     let at = attributes.find(&pattern)?;
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn skips_comments_containing_tags() {
-        // 注释里出现 `<Tileset` 不会被当成元素。
+        // A `<Tileset` inside a comment is not treated as an element.
         let xml = r#"<Data>
   <!-- <Tileset id="ghost" path="nope"/> -->
   <Tileset id="1" path="dirt"/>
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn self_closing_tilesets_have_no_sets() {
-        // 文件最后一个 tileset 就是自闭合的（真实文件钉住这个形状）。
+        // The last tileset in the file is self-closing (the real file pins this shape).
         let xml = r#"<Data>
   <Tileset id="z" path="template">
     <set mask="x0x-111-x1x" tiles="0,0"/>

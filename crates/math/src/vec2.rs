@@ -1,4 +1,4 @@
-//! 二维向量 — 固定点坐标。
+//! 2D vector -- fixed-point coordinates.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -6,7 +6,7 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssi
 
 use super::Fx;
 
-/// 定点二维向量。
+/// Fixed-point 2D vector.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Vec2 {
     pub x: Fx,
@@ -14,24 +14,24 @@ pub struct Vec2 {
 }
 
 impl Vec2 {
-    /// 零向量。
+    /// Zero vector.
     pub const ZERO: Vec2 = Vec2 {
         x: Fx::zero(),
         y: Fx::zero(),
     };
 
-    /// 单位向量 (1, 1)。
+    /// Unit vector (1, 1).
     pub const ONE: Vec2 = Vec2 {
         x: Fx::one(),
         y: Fx::one(),
     };
 
-    /// 构造新向量。
+    /// Construct a new vector.
     pub const fn new(x: Fx, y: Fx) -> Self {
         Vec2 { x, y }
     }
 
-    /// 从 `f32` 构造（仅在加载非仿真数据时使用）。
+    /// Construct from `f32` (only used when loading non-simulation data).
     pub fn from_f32s(x: f32, y: f32) -> Self {
         Vec2 {
             x: Fx::from_f32(x),
@@ -39,12 +39,12 @@ impl Vec2 {
         }
     }
 
-    /// 转换为 `(f32, f32)`。
+    /// Convert to `(f32, f32)`.
     pub fn to_f32s(self) -> (f32, f32) {
         (self.x.to_f32(), self.y.to_f32())
     }
 
-    /// 分量式最小。
+    /// Component-wise minimum.
     pub fn component_min(self, other: Vec2) -> Vec2 {
         Vec2 {
             x: self.x.min(other.x),
@@ -52,7 +52,7 @@ impl Vec2 {
         }
     }
 
-    /// 分量式最大。
+    /// Component-wise maximum.
     pub fn component_max(self, other: Vec2) -> Vec2 {
         Vec2 {
             x: self.x.max(other.x),
@@ -60,42 +60,48 @@ impl Vec2 {
         }
     }
 
-    /// 平方长度。
+    /// Squared length.
     ///
-    /// **会溢出**：`Fx` 是 16.16，分量的绝对值超过约 181 时 `x*x`
-    /// 就装不下 `i32` 而回绕。只用于确定量级已知的短向量（速度、
-    /// 朝向）。要比较任意两点的远近请用 [`Vec2::distance_sq`]。
+    /// **Can overflow**: `Fx` is 16.16, so once a component's absolute value
+    /// exceeds about 181, `x*x` no longer fits in `i32` and wraps around. Only
+    /// use it for short vectors of known magnitude (velocity, facing). To
+    /// compare the distance between arbitrary two points, use
+    /// [`Vec2::distance_sq`].
     pub fn len_sq(self) -> Fx {
         self.x * self.x + self.y * self.y
     }
 
-    /// 两点之间的平方距离，用 `i64` 承载，**不会回绕**。
+    /// Squared distance between two points, carried in `i64`, **cannot wrap**.
     ///
-    /// 返回值的单位是「定点位²」：`Fx::from_bits(v)` 才是 `Fx` 单位的
-    /// 平方距离。之所以不能返回 `Fx`：`Fx` 的分量上限是 32767，
-    /// 意味着任何超过 181px 的点对平方距离都会被截断，而"谁更近"
-    /// 这类比较在地图尺度上（数百上千像素）全靠它 —— 回绕会让远点
-    /// 因为符号翻转被判成更近。
+    /// The return value is in units of "fixed-point bits^2": only
+    /// `Fx::from_bits(v)` gives the squared distance in `Fx` units. The reason
+    /// it cannot return `Fx`: the maximum component of `Fx` is 32767, meaning
+    /// the squared distance of any point pair beyond 181px would be truncated,
+    /// while comparisons like "which is closer" at map scale (hundreds to
+    /// thousands of pixels) depend entirely on it -- wrapping would make a
+    /// farther point be judged closer because the sign flipped.
     ///
-    /// 用来做最近点 / 最近房间选择，以及任何需要单调距离的场景。
+    /// Used for nearest-point / nearest-room selection and any scenario that
+    /// needs a monotonic distance.
     pub fn distance_sq(self, other: Vec2) -> i64 {
         let dx = (self.x.bits() as i64) - (other.x.bits() as i64);
         let dy = (self.y.bits() as i64) - (other.y.bits() as i64);
         dx * dx + dy * dy
     }
 
-    /// 点积。
+    /// Dot product.
     pub fn dot(self, other: Vec2) -> Fx {
         self.x * other.x + self.y * other.y
     }
 
-    /// 取绝对值（每个分量）。
-    /// 各分量向下取整（XNA `Vector2.Floor()`；原版头发渲染用它把发根
-    /// 吸附到整数像素，`pureCeleste.cs:111179` `Nodes[0] = Nodes[0].Floor()`）。
+    /// Floor each component (XNA `Vector2.Floor()`; vanilla hair rendering
+    /// uses it to snap the hair root to integer pixels,
+    /// `pureCeleste.cs:111179` `Nodes[0] = Nodes[0].Floor()`).
     pub fn floor(self) -> Vec2 {
         Vec2::new(Fx::from_int(self.x.floor()), Fx::from_int(self.y.floor()))
     }
 
+    /// Absolute value (of each component).
     pub fn abs(self) -> Vec2 {
         Vec2 {
             x: self.x.abs(),

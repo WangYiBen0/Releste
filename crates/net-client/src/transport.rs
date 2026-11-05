@@ -1,9 +1,10 @@
-//! 传输抽象。
+//! Transport abstraction.
 //!
-//! [`Transport`] 把"如何发消息"与"发什么消息"解耦：
-//! - [`memory::pair`]：进程内互联，用于 headless 端到端测试。
-//! - `udp` feature：laminar 半可靠 UDP。
-//! - `quic` feature：quinn QUIC。
+//! [`Transport`] decouples "how messages are sent" from "what messages are
+//! sent":
+//! - [`memory::pair`]: in-process interconnect, for headless end-to-end tests.
+//! - `udp` feature: laminar semi-reliable UDP.
+//! - `quic` feature: quinn QUIC.
 
 use crate::protocol::{Down, Up};
 
@@ -11,18 +12,18 @@ pub mod memory;
 
 pub use memory::{pair, MemoryServerTransport, MemoryTransport};
 
-/// 传输层收到的事件。
+/// An event received by the transport layer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransportEvent {
-    /// 已连接（握手完成）。
+    /// Connected (handshake complete).
     Connected,
-    /// 收到一条服务器消息。
+    /// A server message was received.
     Message(Down),
-    /// 连接断开（含原因）。
+    /// The connection was lost (with a reason).
     Disconnected(String),
 }
 
-/// 传输错误。
+/// Transport error.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     #[error("transport send failed: {0}")]
@@ -35,18 +36,20 @@ pub enum TransportError {
     VersionMismatch { local: u32, remote: u32 },
 }
 
-/// 客户端传输接口。
+/// Client transport interface.
 ///
-/// 实现者负责把 [`Up`] 编码后发出，把收到的字节解码为 [`Down`]。
+/// The implementor is responsible for encoding [`Up`] before sending and for
+/// decoding received bytes into [`Down`].
 pub trait Transport: Send {
-    /// 发送一条上行消息。
+    /// Send an upstream message.
     ///
-    /// 实现可自行决定可靠性等级（化身不可靠、同步事件可靠）。
+    /// The implementation may choose its own reliability level (avatars
+    /// unreliable, sync events reliable).
     fn send(&mut self, msg: Up) -> Result<(), TransportError>;
 
-    /// 非阻塞拉取所有已到达的事件。
+    /// Non-blocking pull of all events that have arrived.
     fn poll(&mut self) -> Vec<TransportEvent>;
 
-    /// 传输名称（日志用）。
+    /// Transport name (for logging).
     fn name(&self) -> &'static str;
 }

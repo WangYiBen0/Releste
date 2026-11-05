@@ -1,27 +1,29 @@
-//! `clock` — 样例 `.so` 插件。
+//! `clock` - a sample `.so` plugin.
 //!
-//! 每过一秒游戏时间（60 个固定 tick）就通过 host 的 `log` 回调报一声，
-//! 用来演示 Appendix C 的插件约定：一个 `.so` 只导出 `releste_plugin_v1`，
-//! 它返回一个静态 `PluginV1`；host 需要的一切都从那张表里拿。
+//! Once per second of game time (60 fixed ticks) it calls the host's `log`
+//! callback, which demonstrates the Appendix C plugin contract: a `.so` exports
+//! exactly one symbol, `releste_plugin_v1`, which returns a static `PluginV1`;
+//! everything the host needs comes from that table.
 //!
-//! 这个 crate **不依赖主 workspace**（AGENTS.md §15.1），也不依赖任何
-//! 第三方 crate —— `HostApi` / `PluginV1` 是手写的 `#[repr(C)]` 镜像。
-//! host 和插件可以由不同的编译器编译，Rust 类型绝不跨界。
+//! This crate has **no dependency on the main workspace** (AGENTS.md 15.1) and
+//! none on third-party crates - `HostApi` / `PluginV1` are hand-written
+//! `#[repr(C)]` mirrors. Host and plugin may be built by different compilers;
+//! Rust types never cross the boundary.
 //!
-//! 构建（见 `README.md`）：
+//! Build (see `README.md`):
 //!
 //! ```text
 //! cargo build --release --manifest-path plugins-src/clock/Cargo.toml
 //! cp plugins-src/clock/target/release/libclock.so plugins/clock/clock.so
 //! ```
 
-#![allow(dead_code)] // 镜像 host 的完整 vtable；插件只用其中几个字段
+#![allow(dead_code)] // mirrors the host's full vtable; the plugin uses a few fields
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-/// 日志级别，镜像 `releste_plugin_host::abi::LogLevel` 的数值。
+/// Log levels mirroring the numeric values of `releste_plugin_host::abi::LogLevel`.
 mod level {
     pub const TRACE: u32 = 0;
     pub const DEBUG: u32 = 1;
@@ -30,13 +32,14 @@ mod level {
     pub const ERROR: u32 = 4;
 }
 
-/// 本插件说的 ABI 版本；host 不认识就拒载，绝不会调用任何回调。
+/// The ABI version this plugin speaks; a host that does not know it refuses to
+/// load and never calls any callback.
 const ABI: u32 = 1;
 
-/// 每秒报一次：60 个固定 tick。
+/// Report once per second: 60 fixed ticks.
 const TICKS_PER_SECOND: u64 = 60;
 
-/// host 递给插件的函数表（`#[repr(C)]` 镜像）。
+/// The function table the host hands to the plugin (`#[repr(C)]` mirror).
 #[repr(C)]
 pub struct HostApi {
     abi: u32,
@@ -53,7 +56,7 @@ pub struct HostApi {
     entity_kind_id: unsafe extern "C" fn(user_data: *mut c_void, name: *const c_char) -> u32,
 }
 
-/// 插件导出的 vtable（`#[repr(C)]` 镜像 `PluginV1`）。
+/// The vtable the plugin exports (`#[repr(C)]` mirror of `PluginV1`).
 #[repr(C)]
 pub struct PluginV1 {
     abi: u32,
@@ -64,7 +67,7 @@ pub struct PluginV1 {
     unload: Option<unsafe extern "C" fn(api: *const HostApi) -> i32>,
 }
 
-/// `#[repr(C)]` 静态里有裸指针，手动声明 `Sync`。
+/// A `#[repr(C)]` static holding raw pointers: `Sync` is declared by hand.
 struct VTable(PluginV1);
 unsafe impl Sync for VTable {}
 
@@ -78,17 +81,18 @@ static VTABLE: VTable = VTable(PluginV1 {
     unload: Some(unload),
 });
 
-/// `load()` 递进来的 api 指针。`tick` 收不到它，只能存下来；
-/// host 保证它在载入期间一直有效，卸载前 `unload()` 会先跑。
+/// The api pointer handed in by `load()`. `tick` does not receive it, so it is
+/// stored here; the host guarantees it stays valid while loaded, and `unload()`
+/// runs before it goes away.
 static API: AtomicPtr<HostApi> = AtomicPtr::new(std::ptr::null_mut());
 
-/// host 找的唯一符号（`releste_plugin_host::abi::ENTRY_SYMBOL`）。
+/// The single symbol the host looks for (`releste_plugin_host::abi::ENTRY_SYMBOL`).
 #[no_mangle]
 pub extern "C" fn releste_plugin_v1() -> *const PluginV1 {
     &VTABLE.0
 }
 
-/// 载入边界：存下 api，报一声。返回 `0` 表示成功。
+/// Load boundary: store the api and say hello. Returning `0` means success.
 unsafe extern "C" fn load(api: *const HostApi) -> i32 {
     if api.is_null() {
         return 1;
@@ -98,7 +102,7 @@ unsafe extern "C" fn load(api: *const HostApi) -> i32 {
     0
 }
 
-/// 每个 tick 一次；每秒报一声。
+/// Once per tick; reports once per second.
 unsafe extern "C" fn tick(frame: u64) -> i32 {
     if frame % TICKS_PER_SECOND == 0 {
         say(
@@ -109,17 +113,18 @@ unsafe extern "C" fn tick(frame: u64) -> i32 {
     0
 }
 
-/// 卸载边界：报一声，然后忘掉 api。
+/// Unload boundary: say goodbye, then forget the api.
 unsafe extern "C" fn unload(_api: *const HostApi) -> i32 {
     say(level::INFO, "clock: unloaded");
     API.store(std::ptr::null_mut(), Ordering::Release);
     0
 }
 
-/// 通过 host 的 `log` 回调发一行日志。
+/// Emit one log line through the host's `log` callback.
 ///
-/// 消息里不允许有内部 NUL；有的话这条就不发了（安静地丢一行日志
-/// 比 panic 跨 FFI 边界好，AGENTS.md §15.8）。
+/// The message may not contain an interior NUL; if it does, the line is
+/// dropped (losing one log line beats panicking across an FFI boundary,
+/// AGENTS.md 15.8).
 unsafe fn say(level: u32, message: &str) {
     let api = API.load(Ordering::Acquire);
     if api.is_null() {

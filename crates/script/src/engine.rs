@@ -1,19 +1,23 @@
-//! mlua 集成：Lua 过场脚本引擎。
+//! mlua integration: the Lua cutscene scripting engine.
 //!
-//! 需要 `lua` feature（vendored LuaJIT，构建期需要 `make`）。
+//! Requires the `lua` feature (vendored LuaJIT; needs `make` at build time).
 //!
-//! # 设计
-//! Lua 只能通过命令队列影响仿真（AGENTS.md §4.5）：
+//! # Design
+//! Lua can only affect the simulation through the command queue (AGENTS.md
+//! 4.5):
 //!
-//! 1. 引擎创建 Lua 状态，并把一个 [`PendingCommands`] 挂到
-//!    `Lua` 的 app data 上。
-//! 2. `world.*` / `camera.*` / `audio.*` / `spawn` / `set_player_state`
-//!    这些函数**只**往队列里 push [`SimCommand`]，从不触碰物理状态。
-//! 3. chunk 执行完后，Rust 侧把队列取出交给 [`CutsceneBridge`]，
-//!    由仿真在下一帧消费。
+//! 1. The engine creates the Lua state and attaches a [`PendingCommands`] to
+//!    the `Lua` app data.
+//! 2. The functions `world.*` / `camera.*` / `audio.*` / `spawn` /
+//!    `set_player_state` **only** push [`SimCommand`] onto the queue; they
+//!    never touch physics state.
+//! 3. After a chunk finishes, the Rust side takes the queue and hands it to
+//!    the [`CutsceneBridge`], where the simulation consumes it on the next
+//!    frame.
 //!
-//! 因为副作用被推迟到队列消费，脚本可以随时中断 / 重放，
-//! 而不会让世界处于半更新的中间态。
+//! Because side effects are deferred until the queue is consumed, a script can
+//! be interrupted / replayed at any time without leaving the world in a
+//! half-updated intermediate state.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -23,10 +27,10 @@ use mlua::{Lua, Table};
 use crate::bridge::CutsceneBridge;
 use crate::command::{ActorKind, DurationFrames, PlayerState, SimCommand};
 
-/// Lua 侧累积的命令。
+/// Commands accumulated on the Lua side.
 ///
-/// 挂在 `Lua` 的 app data 上，API 闭包直接 push；chunk 跑完后
-/// 由 [`ScriptEngine::collect`] 一次性取走。
+/// Attached to the `Lua` app data; API closures push directly, and
+/// [`ScriptEngine::collect`] takes them all at once after the chunk finishes.
 #[derive(Default)]
 struct PendingCommands(RefCell<Vec<SimCommand>>);
 
@@ -40,7 +44,7 @@ impl PendingCommands {
     }
 }
 
-/// 脚本错误。
+/// Script error.
 #[derive(Debug, thiserror::Error)]
 pub enum ScriptError {
     #[error("lua error: {0}")]
@@ -54,17 +58,17 @@ pub enum ScriptError {
     NoQueue,
 }
 
-/// Lua 过场引擎。
+/// Lua cutscene engine.
 pub struct ScriptEngine {
     lua: Lua,
     bridge: CutsceneBridge,
 }
 
 impl ScriptEngine {
-    /// 创建并初始化 Lua 状态。
+    /// Create and initialise the Lua state.
     ///
-    /// 注册 `world` / `camera` / `audio` 等高层 API；它们只调用
-    /// 命令队列，不产生任何即时副作用。
+    /// Registers high-level APIs such as `world` / `camera` / `audio`; they
+    /// only call the command queue and produce no immediate side effects.
     pub fn new() -> Result<Self, ScriptError> {
         let lua = Lua::new();
         lua.set_app_data(PendingCommands::default());
@@ -77,17 +81,17 @@ impl ScriptEngine {
         Ok(engine)
     }
 
-    /// 命令桥（仿真侧消费）。
+    /// The command bridge (consumed by the simulation side).
     pub fn bridge(&self) -> &CutsceneBridge {
         &self.bridge
     }
 
-    /// 命令桥（可变）。
+    /// The command bridge (mutable).
     pub fn bridge_mut(&mut self) -> &mut CutsceneBridge {
         &mut self.bridge
     }
 
-    /// 加载并执行一个 Lua 脚本文件。
+    /// Load and execute a Lua script file.
     pub fn run_file(&mut self, path: &Path) -> Result<(), ScriptError> {
         let src = std::fs::read_to_string(path).map_err(|source| ScriptError::Read {
             path: path.display().to_string(),
@@ -96,7 +100,7 @@ impl ScriptEngine {
         self.run_source(&src)
     }
 
-    /// 执行 Lua 源码，并把产生的命令排入桥。
+    /// Execute Lua source and enqueue the produced commands into the bridge.
     pub fn run_source(&mut self, src: &str) -> Result<(), ScriptError> {
         self.lua.load(src).exec()?;
         for command in self.collect()? {
@@ -105,7 +109,7 @@ impl ScriptEngine {
         Ok(())
     }
 
-    /// 取出本次执行累积的命令。
+    /// Take the commands accumulated by this execution.
     pub fn collect(&self) -> Result<Vec<SimCommand>, ScriptError> {
         let pending = self
             .lua
@@ -114,17 +118,17 @@ impl ScriptEngine {
         Ok(pending.take())
     }
 
-    /// 取得命令队列的引用（供 API 闭包使用）。
+    /// Get a reference to the command queue (used by the API closures).
     fn queue(lua: &Lua) -> Result<mlua::AppDataRef<'_, PendingCommands>, mlua::Error> {
         lua.app_data_ref::<PendingCommands>()
             .ok_or_else(|| mlua::Error::runtime("Releste command queue is not initialised"))
     }
 
-    /// 注册 Lua 侧 API。
+    /// Register the Lua-side API.
     fn register_api(&mut self) -> Result<(), ScriptError> {
         let globals = self.lua.globals();
 
-        // ── world.* ──────────────────────────────────────────
+        // -- world.* ------------------------------------------
         let world = self.lua.create_table()?;
 
         // world.walk_to(actor_id, x, y, seconds)
@@ -152,7 +156,7 @@ impl ScriptEngine {
 
         globals.set("world", world)?;
 
-        // ── camera.* ─────────────────────────────────────────
+        // -- camera.* -----------------------------------------
         let camera = self.lua.create_table()?;
 
         // camera.zoom(x, y, zoom, seconds)
@@ -171,7 +175,7 @@ impl ScriptEngine {
 
         globals.set("camera", camera)?;
 
-        // ── audio.* ──────────────────────────────────────────
+        // -- audio.* ------------------------------------------
         let audio = self.lua.create_table()?;
 
         // audio.play(event, volume)
@@ -186,7 +190,7 @@ impl ScriptEngine {
 
         globals.set("audio", audio)?;
 
-        // ── 顶层函数 ─────────────────────────────────────────
+        // -- top-level functions ------------------------------
         // spawn(kind, x, y)
         globals.set(
             "spawn",
@@ -229,13 +233,15 @@ impl ScriptEngine {
             })?,
         )?;
 
-        // 便于脚本自检：读出当前已排队的命令数。
+        // Lets a script self-check: read the number of currently queued
+        // commands.
         globals.set(
             "pending_count",
             self.lua.create_function(|lua, ()| {
-                // 先把长度存进局部变量再离开作用域：
-                // 若直接把 `q.0.borrow().len()` 当块尾表达式，
-                // 临时 `Ref` 会在 `q` 之后才析构，借用不够长。
+                // Store the length in a local variable before leaving the
+                // scope: if `q.0.borrow().len()` were the block tail
+                // expression, the temporary `Ref` would be dropped after `q`,
+                // so the borrow would not live long enough.
                 let queued = {
                     let q = Self::queue(lua)?;
                     let n = q.0.borrow().len();
@@ -248,13 +254,15 @@ impl ScriptEngine {
         Ok(())
     }
 
-    /// 执行一段"定义"（不排入桥），供随后反复 [`ScriptEngine::call`]。
+    /// Execute a "definition" (not enqueued into the bridge) for subsequent
+    /// repeated [`ScriptEngine::call`].
     pub fn load_definition(&mut self, src: &str) -> Result<(), ScriptError> {
         self.lua.load(src).exec()?;
         Ok(())
     }
 
-    /// 调用脚本里定义的全局函数，并把产生的命令排入桥。
+    /// Call a global function defined by the script and enqueue the produced
+    /// commands into the bridge.
     pub fn call(&mut self, name: &str) -> Result<(), ScriptError> {
         let globals: Table = self.lua.globals();
         let f: mlua::Function = globals.get(name)?;
@@ -278,7 +286,7 @@ impl std::fmt::Debug for ScriptEngine {
 mod tests {
     use super::*;
 
-    /// 收集一次脚本执行产生的命令。
+    /// Collect the commands produced by one script execution.
     fn run(src: &str) -> Vec<SimCommand> {
         let mut engine = ScriptEngine::new().expect("engine");
         engine.run_source(src).expect("run");
@@ -375,7 +383,7 @@ mod tests {
         let mut engine = ScriptEngine::new().unwrap();
         engine.load_definition("world.wait(10)").unwrap();
         assert_eq!(engine.bridge().pending_len(), 0);
-        // 但队列里确实有了（尚未交给桥）。
+        // But they really are in the queue (not yet handed to the bridge).
         assert_eq!(engine.collect().unwrap().len(), 1);
     }
 
@@ -395,7 +403,8 @@ mod tests {
 
     #[test]
     fn no_physics_api_is_exposed() {
-        // 引擎不给 Lua 任何直接写物理状态的入口。
+        // The engine gives Lua no entry point that writes physics state
+        // directly.
         let mut engine = ScriptEngine::new().unwrap();
         engine
             .run_source(
@@ -428,7 +437,7 @@ mod tests {
 
     #[test]
     fn example_cutscene_script_runs() {
-        // 仓库里的示例脚本必须能被真正执行。
+        // The example script in the repo must be actually executable.
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../maps/example_cutscene.lua");
         let Ok(src) = std::fs::read_to_string(&path) else {

@@ -1,12 +1,13 @@
-//! Releste 中继服务器。
+//! The Releste relay server.
 //!
-//! 纯中继：不理解地图内容，不参与物理，不判断同步。
-//! 详见 [`relay`]。
+//! Pure relay: it does not understand map content, does not take part in
+//! physics, and does not decide what to sync.
+//! See [`relay`] for details.
 //!
-//! # 运行
+//! # Running
 //! ```text
 //! cargo run -p releste-net-server -- --port 7777
-//! cargo run -p releste-net-server -- --selftest     # 纯逻辑自检，不需要网络
+//! cargo run -p releste-net-server -- --selftest     # pure-logic self-check, no network needed
 //! ```
 
 #![deny(warnings)]
@@ -20,19 +21,19 @@ use tracing::{info, warn};
 
 use relay::Relay;
 
-/// 命令行参数。
+/// Command-line arguments.
 #[derive(Parser, Debug)]
-#[command(name = "net-server", about = "Releste 中继服务器")]
+#[command(name = "net-server", about = "Releste relay server")]
 struct Args {
-    /// 监听端口。
+    /// Listen port.
     #[arg(short, long, default_value_t = 7777)]
     port: u16,
 
-    /// 最大玩家数（0 = 不限）。
+    /// Maximum number of players (0 = unlimited).
     #[arg(short = 'm', long, default_value_t = 8)]
     max_players: usize,
 
-    /// 运行纯逻辑自检并退出（不监听网络）。
+    /// Run the pure-logic self-check and exit (does not listen on the network).
     #[arg(long)]
     selftest: bool,
 }
@@ -86,7 +87,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// 纯逻辑自检：驱动一次完整握手 + 化身转发 + 断开。
+/// Pure-logic self-check: drives a full handshake + avatar relay + disconnect.
 fn selftest() -> anyhow::Result<()> {
     use releste_net_client::protocol::{AvatarState, Down, Up, PROTOCOL_VERSION};
 
@@ -94,7 +95,7 @@ fn selftest() -> anyhow::Result<()> {
     let a = relay.on_connect();
     let b = relay.on_connect();
 
-    // A 握手
+    // A handshake
     let out = relay.on_message(
         a,
         Up::Hello {
@@ -108,7 +109,7 @@ fn selftest() -> anyhow::Result<()> {
         "A should receive Welcome"
     );
 
-    // B 握手，A 应被告知 B 加入
+    // B handshake; A should be told that B joined
     let out = relay.on_message(
         b,
         Up::Hello {
@@ -125,7 +126,7 @@ fn selftest() -> anyhow::Result<()> {
         "B should be told about A joining"
     );
 
-    // A 发送化身，B 应收到，A 不应收到自己的
+    // A sends an avatar; B should receive it, and A should not receive its own
     let out = relay.on_message(a, Up::Avatar(AvatarState::ZERO));
     anyhow::ensure!(out.iter().any(|o| o.to == b), "B should receive A's avatar");
     anyhow::ensure!(
@@ -133,7 +134,7 @@ fn selftest() -> anyhow::Result<()> {
         "A must not receive its own avatar"
     );
 
-    // A 断开
+    // A disconnects
     let out = relay.on_disconnect(a);
     anyhow::ensure!(
         out.iter().any(|o| o.to == b),
@@ -141,7 +142,7 @@ fn selftest() -> anyhow::Result<()> {
     );
     anyhow::ensure!(relay.player_count() == 1, "one player should remain");
 
-    // 幸存者名册
+    // Survivor roster
     let roster = relay.roster();
     anyhow::ensure!(
         roster.len() == 1 && roster[0].1 == "b",
@@ -155,7 +156,7 @@ fn selftest() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 真实 UDP 中继（laminar）。
+/// Real UDP relay (laminar).
 #[cfg(feature = "udp")]
 fn run_udp(port: u16, max_players: usize) -> anyhow::Result<()> {
     use std::net::SocketAddr;
@@ -185,7 +186,7 @@ fn run_udp(port: u16, max_players: usize) -> anyhow::Result<()> {
                     continue;
                 };
 
-                // 新连接
+                // New connection
                 let from = match id_of.get(&src) {
                     Some(id) => *id,
                     None => {

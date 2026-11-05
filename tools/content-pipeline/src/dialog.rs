@@ -1,18 +1,18 @@
-//! 对话（`Dialog/*.txt`）转换 → TOML。
+//! Dialog (`Dialog/*.txt`) conversion -> TOML.
 //!
-//! # 源格式（与反编译源码 `Language.FromTxt` 一致）
-//! 逐行处理，先 `trim()`：
-//! - 空行或 `#` 开头 → 跳过（正文中的 `\#` 是转义，还原为 `#`）。
-//! - 匹配 `^\w+=.*` 的行 → 新条目：
+//! # Source format (matching the decompiled `Language.FromTxt`)
+//! Processed line by line, after `trim()`:
+//! - An empty line or one starting with `#` -> skipped (a body `\#` is an escape, restored to `#`).
+//! - A line matching `^\w+=.*` -> a new entry:
 //!   - `language` / `icon` / `order` / `font` / `SPLIT_REGEX` /
-//!     `commas` / `periods` 为语言元数据（大小写不敏感）。
-//!   - `BEGIN` 视为"元数据结束"分隔符。
-//!   - 其余为对话键，值为 `=` 之后的内容。
-//! - 其它行 → 上一键的续行，用 `{break}` 连接（除非已以
-//!   `{break}` / `{n}` 结尾，或上一行去掉 `{...}` 后为空）。
-//! - `[内容]` → `{portrait 内容}`。
+//!     `commas` / `periods` are language metadata (case-insensitive).
+//!   - `BEGIN` is treated as the "end of metadata" separator.
+//!   - Everything else is a dialog key whose value is what follows `=`.
+//! - Any other line -> a continuation of the previous key, joined with `{break}` (unless it already ends with
+//!   `{break}` / `{n}`, or the previous line is empty after removing `{...}`).
+//! - `[content]` -> `{portrait content}`.
 //!
-//! 正文中的 `{...}` 命令**原样保留**。
+//! `{...}` commands in the body are **kept verbatim**.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::PipelineError;
 
-/// 元数据（`BEGIN` 之前）。
+/// Metadata (before `BEGIN`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DialogMeta {
     pub language_id: String,
@@ -29,35 +29,35 @@ pub struct DialogMeta {
     pub order: Option<i32>,
     pub font_face: Option<String>,
     pub font_size: Option<f32>,
-    /// 句读 / 分词配置。
+    /// Sentence-splitting / word-splitting configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split_regex: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commas: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub periods: Option<String>,
-    /// 其余未知元数据，原样保留。
+    /// Any other unknown metadata, kept verbatim.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, String>,
 }
 
-/// 一条对话。
+/// A dialog entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DialogEntry {
-    /// 键（如 `AUTOSAVING_TITLE_NS`）。
+    /// The key (e.g. `AUTOSAVING_TITLE_NS`).
     pub key: String,
-    /// 值（续行以 `{break}` 连接）。
+    /// The value (continuation lines joined with `{break}`).
     pub value: String,
 }
 
-/// 解析后的对话文档。
+/// The parsed dialog document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DialogDocument {
     pub meta: DialogMeta,
     pub entries: Vec<DialogEntry>,
 }
 
-/// 判定 `^\w+=.*`（源格式的 variable 正则）。
+/// Test `^\w+=.*` (the source format's variable regex).
 fn is_variable_line(line: &str) -> bool {
     let Some(eq) = line.find('=') else {
         return false;
@@ -66,7 +66,7 @@ fn is_variable_line(line: &str) -> bool {
     !head.is_empty() && head.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// 去掉所有 `{...}` 后是否还有内容（源格式用 `command.Replace(input, "")`）。
+/// Whether any content remains after removing every `{...}` (the source format uses `command.Replace(input, "")`).
 fn has_text_outside_commands(line: &str) -> bool {
     let mut depth = 0usize;
     let mut text = String::new();
@@ -81,7 +81,7 @@ fn has_text_outside_commands(line: &str) -> bool {
     !text.trim().is_empty()
 }
 
-/// `[内容]` → `{portrait 内容}`。
+/// `[content]` -> `{portrait content}`.
 fn replace_portraits(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
@@ -100,7 +100,7 @@ fn replace_portraits(line: &str) -> String {
             if closed {
                 out.push_str(&format!("{{portrait {content}}}"));
             } else {
-                // 未闭合则原样保留
+                // If unclosed, keep it verbatim
                 out.push('[');
                 out.push_str(&content);
             }
@@ -112,9 +112,9 @@ fn replace_portraits(line: &str) -> String {
 }
 
 impl DialogDocument {
-    /// 解析对话文件内容。
+    /// Parse dialog file content.
     pub fn parse(path: &str, content: &str) -> Result<Self, PipelineError> {
-        // 去掉 UTF-8 BOM
+        // Strip the UTF-8 BOM
         let content = content.strip_prefix('\u{feff}').unwrap_or(content);
 
         let mut meta_raw: Vec<(String, String)> = Vec::new();
@@ -151,7 +151,7 @@ impl DialogDocument {
                 let key = line[..eq].trim().to_string();
                 let value = line[eq + 1..].trim().to_string();
 
-                // `BEGIN` 是元数据结束分隔符。
+                // `BEGIN` is the end-of-metadata separator.
                 if key.eq_ignore_ascii_case("BEGIN") {
                     prev_line = line;
                     continue;
@@ -164,7 +164,7 @@ impl DialogDocument {
                     cur_val = value;
                 }
             } else {
-                // 续行
+                // Continuation line
                 if !cur_val.is_empty()
                     && !cur_val.ends_with("{break}")
                     && !cur_val.ends_with("{n}")
@@ -186,19 +186,19 @@ impl DialogDocument {
         })
     }
 
-    /// 从文件读取。
+    /// Read from a file.
     pub fn from_file(path: &std::path::Path) -> Result<Self, PipelineError> {
         let content =
             std::fs::read_to_string(path).map_err(|e| PipelineError::io(path.display(), e))?;
         Self::parse(&path.display().to_string(), &content)
     }
 
-    /// 序列化为 TOML。
+    /// Serialize to TOML.
     pub fn to_toml(&self) -> Result<String, PipelineError> {
         #[derive(Serialize)]
         struct Out<'a> {
             meta: &'a DialogMeta,
-            /// 用 BTreeMap 保证输出稳定（便于黄金测试）。
+            /// Use a BTreeMap to keep the output stable (for golden tests).
             entries: BTreeMap<&'a str, &'a str>,
         }
 
@@ -216,18 +216,18 @@ impl DialogDocument {
             .map_err(|e| PipelineError::Serialize(format!("dialog toml: {e}")))
     }
 
-    /// 条目数。
+    /// Entry count.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// 是否无条目。
+    /// Whether there are no entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
 
-/// 是否为已知元数据键（大小写不敏感）。
+/// Whether this is a known metadata key (case-insensitive).
 fn is_metadata_key(key: &str) -> bool {
     matches!(
         key.to_ascii_uppercase().as_str(),
@@ -240,7 +240,7 @@ fn build_meta(raw: &[(String, String)]) -> DialogMeta {
     for (key, value) in raw {
         match key.to_ascii_uppercase().as_str() {
             "LANGUAGE" => {
-                // 形如 `english,English`
+                // Formatted like `english,English`
                 let mut parts = value.splitn(2, ',');
                 meta.language_id = parts.next().unwrap_or_default().trim().to_string();
                 meta.language_label = parts.next().unwrap_or_default().trim().to_string();
@@ -248,7 +248,7 @@ fn build_meta(raw: &[(String, String)]) -> DialogMeta {
             "ICON" => meta.icon = Some(value.clone()),
             "ORDER" => meta.order = value.trim().parse().ok(),
             "FONT" => {
-                // 形如 `Renogare,64`
+                // Formatted like `Renogare,64`
                 let mut parts = value.splitn(2, ',');
                 meta.font_face = Some(parts.next().unwrap_or_default().trim().to_string());
                 meta.font_size = parts.next().and_then(|s| s.trim().parse().ok());
@@ -273,7 +273,7 @@ mod tests {
 \tICON=Icons/canadian-english.png\n\
 \tORDER=0\n\
 \tFONT=Renogare,64\n\
-\tCOMMAS=,，\n\
+\tCOMMAS=,\u{ff0c}\n\
 \tBEGIN=true\n\
 \n\
 \tAUTOSAVING_TITLE_NS=\n\
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(d.meta.order, Some(0));
         assert_eq!(d.meta.font_face.as_deref(), Some("Renogare"));
         assert_eq!(d.meta.font_size, Some(64.0));
-        assert_eq!(d.meta.commas.as_deref(), Some(",，"));
+        assert_eq!(d.meta.commas.as_deref(), Some(",\u{ff0c}"));
     }
 
     #[test]
@@ -331,8 +331,8 @@ mod tests {
 
     #[test]
     fn command_lines_do_not_get_break_separator() {
-        // `{n}Press {confirm}` 前一行是 "Paused"（有文本），因此会插入
-        // `{break}`；但值本身以 `{n}` 开头，命令被原样保留。
+        // The line before `{n}Press {confirm}` is "Paused" (has text), so a
+        // `{break}` is inserted; but the value itself starts with `{n}`, so the commands are kept verbatim.
         let d = doc();
         let paused = d.entries.iter().find(|e| e.key == "PAUSED_MENU").unwrap();
         assert!(
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn no_break_after_n_command() {
-        // 若上一行以 {n} 结尾，则不再插入 {break}。
+        // If the previous line ends with {n}, do not insert {break}.
         let src = "BEGIN=true\nA=line one{n}\nline two\n";
         let d = DialogDocument::parse("x.txt", src).unwrap();
         assert_eq!(d.entries[0].value, "line one{n}line two");

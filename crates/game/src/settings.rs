@@ -1,15 +1,15 @@
-//! 用户设置：按键绑定（原版 `Settings.Instance` 的对应物）。
+//! User settings: key bindings (the counterpart of vanilla `Settings.Instance`).
 //!
-//! 原版把绑定存在用户目录的设置里，`SetDefaultKeyboardControls(reset)`
-//! （`pureCeleste.cs:101595-101706`）在绑定缺失时回落默认：方向键移动、
-//! C 跳、X 冲刺、Z/V/LeftShift 抓攀、Enter 暂停。本引擎用 `settings.toml`
-//! 持久化（栈规范禁 JSON）：文件缺段/键名不认识 → 回落原版默认并告警，
-//! 永不 panic（AGENTS.md §15.8/15.9）。文件位置 `<root>/settings.toml`
-//! （`Paths` 解析，运行时可写 —— 后续的改键菜单直接改它）。
+//! Vanilla stores bindings in the settings under the user directory, and `SetDefaultKeyboardControls(reset)`
+//! (`pureCeleste.cs:101595-101706`) falls back to the defaults when a binding is missing: arrow keys move,
+//! C jumps, X dashes, Z/V/LeftShift grabs, Enter pauses. This engine persists them in `settings.toml`
+//! (the stack spec forbids JSON): a missing section/unknown key name in the file -> fall back to the vanilla defaults and warn,
+//! and never panic (AGENTS.md 15.8/15.9). File location `<root>/settings.toml`
+//! (resolved by `Paths` and writable at runtime -- the future rebinding menu edits it directly).
 //!
-//! 键名 = `winit::keyboard::KeyCode` 的 `Debug` 名（如 `"KeyC"`、
-//! `"ArrowLeft"`），存物理键（扫描码语义），与原版 `TranslateKeys`
-//! （101708）的"按物理位置绑定"一致。
+//! Key names = the `Debug` name of `winit::keyboard::KeyCode` (e.g. `"KeyC"`,
+//! `"ArrowLeft"`), storing physical keys (scancode semantics), matching vanilla `TranslateKeys`
+//! (101708)'s "bind by physical position".
 
 use std::path::Path;
 
@@ -17,8 +17,8 @@ use serde::Deserialize;
 use tracing::warn;
 use winit::keyboard::KeyCode;
 
-/// 一组按键绑定：动作 → 物理键列表（一个动作可绑多键，原版
-/// `Binding.Add(Keys...)` 语义，101622 的 Grab 绑了三键）。
+/// A set of key bindings: action -> physical key list (an action can bind multiple keys, vanilla
+/// `Binding.Add(Keys...)` semantics; the Grab binding at 101622 binds three keys).
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyBindings {
     pub left: Vec<KeyCode>,
@@ -26,16 +26,16 @@ pub struct KeyBindings {
     pub up: Vec<KeyCode>,
     pub down: Vec<KeyCode>,
     pub jump: Vec<KeyCode>,
-    /// 冲刺（原版默认 X，`pureCeleste.cs:101632`）。
+    /// Dash (vanilla default X, `pureCeleste.cs:101632`).
     pub dash: Vec<KeyCode>,
-    /// 抓攀（原版默认 Z/V/LeftShift，`pureCeleste.cs:101622`）。
+    /// Grab (vanilla default Z/V/LeftShift, `pureCeleste.cs:101622`).
     pub grab: Vec<KeyCode>,
 }
 
 impl Default for KeyBindings {
     fn default() -> Self {
-        // 原版默认（101602-101651）。抓攀（Z/V/LeftShift，101622）与
-        // 冲刺（X，101632）在 Phase 4.1 实现后加入。
+        // Vanilla defaults (101602-101651). Grab (Z/V/LeftShift, 101622) and
+        // dash (X, 101632) are added once Phase 4.1 is implemented.
         KeyBindings {
             left: vec![KeyCode::ArrowLeft],
             right: vec![KeyCode::ArrowRight],
@@ -48,7 +48,7 @@ impl Default for KeyBindings {
     }
 }
 
-/// 设置文件的可序列化形态。
+/// The serializable shape of the settings file.
 #[derive(Debug, Default, Deserialize)]
 struct KeysToml {
     left: Option<Vec<String>>,
@@ -67,15 +67,15 @@ struct SettingsToml {
 }
 
 impl KeyBindings {
-    /// 从 `<root>/settings.toml` 读绑定；文件/段落/键名缺失或非法时
-    /// 逐项回落原版默认（并 `warn`，不静默）。
+    /// Read bindings from `<root>/settings.toml`; when the file/section/key name is missing or invalid
+    /// fall back per item to the vanilla defaults (with a `warn`, not silently).
     pub fn load(paths_root: &Path) -> Self {
         let file = paths_root.join("settings.toml");
         let text = match std::fs::read_to_string(&file) {
             Ok(t) => t,
             Err(_) => {
-                // 没有设置文件不是错误 —— 用原版默认（101595 的
-                // `reset: false` 分支：绑定非空则不动）。
+                // A missing settings file is not an error -- use the vanilla defaults (the
+                // `reset: false` branch of 101595: do nothing if a binding is non-empty).
                 return KeyBindings::default();
             }
         };
@@ -122,8 +122,8 @@ impl KeyBindings {
     }
 }
 
-/// `"ArrowLeft"` / `"KeyC"` / `"Escape"` … → `KeyCode`。
-/// 用 `KeyCode` 的 `Debug` 名做键名（它与用户在设置文件里写的一致）。
+/// `"ArrowLeft"` / `"KeyC"` / `"Escape"` ... -> `KeyCode`.
+/// The `Debug` name of `KeyCode` is used as the key name (matching what the user writes in the settings file).
 fn parse_key(name: &str) -> Option<KeyCode> {
     Some(match name {
         "ArrowLeft" => KeyCode::ArrowLeft,
@@ -156,7 +156,7 @@ fn parse_key(name: &str) -> Option<KeyCode> {
 mod tests {
     use super::*;
 
-    /// 缺文件 → 原版默认（方向键 + C）。
+    /// Missing file -> vanilla defaults (arrow keys + C).
     #[test]
     fn missing_settings_file_falls_back_to_vanilla_defaults() {
         let root = std::env::temp_dir().join("releste-settings-missing");
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(b, KeyBindings::default());
     }
 
-    /// 合法覆盖生效；坏键名告警并忽略；空列表回落默认。
+    /// Valid overrides take effect; a bad key name warns and is ignored; an empty list falls back to the default.
     #[test]
     fn settings_file_overrides_and_falls_back_per_action() {
         let root = std::env::temp_dir().join("releste-settings-load");

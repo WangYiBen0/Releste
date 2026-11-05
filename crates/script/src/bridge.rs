@@ -1,4 +1,4 @@
-//! [`CutsceneBridge`]：Lua 与仿真之间的单向命令队列。
+//! [`CutsceneBridge`]: a one-way command queue between Lua and the simulation.
 
 use std::collections::VecDeque;
 
@@ -6,58 +6,61 @@ use tracing::trace;
 
 use crate::command::{ActiveCommand, SimCommand};
 
-/// 过场桥。
+/// Cutscene bridge.
 ///
-/// - Lua 侧调用 [`CutsceneBridge::enqueue`] 排队命令。
-/// - 仿真侧每帧调用 [`CutsceneBridge::drain_new`] 取出新命令，
-///   调用 [`CutsceneBridge::step_active`] 推进正在执行的命令。
+/// - The Lua side calls [`CutsceneBridge::enqueue`] to queue a command.
+/// - The simulation side calls [`CutsceneBridge::drain_new`] every frame to
+///   take new commands, and [`CutsceneBridge::step_active`] to advance the
+///   commands currently executing.
 ///
-/// 该结构不依赖 mlua，可在无 Lua 环境下单独测试与使用。
+/// This structure does not depend on mlua and can be tested and used on its
+/// own without a Lua environment.
 #[derive(Debug, Default)]
 pub struct CutsceneBridge {
-    /// 待仿真消费的命令。
+    /// Commands waiting for the simulation to consume.
     pending: VecDeque<SimCommand>,
-    /// 正在执行的命令。
+    /// Commands currently executing.
     active: Vec<ActiveCommand>,
 }
 
 impl CutsceneBridge {
-    /// 创建空桥。
+    /// Create an empty bridge.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Lua 侧：排队一条命令。
+    /// Lua side: queue a command.
     ///
-    /// 永不立即生效——仿真在下一帧消费。
+    /// Never takes effect immediately -- the simulation consumes it on the
+    /// next frame.
     pub fn enqueue(&mut self, command: SimCommand) {
         trace!(?command, "cutscene command queued");
         self.pending.push_back(command);
     }
 
-    /// 仿真侧：取出所有新命令（清空队列）。
+    /// Simulation side: take all new commands (drains the queue).
     pub fn drain_new(&mut self) -> Vec<SimCommand> {
         self.pending.drain(..).collect()
     }
 
-    /// 待处理命令数。
+    /// Number of pending commands.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
 
-    /// 是否还有待处理或执行中的命令。
+    /// Whether there are still pending or executing commands.
     pub fn is_busy(&self) -> bool {
         !self.pending.is_empty() || !self.active.is_empty()
     }
 
-    /// 启动一条命令（进入 active）。
+    /// Start a command (enters active).
     pub fn start(&mut self, command: SimCommand) {
         self.active.push(ActiveCommand::new(command));
     }
 
-    /// 仿真侧：推进所有 active 命令一帧。
+    /// Simulation side: advance all active commands by one frame.
     ///
-    /// 返回本帧完成的命令。
+    /// Returns the commands completed this frame.
     pub fn step_active(&mut self) -> Vec<SimCommand> {
         let mut finished = Vec::new();
         for cmd in &mut self.active {
@@ -69,18 +72,19 @@ impl CutsceneBridge {
         finished
     }
 
-    /// 当前 active 命令列表。
+    /// The current list of active commands.
     pub fn active(&self) -> &[ActiveCommand] {
         &self.active
     }
 
-    /// 立即清空所有命令（如房间切换、退出过场）。
+    /// Immediately clear all commands (such as a room transition or leaving a
+    /// cutscene).
     pub fn clear(&mut self) {
         self.pending.clear();
         self.active.clear();
     }
 
-    /// 所有 active 命令是否都是瞬时的（`total == 0`）。
+    /// Whether all active commands are instantaneous (`total == 0`).
     pub fn all_instant(&self) -> bool {
         self.active.iter().all(|c| c.total == 0)
     }
@@ -107,7 +111,7 @@ mod tests {
     fn command_is_never_applied_immediately() {
         let mut bridge = CutsceneBridge::new();
         bridge.enqueue(SimCommand::SetPlayerState(PlayerState::Frozen));
-        // 排队不等于执行
+        // Queuing is not the same as executing.
         assert!(bridge.active().is_empty());
         assert!(bridge.is_busy());
     }

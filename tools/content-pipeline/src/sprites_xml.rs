@@ -1,54 +1,54 @@
-//! `Graphics/Sprites.xml` → `atlas/Gameplay.sprites.toml` 转换。
+//! `Graphics/Sprites.xml` -> `atlas/Gameplay.sprites.toml` conversion.
 //!
-//! 原版 `SpriteBank`（`pureCeleste.cs:15017-15042`）读这个文件：
-//! `<Sprites>` 的每个子元素是一个 sprite 定义（`path` = 图集前缀，
-//! `start` = 起始动画），子元素 `<Anim id delay frames goto>` /
-//! `<Loop id delay frames>` 定义动画（`Loop` = 自循环，`Anim` 可跳转），
-//! `frames` 是 CSV（支持 `1-6` 区间，`Calc.ReadCSVIntWithTricks`，
-//! 113019 附近同类实现）。帧纹理 = `path + 零填充两位的帧号`
-//! （Monocle `GetAtlasSubtextureFromAtlasAt` 的逐级补零查找，14327+；
-//! 我们的图集名字就是 `idle00` 这种）。
+//! Vanilla `SpriteBank` (`pureCeleste.cs:15017-15042`) reads this file:
+//! every child element of `<Sprites>` is a sprite definition (`path` = atlas prefix,
+//! `start` = starting animation); the child elements `<Anim id delay frames goto>` /
+//! `<Loop id delay frames>` define animations (`Loop` = self-loop, `Anim` can jump),
+//! `frames` is CSV (supports `1-6` ranges, `Calc.ReadCSVIntWithTricks`,
+//! implemented nearby at 113019). A frame texture = `path + two-digit zero-padded frame number`
+//! (Monocle `GetAtlasSubtextureFromAtlasAt`'s stepwise zero-padded lookup, 14327+;
+//! our atlas names are exactly things like `idle00`).
 //!
-//! 输出给运行时的是**已解析**的动画表：id → (delay, 帧序号列表, 是否
-//! 自循环)。帧名（前缀 + 补零）由运行时解析，这样图集里缺某帧时只
-//! 告警不崩（AGENTS.md §15.8/15.9）。
+//! What is handed to the runtime is the **already parsed** animation table: id -> (delay, frame index list, whether
+//! it self-loops). Frame names (prefix + zero padding) are resolved by the runtime, so a missing frame in the atlas only
+//! warns instead of crashing (AGENTS.md 15.8/15.9).
 
 use serde::Serialize;
 
-/// 一条动画定义。
+/// One animation definition.
 #[derive(Debug, Clone, Serialize)]
 pub struct AnimDef {
-    /// 动画 id（`Sprite.Play(id)` 的键）。
+    /// Animation id (the key for `Sprite.Play(id)`).
     pub id: String,
-    /// 帧间隔（秒）。0 = 不自动播放（`Animating = Delay > 0f`，10196）。
+    /// Frame interval (seconds). 0 = do not auto-play (`Animating = Delay > 0f`, 10196).
     pub delay: f32,
-    /// 帧序号（对 `path` 前缀的枚举序列取下标）。`None` = 属性缺省，
-    /// 取**全部**帧（Monocle `GetFrames(path, null)` 按序枚举直到缺帧，
-    /// pureCeleste.cs:10451-10464）—— 运行时对着图集展开。
+    /// Frame indices (subscripts into the enumerated sequence of the `path` prefix). `None` = attribute absent,
+    /// take **all** frames (Monocle `GetFrames(path, null)` enumerates in order until a frame is missing,
+    /// pureCeleste.cs:10451-10464) -- the runtime expands them against the atlas.
     pub frames: Option<Vec<usize>>,
-    /// `<Anim goto="...">` 的跳转目标；`<Loop>` = 自循环（own id）；
-    /// `None` = 播完停在末帧（10296-10305）。
+    /// The jump target of `<Anim goto="...">`; `<Loop>` = self-loop (own id);
+    /// `None` = stop on the last frame after playing (10296-10305).
     pub goto: Option<String>,
-    /// 动画子路径（`<Anim path="idle">`）：帧名 = sprite 的 `path` +
-    /// 这里 + 零填充序号（`GetFrames` 的 `Path + path` 拼接，
-    /// pureCeleste.cs:10454-10462）。缺省 = ""。
+    /// Animation sub-path (`<Anim path="idle">`): frame name = the sprite's `path` +
+    /// this + zero-padded index (the `Path + path` concatenation in `GetFrames`,
+    /// pureCeleste.cs:10454-10462). Absent = "".
     pub path: String,
 }
 
-/// 一个 sprite 的动画集。
+/// The animation set of one sprite.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpriteDef {
-    /// sprite 名（`SpriteBank.SpriteData` 的键，`player` / `badeline`…）。
+    /// sprite name (the key of `SpriteBank.SpriteData`, `player` / `badeline`...).
     pub name: String,
-    /// 图集前缀（`characters/player`，正斜杠原样保留 —— 引擎的图集
-    /// 查找对分隔符不敏感）。
+    /// Atlas prefix (`characters/player`; forward slashes are kept as-is -- the engine's atlas
+    /// lookup is insensitive to separators).
     pub path: String,
-    /// 起始动画（`start` 属性，缺省取第一条）。
+    /// Starting animation (the `start` attribute; defaults to the first one).
     pub start: String,
     pub anims: Vec<AnimDef>,
 }
 
-/// 解析失败。
+/// Parse failure.
 #[derive(Debug, thiserror::Error)]
 pub enum SpritesXmlError {
     #[error("unterminated tag at byte {0}")]
@@ -57,16 +57,16 @@ pub enum SpritesXmlError {
     MalformedAttribute(usize),
 }
 
-/// 解析 `Graphics/Sprites.xml` 全部内容。
+/// Parse all content of `Graphics/Sprites.xml`.
 ///
-/// 真实文件以 UTF-8 BOM（`\u{feff}`）开头 —— 先剥掉，否则字节扫描器
-/// 会在非字符边界切片（panic）。
+/// The real file starts with a UTF-8 BOM (`\u{feff}`) -- strip it first, otherwise the byte scanner
+/// slices at a non-character boundary (panic).
 pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
     let xml = xml.strip_prefix('\u{feff}').unwrap_or(xml);
     let bytes = xml.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
-    // 跳过 XML 声明/注释，找到 <Sprites>，然后逐个子元素解析。
+    // Skip the XML declaration/comments, find <Sprites>, then parse each child element.
     while i < bytes.len() {
         if xml[i..].starts_with("<!--") {
             i = skip_to(xml, i, "-->")?;
@@ -76,8 +76,8 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
             i += 1;
             continue;
         }
-        // 声明与闭合标签在外层直接跳过（read_tag 只服务开标签 ——
-        // 否则 `<?xml ... ?>` 的 `?` 会被当属性名一路吃到下一个 `>`）。
+        // Declarations and closing tags are skipped at the outer level (read_tag only serves open tags --
+        // otherwise the `?` in `<?xml ... ?>` would be read as an attribute name all the way to the next `>`).
         if xml[i..].starts_with("<?") {
             i = skip_to(xml, i, "?>")?;
             continue;
@@ -95,7 +95,7 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
             i = end;
             continue;
         }
-        // 顶层 sprite 定义（忽略 <?xml ...?> 之类的伪标签）。
+        // Top-level sprite definition (ignore pseudo-tags like <?xml ...?>).
         if name.contains('?') || name.starts_with('!') || name.starts_with('/') {
             i = end;
             continue;
@@ -109,7 +109,7 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
         let mut anims = Vec::new();
         let mut after_element = end;
         if !self_closing {
-            // 子元素扫描，直到本元素的闭合标签。
+            // Child scan until this element's closing tag.
             let close = format!("</{name}>");
             let mut j = end;
             while j < bytes.len() && !xml[j..].starts_with(&close) {
@@ -131,9 +131,9 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
                     .get("delay")
                     .and_then(|d| d.parse().ok())
                     .unwrap_or(default_delay);
-                // `<Loop>` = 自循环（Monocle `AddLoop`：
-                // `Goto = new Chooser<string>(id, 1f)`，10338-10345）；
-                // `<Anim goto="...">` = 跳转到目标动画。
+                // `<Loop>` = self-loop (Monocle `AddLoop`:
+                // `Goto = new Chooser<string>(id, 1f)`, 10338-10345);
+                // `<Anim goto="...">` = jump to the target animation.
                 let goto = if cname.eq_ignore_ascii_case("Loop") {
                     Some(id.clone())
                 } else {
@@ -152,7 +152,7 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
             }
             after_element = j + close.len();
         }
-        // 跳过整个元素（含闭合标签），避免子元素被当成顶层定义。
+        // Skip the whole element (including its closing tag) so children are not mistaken for top-level definitions.
         i = after_element;
         let start = if start.is_empty() {
             anims.first().map(|a| a.id.clone()).unwrap_or_default()
@@ -169,7 +169,7 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
     Ok(out)
 }
 
-/// `Calc.ReadCSVIntWithTricks`：逗号分隔 + `a-b` 闭区间。
+/// `Calc.ReadCSVIntWithTricks`: comma-separated + `a-b` inclusive ranges.
 pub fn read_csv_int_with_tricks(list: &str) -> Vec<usize> {
     let mut out = Vec::new();
     for piece in list.split(',') {
@@ -193,7 +193,7 @@ pub fn read_csv_int_with_tricks(list: &str) -> Vec<usize> {
     out
 }
 
-/// 读一个标签：返回 (名称, 属性表, 是否自闭合, 内容起点/标签终点)。
+/// Read one tag: returns (name, attribute table, whether self-closing, content start/tag end).
 fn read_tag(
     xml: &str,
     start: usize,
@@ -215,7 +215,7 @@ fn read_tag(
             return Err(SpritesXmlError::Unterminated(start));
         }
         if bytes[i] == b'/' {
-            // 自闭合：/> —— 跳到 '>'
+            // Self-closing: /> -- jump to '>'
             while i < bytes.len() && bytes[i] != b'>' {
                 i += 1;
             }
@@ -233,7 +233,7 @@ fn read_tag(
             i += 1;
         }
         if i >= bytes.len() || bytes[i] != b'=' {
-            // 无值属性（如 `<Center />` 已在上面处理；这里容忍跳过）。
+            // Valueless attribute (like `<Center />` handled above; tolerated and skipped here).
             continue;
         }
         i += 1;
@@ -250,7 +250,7 @@ fn read_tag(
             i += 1;
         }
         attrs.insert(key, xml[val_start..i].to_string());
-        i += 1; // 跳过引号
+        i += 1; // skip the quote
     }
 }
 
@@ -267,7 +267,7 @@ use std::collections::HashMap;
 mod tests {
     use super::*;
 
-    /// Anim/Loop/延迟默认值/CSV 区间都要解析出来。
+    /// Anim/Loop/default delay/CSV ranges must all be parsed out.
     #[test]
     fn parses_anim_loop_and_csv_ranges() {
         let xml = r#"<?xml version="1.0"?>

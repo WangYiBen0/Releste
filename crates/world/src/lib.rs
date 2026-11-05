@@ -1,11 +1,13 @@
-//! `releste-world`: ECS、实体工厂、Schema、组件。
+//! `releste-world`: ECS, entity factories, Schema, components.
 //!
-//! 所有地图实体通过稳定 ID（`blake3` 散列）索引，
-//! 由 [`EntityFactory`] trait 构建。
+//! All map entities are indexed by a stable ID (`blake3` hash) and built by
+//! the [`EntityFactory`] trait.
 //!
-//! # 核心不变量
-//! - 地图是数据，不是代码：实体仅通过 `EntityKindId` 引用注册表。
-//! - 稳定实体 ID：`blake3(area_id || room_name || kind_id || x || y)` 前 8 字节。
+//! # Core invariants
+//! - Maps are data, not code: entities only reference the registry via
+//!   `EntityKindId`.
+//! - Stable entity ID: `blake3(area_id || room_name || kind_id || x || y)`,
+//!   first 8 bytes.
 
 #![deny(warnings)]
 

@@ -1,7 +1,7 @@
-//! ROADMAP Appendix A 的日志格式：7 列右对齐的级别标签 + 灰色 `module>`。
+//! The ROADMAP Appendix A log format: a 7-column right-aligned level tag + a gray `module>`.
 //!
-//! 布局、配色与 `NO_COLOR` 规则全部以 ROADMAP Appendix A 为准；
-//! 这里只负责把一条 `tracing` 事件画成那一行。
+//! Layout, colors and the `NO_COLOR` rules all follow ROADMAP Appendix A;
+//! this module only draws one `tracing` event as that line.
 
 use std::fmt;
 use std::io::IsTerminal;
@@ -11,27 +11,27 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent};
 use tracing_subscriber::registry::LookupSpan;
 
-/// TRACE — 紫色。
+/// TRACE -- purple.
 const C_TRACE: &str = "\x1b[35m";
-/// DEBUG — 蓝色。
+/// DEBUG -- blue.
 const C_DEBUG: &str = "\x1b[34m";
-/// INFO — 绿色。
+/// INFO -- green.
 const C_INFO: &str = "\x1b[32m";
-/// WARN — 黄色。
+/// WARN -- yellow.
 const C_WARN: &str = "\x1b[33m";
-/// ERROR — 红色。
+/// ERROR -- red.
 const C_ERROR: &str = "\x1b[31m";
-/// FATAL — 亮红（仅 panic hook 与 `main` 顶层用）。
+/// FATAL -- bright red (used only by the panic hook and the top level of `main`).
 const C_FATAL: &str = "\x1b[91m";
-/// `module>` 恒为亮灰（ANSI bright-white）。`\e[90m`（bright black）在
-/// 不少终端里暗得看不清，改用 97。
+/// `module>` is always bright gray (ANSI bright-white). `\e[90m` (bright black) is
+/// so dim in many terminals that it is unreadable, so 97 is used instead.
 const C_MODULE: &str = "\x1b[97m";
-/// 复位。
+/// Reset.
 const RESET: &str = "\x1b[0m";
 
-/// ANSI 是否启用。
+/// Whether ANSI is enabled.
 ///
-/// 三个条件全满足才上色：没有 `--no-color`、没有 `NO_COLOR`、stdout 是终端。
+/// Color is applied only when all three hold: no `--no-color`, no `NO_COLOR`, and stdout is a terminal.
 pub fn ansi_enabled(force_off: bool) -> bool {
     if force_off {
         return false;
@@ -39,10 +39,10 @@ pub fn ansi_enabled(force_off: bool) -> bool {
     std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
 }
 
-/// 级别 → (标签, 颜色)。
+/// Level -> (tag, color).
 ///
-/// 用比较而不是 `match`：`tracing::Level` 不是本 crate 定义的枚举，
-/// 避免穷举性随上游版本变化。
+/// Uses comparisons instead of a `match`: `tracing::Level` is not an enum defined by this crate,
+/// avoiding exhaustiveness changes with upstream versions.
 fn level_style(level: Level) -> (&'static str, &'static str) {
     if level == Level::TRACE {
         ("[TRACE]", C_TRACE)
@@ -57,10 +57,10 @@ fn level_style(level: Level) -> (&'static str, &'static str) {
     }
 }
 
-/// 把一条消息画成 Appendix A 的多行输出（末尾含 `\n`）。
+/// Draw a message as Appendix A's multi-line output (with a trailing `\n`).
 ///
-/// 对齐锚点是标签的 `]`：所有标签都右对齐进 7 列，`]` 永远落在索引 6；
-/// 消息起点是 `10 + len(module)`。
+/// The alignment anchor is the tag's `]`: every tag is right-aligned into 7 columns, so `]` always lands at index 6;
+/// the message starts at `10 + len(module)`.
 pub fn line(tag: &str, colour: &str, module: &str, message: &str, ansi: bool) -> String {
     let padded = format!("{tag:>7}");
     let indent = 10 + module.len();
@@ -113,30 +113,30 @@ fn push_coloured(out: &mut String, text: &str, colour: &str, ansi: bool) {
     }
 }
 
-/// 从 `main` / panic hook 打印一条 `[FATAL]`（tracing 没有 FATAL 级别）。
+/// Print one `[FATAL]` from `main` / the panic hook (tracing has no FATAL level).
 pub fn print_fatal(module: &str, message: &str) {
     let s = line("[FATAL]", C_FATAL, module, message, ansi_enabled(false));
     eprint!("{s}");
 }
 
-/// 把一条事件的字段拼成 `message` 文本。
+/// Assemble an event's fields into `message` text.
 ///
-/// `message` 原样输出，其它字段追加成 `key=value`，保持日志可 grep。
+/// `message` is output as-is and the other fields are appended as `key=value`, keeping the log greppable.
 ///
-/// `log` 桥接（wgpu 等用 `log` 而非 `tracing` 的库）会附带
-/// `log.target` / `log.module_path` / `log.file` / `log.line`：
-/// 真实 target 拿来当 `module>`，剩下三个对人是纯噪声，直接丢掉。
+/// The `log` bridge (libraries such as wgpu that use `log` instead of `tracing`) carries
+/// `log.target` / `log.module_path` / `log.file` / `log.line`:
+/// the real target is used as `module>` and the remaining three are pure noise to humans, so they are dropped.
 #[derive(Default)]
 struct Message {
     text: String,
-    /// `log` 桥接事件的真实 target（`log.target` 字段）。
+    /// The real target of a `log`-bridge event (the `log.target` field).
     log_target: Option<String>,
 }
 
 impl Message {
     fn push(&mut self, name: &str, value: &str) {
         if name == "log.target" {
-            // 走 `record_debug` 时 `&str` 会带引号，去掉。
+            // Through `record_debug` a `&str` carries quotes; strip them.
             self.log_target = Some(value.trim_matches('"').to_string());
             return;
         }
@@ -162,18 +162,18 @@ impl tracing::field::Visit for Message {
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
-        // `message` 的 Debug 实现转发到 Display，所以 `format_args!` 不会带引号。
+        // The Debug impl of `message` forwards to Display, so `format_args!` carries no quotes.
         self.push(field.name(), &format!("{value:?}"));
     }
 }
 
-/// Appendix A 格式化器。
+/// The Appendix A formatter.
 pub struct AppendixA {
     ansi: bool,
 }
 
 impl AppendixA {
-    /// `ansi` 为 `false` 时输出同样的排版但不带转义序列。
+    /// With `ansi` as `false` the same layout is output without escape sequences.
     pub fn new(ansi: bool) -> Self {
         AppendixA { ansi }
     }
@@ -196,8 +196,8 @@ where
         let mut msg = Message::default();
         event.record(&mut msg);
 
-        // `log` 桥接事件的 metadata target 固定是 `log`，真实位置在
-        // `log.target` 里；换回来才能看到 `wgpu_hal::vulkan::instance>`。
+        // The metadata target of a `log`-bridge event is fixed to `log` and the real location is in
+        // `log.target`; only by swapping it back can `wgpu_hal::vulkan::instance>` be seen.
         let target = if meta.target() == "log" {
             msg.log_target.as_deref().unwrap_or(meta.target())
         } else {
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn message_starts_at_ten_plus_module_len() {
-        // `[WARN]` 是 6 列，右对齐进 7 列字段 → 前面补 1 个空格（Appendix A）。
+        // `[WARN]` is 6 columns, so right-aligning it into the 7-column field -> pad 1 space in front (Appendix A).
         let s = line("[WARN]", "", "system", "message", false);
         assert_eq!(s, " [WARN] system> message\n");
         assert_eq!(s.find("message").unwrap(), 10 + "system".len());

@@ -1,4 +1,4 @@
-//! 内核：主循环与 Service 编排。
+//! Kernel: the main loop and Service orchestration.
 
 use std::time::Instant;
 
@@ -9,9 +9,9 @@ use crate::event::EventBus;
 use crate::frame::FrameId;
 use crate::service::{Service, ServiceRegistry};
 
-/// 引擎内核。
+/// Engine kernel.
 ///
-/// 管理所有 service 的生命周期，驱动主循环。
+/// Manages the lifecycle of all services and drives the main loop.
 pub struct Kernel {
     config: KernelConfig,
     services: ServiceRegistry,
@@ -21,7 +21,7 @@ pub struct Kernel {
 }
 
 impl Kernel {
-    /// 创建新内核。
+    /// Create a new kernel.
     pub fn new() -> Self {
         Kernel {
             config: KernelConfig::default(),
@@ -32,10 +32,11 @@ impl Kernel {
         }
     }
 
-    /// 添加 service 到内核（builder 模式）。
+    /// Add a service to the kernel (builder style).
     ///
     /// # Panics
-    /// 若同名 service 已注册则 panic（配置错误，属于开发期 bug）。
+    /// Panics if a service with the same name is already registered (a
+    /// configuration error, i.e. a development-time bug).
     pub fn with<S: Service>(mut self, svc: S) -> Self {
         if let Err(existing) = self.services.register(svc) {
             panic!("service `{existing}` registered twice");
@@ -43,18 +44,18 @@ impl Kernel {
         self
     }
 
-    /// 关闭内核：释放所有 service。
+    /// Shut down the kernel: release all services.
     pub fn shutdown(&mut self) {
         self.services.dispose_each();
         self.running = false;
     }
 
-    /// 运行所有 service 的 `attach`。
+    /// Run `attach` on all services.
     fn boot(&mut self) {
         self.services.attach_each(&mut self.bus);
     }
 
-    /// 一帧。
+    /// One frame.
     pub fn tick(&mut self) {
         if !self.running {
             self.boot();
@@ -70,9 +71,9 @@ impl Kernel {
         self.services.update_each(&mut self.bus, frame, dt);
     }
 
-    /// 运行主循环，永不返回。
+    /// Run the main loop; never returns.
     ///
-    /// 用固定时间步长调用 `tick`，必要时追赶。
+    /// Calls `tick` with a fixed time step and catches up when necessary.
     pub fn run(&mut self) -> ! {
         self.boot();
         self.running = true;
@@ -100,22 +101,23 @@ impl Kernel {
         }
     }
 
-    /// 设置内核配置。
+    /// Set the kernel configuration.
     pub fn set_config(&mut self, config: KernelConfig) {
         self.config = config;
     }
 
-    /// 获取 service 引用（用于在 setup 阶段解析依赖）。
+    /// Get a service reference (for resolving dependencies during setup).
     pub fn resolve<S: Service>(&self) -> Option<&S> {
         self.services.get::<S>()
     }
 
-    /// 获取 service **可变**引用。
+    /// Get a **mutable** service reference.
     ///
-    /// `tick` 只按固定步长推进模拟；窗口宿主还需要在 tick 之间读写
-    /// service 状态——把渲染快照取出来交给 wgpu、把键盘事件注入输入
-    /// service。这属于宿主侧的常规出口，不改变 "`dt` 恒为
-    /// [`FIXED_DT`](releste_math::FIXED_DT)" 的契约。
+    /// `tick` only advances the simulation at a fixed step; a window host also
+    /// needs to read and write service state between ticks -- take a render
+    /// snapshot out to feed wgpu, or inject keyboard events into the input
+    /// service. This is a normal host-side outlet and does not change the
+    /// contract that "`dt` is always [`FIXED_DT`](releste_math::FIXED_DT)".
     pub fn resolve_mut<S: Service>(&mut self) -> Option<&mut S> {
         self.services.get_mut::<S>()
     }

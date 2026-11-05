@@ -1,21 +1,22 @@
-//! 应用 patch 到 World，含冲突解决与回滚。
+//! Apply patches to the World, with conflict resolution and rollback.
 
 use releste_map::Patch;
 use releste_math::Rect;
 use releste_world::{Entity, EntityData, EntityId, World};
 use tracing::{info, warn};
 
-/// 热重载应用器。
+/// Hot reload applier.
 ///
-/// 负责把 [`Patch`] 序列应用到 [`World`]，并保证冲突时
-/// 世界不变量不被破坏。
+/// Applies a sequence of [`Patch`] to the [`World`] and guarantees that the
+/// world invariants are not broken on conflict.
 #[derive(Debug, Clone)]
 pub struct Reload {
-    /// 是否启用"房间收缩时拒绝 patch"（默认 true）。
+    /// Whether to enable "reject the patch when the room shrinks" (default
+    /// true).
     pub strict_bounds: bool,
-    /// 本次重载后的房间边界（用于策略 3 校验）。
+    /// Room bounds after this reload (used for strategy 3 validation).
     ///
-    /// `None` 表示不做边界校验。
+    /// `None` means no bounds validation.
     pub room_bounds: Option<Rect>,
 }
 
@@ -28,7 +29,7 @@ impl Default for Reload {
     }
 }
 
-/// 应用结果报告。
+/// Application result report.
 #[derive(Debug, Default, Clone)]
 pub struct ApplyReport {
     pub added: usize,
@@ -37,13 +38,13 @@ pub struct ApplyReport {
     pub moved: usize,
     pub tiles_replaced: bool,
     pub sync_updated: bool,
-    /// 被跳过的 patch（引用的 ID 消失等）。
+    /// Skipped patches (referenced ID disappeared, etc.).
     pub skipped: Vec<String>,
-    /// 被推离的实体（与玩家重叠）。
+    /// Pushed-out entities (overlapped the player).
     pub pushed_entities: Vec<EntityId>,
 }
 
-/// Reload 错误。
+/// Reload error.
 #[derive(Debug, thiserror::Error)]
 pub enum ReloadError {
     #[error("patch rejected, rolled back: {0}")]
@@ -52,7 +53,7 @@ pub enum ReloadError {
     Invariant(String),
 }
 
-/// 应用失败的兼容别名。
+/// Compatibility alias for an application failure.
 pub type ApplyError = ReloadError;
 
 impl Reload {
@@ -60,21 +61,22 @@ impl Reload {
         Self::default()
     }
 
-    /// 设置本次重载的房间边界（启用策略 3 校验）。
+    /// Set the room bounds for this reload (enables strategy 3 validation).
     pub fn with_bounds(mut self, bounds: Rect) -> Self {
         self.room_bounds = Some(bounds);
         self
     }
 
-    /// 应用一批 patch。
+    /// Apply a batch of patches.
     ///
-    /// 冲突处理策略（AGENTS.md §7.4）：
-    /// 1. 玩家与新增实体重叠 → 推离
-    /// 2. 引用的 ID 消失 → warning + 跳过
-    /// 3. 房间边界缩小且玩家在外 → error + 回滚整个 patch
+    /// Conflict handling strategies (AGENTS.md 7.4):
+    /// 1. Player overlaps a newly added entity -> push out
+    /// 2. Referenced ID disappeared -> warning + skip
+    /// 3. Room bounds shrink and the player is outside -> error + roll back the
+    ///    whole patch
     ///
-    /// **玩家与携带物状态在任何情况下都保留**——patches 只影响
-    /// 被显式提及的实体。
+    /// **Player and carried-object state is preserved in all cases** --
+    /// patches only affect entities that are explicitly mentioned.
     pub fn apply(
         &mut self,
         world: &mut World,
@@ -82,7 +84,7 @@ impl Reload {
     ) -> Result<ApplyReport, ReloadError> {
         let mut report = ApplyReport::default();
 
-        // 快照：用于回滚。
+        // Snapshot: used for rollback.
         let snapshot = self.snapshot(world);
 
         for patch in patches {
@@ -92,7 +94,8 @@ impl Reload {
                 return Err(ReloadError::RolledBack(e.to_string()));
             }
 
-            // 策略 3：每一步后校验玩家仍在房间边界内。
+            // Strategy 3: after each step, verify the player is still within
+            // the room bounds.
             if let Err(e) = self.check_player_in_bounds(world) {
                 self.restore(world, snapshot);
                 warn!(error = %e, "player left room bounds, rolling back");
@@ -100,7 +103,7 @@ impl Reload {
             }
         }
 
-        // 策略 1：玩家与新增实体重叠 → 推离。
+        // Strategy 1: player overlaps a newly added entity -> push out.
         let pushed = self.resolve_player_overlap(world);
         report.pushed_entities = pushed;
 
@@ -117,7 +120,7 @@ impl Reload {
         Ok(report)
     }
 
-    /// 校验玩家在（可选的）房间边界内。
+    /// Verify the player is within the (optional) room bounds.
     fn check_player_in_bounds(&self, world: &World) -> Result<(), ReloadError> {
         if !self.strict_bounds {
             return Ok(());
@@ -129,7 +132,8 @@ impl Reload {
             return Ok(());
         };
 
-        // 用玩家中心点判定，避免贴边时被误判。
+        // Judge by the player center to avoid a false positive when hugging an
+        // edge.
         let center = releste_math::Vec2::new(
             (player_bounds.min.x + player_bounds.max.x) / releste_math::Fx::from_int(2),
             (player_bounds.min.y + player_bounds.max.y) / releste_math::Fx::from_int(2),
@@ -143,7 +147,7 @@ impl Reload {
         }
     }
 
-    /// 应用单条 patch。
+    /// Apply a single patch.
     fn apply_one(
         &self,
         world: &mut World,
@@ -190,7 +194,8 @@ impl Reload {
                 report.moved += 1;
             }
             Patch::ReplaceTiles(_tiles) => {
-                // tile 集替换由 render 层消费；这里仅标记。
+                // The tileset replacement is consumed by the render layer; only
+                // flagged here.
                 report.tiles_replaced = true;
             }
             Patch::UpdateSync(_rules) => {
@@ -200,10 +205,12 @@ impl Reload {
         Ok(())
     }
 
-    /// 从 EntityData 构建运行时实体。
+    /// Build a runtime entity from EntityData.
     fn build_entity(&self, data: &EntityData) -> Entity {
-        // EntityKindId 由注册表解析；此处用名称散列占位。
-        // 完整的注册表集成在 world 层的 EntityRegistry 中完成。
+        // EntityKindId is resolved by the registry; a name hash is used as a
+        // placeholder here.
+        // Full registry integration is done in the world layer's
+        // EntityRegistry.
         let kind_id = kind_id_for(&data.kind);
         let mut entity = Entity::new(data.id, kind_id);
         entity.properties = data.properties.clone();
@@ -218,19 +225,19 @@ impl Reload {
         entity
     }
 
-    /// 冲突解决：把玩家从重叠的新实体中推离。
+    /// Conflict resolution: push the player out of overlapping new entities.
     ///
-    /// 返回被推离的实体 ID 列表。
+    /// Returns the list of pushed-out entity IDs.
     fn resolve_player_overlap(&self, world: &mut World) -> Vec<EntityId> {
         world.resolve_overlap()
     }
 
-    /// 世界快照（用于回滚）。
+    /// World snapshot (used for rollback).
     fn snapshot(&self, world: &World) -> Vec<(EntityId, Entity)> {
         world.all().map(|e| (e.id, e.clone())).collect()
     }
 
-    /// 从快照恢复。
+    /// Restore from the snapshot.
     fn restore(&self, world: &mut World, snapshot: Vec<(EntityId, Entity)>) {
         world.clear();
         for (_id, entity) in snapshot {
@@ -239,7 +246,8 @@ impl Reload {
     }
 }
 
-/// 由种类名称推导 `EntityKindId`（注册表未命中时的回退）。
+/// Derive `EntityKindId` from the kind name (fallback when the registry
+/// misses).
 fn kind_id_for(kind: &str) -> releste_world::EntityKindId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(kind.as_bytes());
@@ -261,7 +269,7 @@ mod tests {
         EntityId::new(n)
     }
 
-    /// 造一个带位置与尺寸的实体。
+    /// Build an entity with position and size.
     fn entity_raw(eid: EntityId, kind: EntityKindId, x: f32, y: f32, w: i32, h: i32) -> Entity {
         let mut e = Entity::new(eid, kind);
         e.set("x", FieldValue::Float(x));
@@ -271,7 +279,7 @@ mod tests {
         e
     }
 
-    /// 地图实体数据。
+    /// Map entity data.
     fn edata(eid: EntityId, kind: &str, x: f32, y: f32, w: i32, h: i32) -> EntityData {
         let mut d = EntityData::new(kind, eid, x, y);
         d.width = Some(w);
@@ -279,7 +287,7 @@ mod tests {
         d
     }
 
-    /// 一个世界：玩家 + 一堵墙。
+    /// A world: player + one wall.
     fn world_fixture() -> World {
         let mut w = World::new();
         let player = id(100);
@@ -302,7 +310,7 @@ mod tests {
         (x, y)
     }
 
-    // ---------- 基本 patch 应用 ----------
+    // ---------- Basic patch application ----------
 
     #[test]
     fn add_entity_inserts() {
@@ -382,7 +390,7 @@ mod tests {
         assert!(report.sync_updated);
     }
 
-    // ---------- 策略 2：ID 消失 → warning + 跳过 ----------
+    // ---------- Strategy 2: ID disappeared -> warning + skip ----------
 
     #[test]
     fn unknown_id_is_skipped_not_fatal() {
@@ -408,12 +416,13 @@ mod tests {
         assert_eq!(w.len(), before + 1, "valid patches must still apply");
     }
 
-    // ---------- 策略 1：玩家被推离 ----------
+    // ---------- Strategy 1: player is pushed out ----------
 
     #[test]
     fn player_is_pushed_out_of_new_entity() {
         let mut w = world_fixture();
-        // 新实体与玩家部分重叠（玩家 100..108，实体 102..110）。
+        // The new entity partially overlaps the player (player 100..108,
+        // entity 102..110).
         let mut r = Reload::new();
         let report = r
             .apply(
@@ -445,12 +454,13 @@ mod tests {
         assert_eq!(player_xy(&w), (100.0, 100.0));
     }
 
-    // ---------- 策略 3：玩家越界 → 回滚 ----------
+    // ---------- Strategy 3: player out of bounds -> rollback ----------
 
     #[test]
     fn shrinking_bounds_with_player_outside_rolls_back() {
         let mut w = world_fixture();
-        // 玩家在 (100,100)。把房间缩到远离玩家的地方。
+        // The player is at (100,100). Shrink the room far away from the
+        // player.
         let mut r = Reload::new().with_bounds(Rect::new(
             Vec2::from_f32s(0.0, 0.0),
             Vec2::from_f32s(50.0, 50.0),
@@ -495,7 +505,8 @@ mod tests {
                 Vec2::from_f32s(1.0, 1.0),
             )),
         };
-        // 玩家远在边界外，但 strict_bounds=false 时应放行。
+        // The player is far outside the bounds, but strict_bounds=false should
+        // allow it.
         let report = r
             .apply(
                 &mut w,
@@ -505,12 +516,12 @@ mod tests {
         assert_eq!(report.added, 1);
     }
 
-    // ---------- 核心不变量：玩家状态保留（AGENTS.md §10） ----------
+    // ---------- Core invariant: player state is preserved (AGENTS.md 10) ----------
 
     #[test]
     fn player_state_is_preserved_across_reload() {
         let mut w = world_fixture();
-        // 给玩家一些"会话状态"。
+        // Give the player some "session state".
         {
             let p = w.get_mut(w.player().unwrap()).unwrap();
             p.set("vx", FieldValue::Float(12.5));
@@ -520,7 +531,8 @@ mod tests {
         let player = w.player().unwrap();
         let before = w.get(player).unwrap().clone();
 
-        // 改一堆无关的东西（墙角移动 + 增减实体）。
+        // Change a bunch of unrelated things (move the wall + add/remove
+        // entities).
         let mut r = Reload::new();
         r.apply(
             &mut w,
@@ -555,7 +567,7 @@ mod tests {
         assert!(w.get(player).is_some());
     }
 
-    // ---------- 回滚的精确性 ----------
+    // ---------- Rollback precision ----------
 
     #[test]
     fn rollback_restores_world_exactly() {
@@ -585,7 +597,7 @@ mod tests {
         }
     }
 
-    // ---------- 端到端：diff → apply ----------
+    // ---------- End to end: diff -> apply ----------
 
     fn room_with(tiles: u16, entity_positions: &[(u64, &str, f32, f32)]) -> Room {
         let mut t = Tileset::new("Gameplay", 4, 4);
@@ -622,7 +634,7 @@ mod tests {
     #[test]
     fn end_to_end_diff_then_apply() {
         let old = doc(vec![room_with(1, &[(1, "wall", 100.0, 100.0)])]);
-        // 新版本：墙角移动 + 多了一个实体 + tile 变化
+        // New version: wall corner moved + one extra entity + tiles changed
         let new = doc(vec![room_with(
             5,
             &[(1, "wall", 110.0, 100.0), (2, "spinner", 200.0, 50.0)],
@@ -631,7 +643,7 @@ mod tests {
         let patches = releste_map::diff(&old, &new);
         assert!(!patches.is_empty(), "diff should produce patches");
 
-        // 用旧地图构建世界，然后应用 diff。
+        // Build the world from the old map, then apply the diff.
         let mut w = World::new();
         w.insert(entity_raw(id(1), KIND_WALL, 100.0, 100.0, 8, 8));
         let player = id(100);
@@ -645,7 +657,7 @@ mod tests {
         assert_eq!(report.moved, 1, "wall should move");
         assert!(report.tiles_replaced, "tiles changed");
 
-        // 玩家未被创建 diff 影响。
+        // The player was not affected by the created diff.
         assert_eq!(player_xy(&w), (250.0, 150.0));
         assert!(w.get(player).is_some());
         assert!(w.get(id(2)).is_some());

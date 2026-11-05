@@ -1,7 +1,7 @@
-//! 窗口宿主：winit 事件循环 + `FIXED_DT` 累加器 + 渲染。
+//! Window host: winit event loop + `FIXED_DT` accumulator + rendering.
 //!
-//! 宿主只做「喂输入、按固定步长 tick、把 service 的快照画出来」，
-//! 所有游戏状态都在 [`GameService`] 里（ROADMAP Phase 2.2）。
+//! The host only does "feed input, tick at a fixed step, draw the service's snapshot",
+//! and all game state lives in [`GameService`] (ROADMAP Phase 2.2).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,14 +26,14 @@ use crate::player::Input;
 use crate::service::{boot_plugins, watch_maps, GameService};
 use crate::session::Session;
 
-/// 最多连续补 8 个 tick，之后丢弃欠账（避免 spiral of death）。
+/// At most 8 catch-up ticks in a row, after which the backlog is dropped (avoiding spiral of death).
 const MAX_CATCHUP: u32 = 8;
-/// 允许采样到的最大墙钟间隔。
+/// The maximum wall-clock gap allowed to be sampled.
 const MAX_WALL_GAP: Duration = Duration::from_millis(250);
-/// 标题栏刷新间隔。
+/// Title bar refresh interval.
 const TITLE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// 窗口化运行的应用。
+/// The windowed application.
 pub struct GameApp {
     paths: Paths,
     session: Option<Session>,
@@ -44,7 +44,7 @@ pub struct GameApp {
     kernel: Option<Kernel>,
     batch: SpriteBatch,
     keys: Input,
-    /// 用户按键绑定（`<root>/settings.toml`，缺省 = 原版默认）。
+    /// User key bindings (`<root>/settings.toml`, absent = vanilla defaults).
     bindings: crate::settings::KeyBindings,
     accumulator: Duration,
     last: Instant,
@@ -53,17 +53,17 @@ pub struct GameApp {
     fps_last: Instant,
     fps: u32,
     ticks: u64,
-    /// `--screenshot`：第 `screenshot_after` 个渲染帧存成 PNG 后退出。
+    /// `--screenshot`: save the `screenshot_after`-th rendered frame as a PNG and exit.
     screenshot: Option<PathBuf>,
     screenshot_after: u64,
     screenshot_saved: bool,
     rendered: u64,
-    /// 截图等异步阶段攒下的致命错误；事件循环结束后由 `run` 上抛。
+    /// A fatal error accumulated during asynchronous phases such as screenshots; propagated by `run` after the event loop ends.
     fatal: Option<anyhow::Error>,
 }
 
 impl GameApp {
-    /// 建应用。此时只准备好数据，GPU 与窗口要等 `resumed`。
+    /// Build the application. Only data is prepared here; the GPU and window wait for `resumed`.
     pub fn new(
         paths: Paths,
         session: Session,
@@ -100,7 +100,7 @@ impl GameApp {
         }
     }
 
-    /// 进入事件循环；返回时已完成服务收尾。
+    /// Enter the event loop; on return the service has already been shut down.
     pub fn run(mut self) -> anyhow::Result<()> {
         let event_loop = new_event_loop()?;
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -111,9 +111,9 @@ impl GameApp {
         if let Some(mut kernel) = self.kernel.take() {
             kernel.shutdown();
         }
-        // 销毁顺序：wgpu 的 Surface 持有 Window 的引用，必须**先于**
-        // Window 释放。结构体字段序是 window 在前 gpu 在后，默认 drop
-        // 会先放掉 Window —— 部分后端上退出即段错误（关窗 SegFault）。
+        // Destruction order: wgpu's Surface holds a reference to the Window and must be released **before**
+        // the Window. The struct field order is window before gpu, so the default drop
+        // would release the Window first -- on some backends exiting then segfaults (close-window SegFault).
         self.gpu = None;
         self.window = None;
         if let Some(e) = self.fatal.take() {
@@ -123,7 +123,7 @@ impl GameApp {
         Ok(())
     }
 
-    /// 建窗口 + GPU + kernel。只在 `resumed` 里跑一次。
+    /// Create the window + GPU + kernel. Runs only once, inside `resumed`.
     fn boot(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -179,7 +179,7 @@ impl GameApp {
         info!("window ready");
     }
 
-    /// 创建 wgpu 设备。不引入 `pollster`（AGENTS.md §15.1）。
+    /// Create the wgpu device. `pollster` is not pulled in (AGENTS.md 15.1).
     fn init_gpu(window: Arc<Window>) -> anyhow::Result<GpuRenderer> {
         let size = window.inner_size();
         let config = GpuRendererConfig {
@@ -192,9 +192,9 @@ impl GameApp {
     }
 
     fn on_key(&mut self, event: &KeyEvent) {
-        // OS 键盘重复会以 `Pressed` 反复投递同一个键。移动/跳跃键的赋值是
-        // 幂等的，但 Esc 的 toggle 不是 —— 按住 Esc 会把暂停快速来回切。
-        // 所以重复事件一律忽略（松开事件没有 repeat，不受影响）。
+        // OS key repeat delivers the same key repeatedly as `Pressed`. Assigning movement/jump keys is
+        // idempotent, but the Esc toggle is not -- holding Esc flips pause back and forth rapidly.
+        // So repeated events are ignored (release events have no repeat and are unaffected).
         if event.repeat {
             return;
         }
@@ -202,11 +202,11 @@ impl GameApp {
             return;
         };
         let down = event.state == ElementState::Pressed;
-        // 键位 = `settings.toml`（缺省即原版默认：方向键移动、C 跳 ——
-        // `SetDefaultKeyboardControls`，pureCeleste.cs:101602-101651；
-        // `TranslateKeys` 101708 的物理键语义 = winit `PhysicalKey`）。
-        // Enter = 原版 Pause（101642）；ESC = 原版菜单键（`Input.ESC`，
-        // 110396），引擎沿用为暂停开关。冲刺/抓攀等 Phase 4.1 后加入。
+        // Key bindings = `settings.toml` (absent means vanilla defaults: arrow keys move, C jumps --
+        // `SetDefaultKeyboardControls`, pureCeleste.cs:101602-101651;
+        // `TranslateKeys` 101708's physical-key semantics = winit `PhysicalKey`).
+        // Enter = vanilla Pause (101642); ESC = the vanilla menu key (`Input.ESC`,
+        // 110396), which the engine reuses as the pause toggle. Dash/grab etc. are added after Phase 4.1.
         if code == KeyCode::Escape || code == KeyCode::Enter {
             if down {
                 self.toggle_pause();
@@ -251,7 +251,7 @@ impl GameApp {
         }
     }
 
-    /// 固定步长推进。
+    /// Fixed-step advance.
     fn tick(&mut self) {
         let now = Instant::now();
         let mut wall = now.duration_since(self.last);
@@ -263,7 +263,7 @@ impl GameApp {
             );
             wall = MAX_WALL_GAP;
         }
-        // 输入在 tick 之前写进 service，保证本帧的 tick 用到的是最新按键。
+        // Input is written into the service before the tick, ensuring this frame's tick uses the latest keys.
         if let Some(kernel) = self.kernel.as_mut() {
             if let Some(service) = kernel.resolve_mut::<GameService>() {
                 service.input = self.keys;
@@ -314,7 +314,7 @@ impl GameApp {
         window.set_title(&title);
     }
 
-    /// 画一帧；`--screenshot` 到点时抓帧落盘并退出。
+    /// Draw one frame; with `--screenshot`, capture the frame to disk and exit when it is due.
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(kernel), Some(gpu)) = (self.kernel.as_mut(), self.gpu.as_mut()) else {
             return;
@@ -340,7 +340,7 @@ impl GameApp {
         }
     }
 
-    /// 渲染当前快照并写 PNG（真实管线输出，含截屏那次独立渲染）。
+    /// Render the current snapshot and write a PNG (real pipeline output, including the separate render for the capture).
     fn save_screenshot(&mut self) -> anyhow::Result<()> {
         let Some(path) = self.screenshot.clone() else {
             return Ok(());
@@ -370,7 +370,7 @@ impl GameApp {
     }
 }
 
-/// 把紧凑 RGBA8 像素写成 PNG；父目录不存在时顺手创建。
+/// Write compact RGBA8 pixels as a PNG; create the parent directory if it is missing.
 fn save_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -397,7 +397,7 @@ impl ApplicationHandler for GameApp {
                 event_loop.exit();
             }
             WindowEvent::Focused(false) => {
-                // 松开按键，避免切窗后角色一直跑
+                // Release the keys so the character does not keep running after an alt-tab
                 self.keys = Input::default();
             }
             WindowEvent::Resized(size) => {
@@ -421,16 +421,16 @@ impl ApplicationHandler for GameApp {
     }
 }
 
-/// 事件循环：Wayland 库加载不了就强制 X11。
+/// Event loop: force X11 when the Wayland library cannot be loaded.
 ///
-/// winit 0.30 只在非空 `WAYLAND_DISPLAY` / `WAYLAND_SOCKET` 下试 Wayland，
-/// libwayland 加载不了就直接报错，**没有 X11 回落**（`platform_impl/linux/
-/// mod.rs` 的 backend 选择）。
+/// winit 0.30 only tries Wayland with a non-empty `WAYLAND_DISPLAY` / `WAYLAND_SOCKET`;
+/// if libwayland cannot be loaded it errors out directly, **with no X11 fallback** (the backend selection in
+/// `platform_impl/linux/mod.rs`).
 ///
-/// 为什么不在 wayland 失败后再建一个 x11 loop：`EventLoopBuilder::build()`
-/// 在创建之前就把 `EVENT_LOOP_CREATED` 置位，同一进程的第二次 `build()`
-/// 直接返回 `RecreationAttempt`。所以只能在建 loop **之前**选好后端 ——
-/// 先用 `libloading` 探一下 `libwayland-client` 能不能 dlopen。
+/// Why not build an x11 loop after wayland fails: `EventLoopBuilder::build()`
+/// sets `EVENT_LOOP_CREATED` before creation, so a second `build()` in the same process
+/// returns `RecreationAttempt` directly. So the backend must be chosen **before** building the loop --
+/// first probe with `libloading` whether `libwayland-client` can be dlopened.
 #[cfg(target_os = "linux")]
 fn new_event_loop() -> anyhow::Result<EventLoop<()>> {
     let wayland_wanted = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
@@ -451,8 +451,8 @@ fn new_event_loop() -> anyhow::Result<EventLoop<()>> {
             .map_err(|e| anyhow::anyhow!("event loop (x11): {e}"));
     }
     if wayland_wanted && !wayland_ok && !x11_ok {
-        // 别让 winit 的报错只提 wayland —— 把两边的库都点名，
-        // 用户才知道该装什么（ROADMAP Appendix B：错误要点修复方法）。
+        // Do not let winit's error mention only wayland -- name the libraries on both sides,
+        // so the user knows what to install (ROADMAP Appendix B: errors must point to the fix).
         return Err(anyhow::anyhow!(
             "no display backend can be loaded:\n  \
              wayland: libwayland-client could not be dlopened\n  \
@@ -466,30 +466,30 @@ fn new_event_loop() -> anyhow::Result<EventLoop<()>> {
     EventLoop::new().map_err(|e| anyhow::anyhow!("event loop: {e}"))
 }
 
-/// 一个 SONAME 能不能被 dlopen。
+/// Whether a SONAME can be dlopened.
 ///
-/// dlopen 是引用计数的，`Library` 在表达式结束时就 dlclose；失败不打日志
-/// —— 调用方会把**决定**作为一条 `warn` 报出来。
+/// dlopen is reference-counted and `Library` dlcloses at the end of the expression; failures are not logged
+/// -- the caller reports the **decision** as a `warn`.
 #[cfg(target_os = "linux")]
 fn library_loadable(soname: &str) -> bool {
     unsafe { libloading::Library::new(soname) }.is_ok()
 }
 
-/// 非 Linux 平台没有 Wayland/X11 之分，winit 自己挑。
+/// Non-Linux platforms have no Wayland/X11 distinction; winit chooses by itself.
 #[cfg(not(target_os = "linux"))]
 fn new_event_loop() -> anyhow::Result<EventLoop<()>> {
     EventLoop::new().map_err(|e| anyhow::anyhow!("event loop: {e}"))
 }
 
-/// 手写的 future 阻塞器。
+/// A hand-written future blocker.
 ///
-/// wgpu 的 `request_adapter` / `request_device` 返回 future，而窗口启动是
-/// 同步的。这里阻塞等待，不引入 `pollster` 依赖（AGENTS.md §15.1）。
+/// wgpu's `request_adapter` / `request_device` return futures while window startup is
+/// synchronous. This blocks and waits without pulling in the `pollster` dependency (AGENTS.md 15.1).
 ///
 /// # Why `clippy::manual_noop_waker` is allowed
-/// 标准库的 `Waker::noop()` 需要 Rust 1.85，而本工作区 `rust-version` 锁在
-/// 1.80 —— AGENTS.md §15.2 禁止改。所以手写 no-op waker，理由写在这里
-/// 满足 AGENTS.md §5.1。
+/// The standard library's `Waker::noop()` requires Rust 1.85, while this workspace's `rust-version` is locked to
+/// 1.80 -- AGENTS.md 15.2 forbids changing it. So a no-op waker is hand-written, with the reason stated here
+/// to satisfy AGENTS.md 5.1.
 #[allow(clippy::manual_noop_waker)]
 fn pollster_block_on<F: std::future::Future>(fut: F) -> F::Output {
     use std::pin::pin;

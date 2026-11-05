@@ -1,92 +1,94 @@
-//! 仿真命令：Lua 过场通过队列驱动 sim 的唯一通道。
+//! Simulation commands: the only channel through which Lua cutscenes drive
+//! the sim via the queue.
 //!
-//! **Lua 永远不直接改物理状态**（AGENTS.md §4.5）。
+//! **Lua never directly modifies physics state** (AGENTS.md 4.5).
 
 use releste_math::Vec2;
 use releste_world::EntityId;
 use serde::{Deserialize, Serialize};
 
-/// 由 Lua 脚本排队、由仿真在下一帧消费的命令。
+/// A command queued by a Lua script and consumed by the simulation on the next
+/// frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SimCommand {
-    /// 让一个 actor 走（或瞬移）到目标点。
+    /// Make an actor walk (or teleport) to a target point.
     DummyWalkTo {
         actor: EntityId,
         target: Vec2,
         duration: DurationFrames,
     },
-    /// 设置玩家状态。
+    /// Set the player state.
     SetPlayerState(PlayerState),
-    /// 摄像机缩放 / 平移到目标。
+    /// Zoom / pan the camera to a target.
     CameraZoom {
         target: Vec2,
         zoom: f32,
         duration: DurationFrames,
     },
-    /// 生成一个过场 actor。
+    /// Spawn a cutscene actor.
     SpawnActor { kind: ActorKind, pos: Vec2 },
-    /// 等待若干帧。
+    /// Wait for a number of frames.
     Wait { frames: u32 },
-    /// 播放音效 / 音乐。
+    /// Play a sound effect / music.
     PlayAudio { event: String, volume: f32 },
-    /// 结束过场。
+    /// End the cutscene.
     EndCutscene,
 }
 
-/// 时长（以帧为单位，定点数时间与 60Hz 对齐，保证确定性）。
+/// Duration (in frames; fixed-point time aligned to 60Hz for determinism).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DurationFrames(pub u32);
 
 impl DurationFrames {
-    /// 从秒转换为帧（向上取整）。
+    /// Convert from seconds to frames (rounding up).
     pub fn from_secs(secs: f32) -> Self {
         DurationFrames((secs * 60.0).ceil().max(0.0) as u32)
     }
 
-    /// 转为秒。
+    /// Convert to seconds.
     pub fn as_secs(self) -> f32 {
         self.0 as f32 / 60.0
     }
 }
 
-/// 玩家状态（过场用的受限子集）。
+/// Player state (the restricted subset used by cutscenes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayerState {
-    /// 正常控制。
+    /// Normal control.
     Normal,
-    /// 冻结（不能操作，保留物理）。
+    /// Frozen (no control, physics retained).
     Frozen,
-    /// 无敌（过场不被刺死）。
+    /// Invincible (not killed by spikes during a cutscene).
     Invincible,
-    /// 无重力（漂浮）。
+    /// No gravity (floating).
     NoGravity,
 }
 
-/// 过场 actor 类型。
+/// Cutscene actor type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorKind {
-    /// 假玩家（复制外观，无物理）。
+    /// Dummy player (copies the appearance, no physics).
     Dummy,
-    /// 老妇人等 NPC（按名称引用资源）。
+    /// NPCs such as the old woman (reference resources by name).
     Npc(String),
-    /// 特效 actor。
+    /// Effect actor.
     Effect(String),
 }
 
-/// 正在执行的命令（带进度）。
+/// A command currently executing (with progress).
 #[derive(Debug, Clone)]
 pub struct ActiveCommand {
     pub command: SimCommand,
-    /// 剩余帧数。
+    /// Remaining frames.
     pub remaining: u32,
-    /// 总帧数（用于插值进度）。
+    /// Total frames (used to interpolate progress).
     pub total: u32,
 }
 
 impl ActiveCommand {
-    /// 由命令构造。
+    /// Construct from a command.
     pub fn new(command: SimCommand) -> Self {
         let total = match &command {
             SimCommand::DummyWalkTo { duration, .. } => duration.0,
@@ -101,7 +103,7 @@ impl ActiveCommand {
         }
     }
 
-    /// 进度 `0.0 ..= 1.0`。
+    /// Progress `0.0 ..= 1.0`.
     pub fn progress(&self) -> f32 {
         if self.total == 0 {
             1.0
@@ -110,12 +112,12 @@ impl ActiveCommand {
         }
     }
 
-    /// 是否完成。
+    /// Whether it is done.
     pub fn is_done(&self) -> bool {
         self.remaining == 0
     }
 
-    /// 推进一帧，返回是否完成。
+    /// Advance one frame; returns whether it is done.
     pub fn step(&mut self) -> bool {
         if self.remaining > 0 {
             self.remaining -= 1;

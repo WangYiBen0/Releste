@@ -1,6 +1,6 @@
 //! `releste-net-client`: client networking layer.
 //!
-//! # Core principles (AGENTS.md §4.4)
+//! # Core principles (AGENTS.md 4.4)
 //! - **The world is not synced by default**. Only entities explicitly
 //!   declared by the map via `[[sync_rule]]` produce [`SyncEvent`]s.
 //! - Client-authoritative: the server does not touch physics or understand map content.

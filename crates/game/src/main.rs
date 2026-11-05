@@ -1,4 +1,4 @@
-//! `releste` — the game binary.
+//! `releste` - the game binary.
 //!
 //! CLI follows ROADMAP Appendix B where it is already unambiguous
 //! (`--help` suffices, `--verbose`/`--log`/`--no-color`, user error vs bug).
@@ -30,13 +30,13 @@ use crate::paths::Paths;
 use crate::service::{boot_plugins, watch_maps, GameService};
 use crate::session::Session;
 
-/// `releste` 命令行。
+/// The `releste` command line.
 #[derive(Parser, Debug)]
 #[command(
     name = "releste",
     version,
-    about = "Releste — a 2D precision platformer engine",
-    long_about = "Releste — a 2D precision platformer engine.\n\n\
+    about = "Releste - a 2D precision platformer engine",
+    long_about = "Releste - a 2D precision platformer engine.\n\n\
                   Run with no flags to open `0-Intro.map` in a window.\n\
                   Use `--headless --frames 600` for a smoke test that needs no display."
 )]
@@ -80,14 +80,14 @@ struct Args {
     /// Replay a TOML scenario (inputs + assertions) and exit.
     ///
     /// Deterministic: no plugins, no hot reload. Assertion failures print
-    /// `tick=… field: expected … got …` and exit 1. See `tests/scenarios/`.
+    /// `tick=... field: expected ... got ...` and exit 1. See `tests/scenarios/`.
     #[arg(long, value_name = "PATH")]
     script: Option<PathBuf>,
 
     /// Dump the map as the runtime parsed it (JSON) and exit.
     ///
     /// Complements `releste-map --example dump_rooms` (raw file view):
-    /// this is what the engine actually loaded — spawn, atlas, tile rows.
+    /// this is what the engine actually loaded - spawn, atlas, tile rows.
     #[arg(long, value_name = "PATH")]
     dump_map: Option<PathBuf>,
 
@@ -105,7 +105,7 @@ struct Args {
 }
 
 impl Args {
-    /// 生效的日志过滤器：`--log` > `RUST_LOG` > `--verbose` > 默认档。
+    /// Effective log filter: `--log` > `RUST_LOG` > `--verbose` > the default tier.
     fn filter(&self) -> String {
         if let Some(level) = &self.log {
             return level.clone();
@@ -122,18 +122,18 @@ impl Args {
         }
     }
 
-    /// 生效的 tick 数：headless 默认 600；`--screenshot` 默认 30
-    /// （相机每 tick 追 1/4，30 tick 后已收敛，插件也已启动）。
+    /// Effective tick count: headless defaults to 600; `--screenshot` defaults to 30
+    /// (the camera chases 1/4 per tick and has converged after 30 ticks, and plugins have started).
     fn frame_count(&self) -> u64 {
         self.frames
             .unwrap_or(if self.screenshot.is_some() { 30 } else { 600 })
     }
 
-    /// 默认档：本项目 INFO、其余一律 WARN。
+    /// Default tier: INFO for this project, WARN for everything else.
     ///
-    /// 不这么干的话 wgpu-hal 会把 Vulkan loader 的每一行都刷到屏幕上，
-    /// 日志就没法读了（ROADMAP Appendix A：日志必须对人友好）。
-    /// EnvFilter 的 target 是 `starts_with` 匹配，裸前缀即可，不用 `*`。
+    /// Without this, wgpu-hal would spew every line of the Vulkan loader to the screen
+    /// and the log would be unreadable (ROADMAP Appendix A: logs must be human-friendly).
+    /// EnvFilter targets match with `starts_with`, so a bare prefix suffices and no `*` is needed.
     fn default_filter() -> &'static str {
         "warn,releste=info,releste_=info,plugins=info"
     }
@@ -157,14 +157,14 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // 用户可见的完整错误链；退出码 1 = 用法/资源问题（Appendix B 规则 5）。
+            // The full user-visible error chain; exit code 1 = usage/resource problem (Appendix B rule 5).
             tracing::error!("releste failed: {e:#}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// 唯一的 `run`：加载地图后分流到 headless / 窗口 / 调试工具。
+/// The single `run`: after loading the map it branches to headless / window / dev tools.
 fn run(args: &Args) -> anyhow::Result<()> {
     if args.headless && args.screenshot.is_some() {
         anyhow::bail!(
@@ -214,7 +214,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
         println!("{}", outcome.summary());
         if !outcome.failures.is_empty() {
             anyhow::bail!(
-                "scenario {}: {} failed check(s) — see the FAIL lines above",
+                "scenario {}: {} failed check(s) - see the FAIL lines above",
                 path.display(),
                 outcome.failures.len()
             );
@@ -237,7 +237,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
     app.run()
 }
 
-/// headless 冒烟：跑 `--frames` 个 tick，打印报表，退出。
+/// Headless smoke test: run `--frames` ticks, print a report, exit.
 fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<()> {
     let host = if args.no_plugins {
         None
@@ -264,7 +264,7 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
             if let Some(svc) = kernel.resolve::<GameService>() {
                 let room = svc.room_name();
                 let snap = svc.player.snapshot(tick, room);
-                // `-v` 时同时给人一条时间线；JSONL 始终是第一手数据。
+                // At `-v` also print a human timeline; JSONL is always the primary data.
                 tracing::debug!("{}", snap.to_line());
                 trace.write(&snap)?;
             }
@@ -278,8 +278,8 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
     if let Some(trace) = trace {
         trace.finish()?;
     }
-    // 报表数据在跑完之后取：运行中可能发生热重载（文档被换掉、
-    // reloads 增加），tick 前的快照会把它们全部报成 0。
+    // Report data is taken after the run: hot reload may happen while running (the document is swapped and
+    // reloads increases), and a snapshot before the ticks would report them all as 0.
     let (rooms, entities, room, plugins, reloads) = kernel
         .resolve::<GameService>()
         .map(|s| {
@@ -302,7 +302,7 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
     Ok(())
 }
 
-/// 启动路径一览：找不到资源时这行日志能省掉大量猜测。
+/// Startup path overview: when assets are not found this log line saves a lot of guessing.
 fn info_paths(paths: &Paths) {
     tracing::info!(
         root = %paths.root().display(),
@@ -313,10 +313,10 @@ fn info_paths(paths: &Paths) {
     );
 }
 
-/// panic → `[FATAL]` 行 + 原始 hook 输出。
+/// panic -> a `[FATAL]` line + the original hook output.
 ///
-/// 钩子只用闭包参数的类型推断，不点名 `PanicHookInfo` —— 该类型在 1.81
-/// 才改名，而 `rust-version` 锁在 1.80（AGENTS.md §15.2）。
+/// The hook relies only on closure-parameter type inference and never names `PanicHookInfo` -- that type was renamed in 1.81
+/// while `rust-version` is locked to 1.80 (AGENTS.md 15.2).
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -1,26 +1,26 @@
-//! 音频请求。
+//! Audio requests.
 
 use serde::{Deserialize, Serialize};
 
-/// 音频总线。
+/// Audio bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Bus {
-    /// 总音量。
+    /// Master volume.
     Master,
-    /// 音乐。
+    /// Music.
     Music,
-    /// 音效。
+    /// Sound effects.
     Sfx,
-    /// UI。
+    /// UI.
     Ui,
 }
 
 impl Bus {
-    /// 所有总线。
+    /// All buses.
     pub const ALL: [Bus; 4] = [Bus::Master, Bus::Music, Bus::Sfx, Bus::Ui];
 
-    /// 数组下标。
+    /// Array index.
     pub const fn index(self) -> usize {
         match self {
             Bus::Master => 0,
@@ -31,62 +31,62 @@ impl Bus {
     }
 }
 
-/// 音效优先级。
+/// Sound effect priority.
 ///
-/// 高优先级可在通道不足时抢占低优先级（Celeste 风格的
-/// "重要音效不被淹没"）。
+/// A high priority can preempt a lower one when channels run short (the Celeste
+/// style of "important sound effects must not be drowned out").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoundPriority {
-    /// 可被任意抢占。
+    /// Can be preempted by anything.
     Low = 0,
-    /// 默认。
+    /// Default.
     Normal = 1,
-    /// 重要（如死亡、冲刺）。
+    /// Important (such as death or dash).
     High = 2,
-    /// 不允许被抢占。
+    /// Cannot be preempted.
     Critical = 3,
 }
 
-/// 播放句柄。
+/// Playback handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SoundHandle(pub u64);
 
-/// 音频请求。
+/// Audio request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AudioRequest {
-    /// 播放一次性音效。
+    /// Plays a one-shot sound effect.
     PlaySfx {
-        /// FMOD 事件路径（如 `event:/sfx/jump`）。
+        /// FMOD event path (such as `event:/sfx/jump`).
         event: String,
-        /// 线性音量 `0.0..=1.0`。
+        /// Linear volume `0.0..=1.0`.
         volume: f32,
-        /// 优先级。
+        /// Priority.
         priority: SoundPriority,
-        /// 音高（1.0 = 原速）。
+        /// Pitch (1.0 = original speed).
         pitch: f32,
     },
-    /// 播放音乐（替换当前曲目）。
+    /// Plays music (replacing the current track).
     PlayMusic {
         event: String,
         volume: f32,
-        /// 交叉淡入帧数。
+        /// Crossfade frame count.
         fade_frames: u32,
     },
-    /// 停止音乐。
+    /// Stops the music.
     StopMusic { fade_frames: u32 },
-    /// 播放环境音。
+    /// Plays ambience.
     PlayAmbience { event: String, volume: f32 },
-    /// 停止环境音。
+    /// Stops the ambience.
     StopAmbience { fade_frames: u32 },
-    /// 设置总线音量。
+    /// Sets a bus volume.
     SetBusVolume { bus: Bus, volume: f32 },
-    /// 停止所有声音。
+    /// Stops all sounds.
     StopAll,
 }
 
 impl AudioRequest {
-    /// 便捷构造：默认优先级的音效。
+    /// Convenience constructor: a default-priority sound effect.
     pub fn play_sfx(event: impl Into<String>, volume: f32, priority: SoundPriority) -> Self {
         AudioRequest::PlaySfx {
             event: event.into(),
@@ -96,7 +96,7 @@ impl AudioRequest {
         }
     }
 
-    /// 便捷构造：音乐。
+    /// Convenience constructor: music.
     pub fn play_music(event: impl Into<String>, volume: f32) -> Self {
         AudioRequest::PlayMusic {
             event: event.into(),
@@ -105,9 +105,9 @@ impl AudioRequest {
         }
     }
 
-    /// 该请求是否参与同帧去重。
+    /// Whether this request takes part in same-frame deduplication.
     ///
-    /// 音乐 / 音量 / 停止类请求不去重（它们本身是幂等的或有状态）。
+    /// Music / volume / stop requests are not deduplicated (they are idempotent or stateful in themselves).
     pub fn participates_in_dedup(&self) -> bool {
         matches!(
             self,
@@ -115,7 +115,7 @@ impl AudioRequest {
         )
     }
 
-    /// 去重键（仅对参与去重的请求有意义）。
+    /// Dedup key (meaningful only for requests that take part in deduplication).
     pub fn dedup_key(&self) -> Option<&str> {
         match self {
             AudioRequest::PlaySfx { event, .. } | AudioRequest::PlayAmbience { event, .. } => {
@@ -125,7 +125,7 @@ impl AudioRequest {
         }
     }
 
-    /// 优先级（非音效默认 `Normal`）。
+    /// Priority (defaults to `Normal` for non-sound-effect requests).
     pub fn priority(&self) -> SoundPriority {
         match self {
             AudioRequest::PlaySfx { priority, .. } => *priority,

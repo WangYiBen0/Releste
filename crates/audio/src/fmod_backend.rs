@@ -1,25 +1,27 @@
-//! FMOD 后端（`fmod` feature）。
+//! FMOD backend (the `fmod` feature).
 //!
-//! # 用户自备动态库（AGENTS.md §4.7）
-//! 本模块**不链接** FMOD，而是在运行期用 `libloading` 打开
-//! `libfmod.so` / `fmod.dll` / `libfmod.dylib`。
+//! # The user provides the shared library (AGENTS.md 4.7)
+//! This module does **not link** FMOD; it opens
+//! `libfmod.so` / `fmod.dll` / `libfmod.dylib` at runtime with `libloading`.
 //!
-//! - 构建期：`build.rs` 探测库位置，找不到时以 AGENTS.md 指定的
-//!   格式报错（可用 `RELESTE_FMOD_ALLOW_MISSING=1` 跳过）。
-//! - 运行期：[`FmodBackend::new`] 打开库并探测 API 代际；失败返回
-//!   [`AudioError::FmodNotFound`] 或 [`AudioError::FmodUnusable`]。
+//! - Build time: `build.rs` probes for the library location and, when it is
+//!   missing, reports the error in the format AGENTS.md specifies
+//!   (`RELESTE_FMOD_ALLOW_MISSING=1` skips it).
+//! - Runtime: [`FmodBackend::new`] opens the library and probes the API
+//!   generation; on failure it returns [`AudioError::FmodNotFound`] or
+//!   [`AudioError::FmodUnusable`].
 //!
-//! # 支持的 API 代际
-//! FMOD 的 ABI 在三代之间完全不兼容，因此启动时必须识别：
+//! # Supported API generations
+//! FMOD's ABI is completely incompatible across the three generations, so startup must identify:
 //!
-//! | 代际            | 关键符号                    | 年代 |
+//! | Generation      | Key symbols                 | Era  |
 //! | --------------- | --------------------------- | ---- |
 //! | FMOD Studio     | `FMOD_Studio_System_Create` | 5.x+ |
 //! | FMOD Ex         | `FMOD_System_Create`        | 4.x  |
 //! | FMOD 3 (Legacy) | `FSOUND_Init`               | 3.x  |
 //!
-//! 只有 Studio 代际能直接支撑本引擎的 bank/event 模型；Ex 与
-//! Legacy 会被识别并**明确报告**，而不是静默当成 Studio 用。
+//! Only the Studio generation can directly support this engine's bank/event model; Ex and
+//! Legacy are recognized and **reported explicitly** rather than silently treated as Studio.
 
 use std::path::{Path, PathBuf};
 
@@ -28,19 +30,19 @@ use libloading::{Library, Symbol};
 use crate::command::Bus;
 use crate::{AudioBackend, AudioError, FMOD_NOT_FOUND_MESSAGE};
 
-/// FMOD API 代际。
+/// FMOD API generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FmodGeneration {
-    /// FMOD Studio（5.x/6.x）：bank + event 模型。
+    /// FMOD Studio (5.x/6.x): the bank + event model.
     Studio,
-    /// FMOD Ex（4.x）：programmer sound 模型。
+    /// FMOD Ex (4.x): the programmer sound model.
     Ex,
-    /// FMOD 3.x：`FSOUND_*` / `FMUSIC_*` 模型。
+    /// FMOD 3.x: the `FSOUND_*` / `FMUSIC_*` model.
     Legacy3,
 }
 
 impl FmodGeneration {
-    /// 人类可读描述。
+    /// Human-readable description.
     pub fn describe(self) -> &'static str {
         match self {
             FmodGeneration::Studio => "FMOD Studio (5.x+)",
@@ -49,25 +51,25 @@ impl FmodGeneration {
         }
     }
 
-    /// 是否为本引擎直接支持的代际。
+    /// Whether this is a generation the engine supports directly.
     pub fn is_supported(self) -> bool {
         matches!(self, FmodGeneration::Studio)
     }
 }
 
-/// 已加载库的探测结果。
+/// Probe result for a loaded library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FmodProbe {
-    /// 实际加载成功的路径。
+    /// Path that was actually loaded successfully.
     pub path: PathBuf,
-    /// 识别出的 API 代际。
+    /// Recognized API generation.
     pub generation: FmodGeneration,
-    /// 命中探测的关键符号。
+    /// Key symbols that matched the probe.
     pub symbols: Vec<&'static str>,
 }
 
 impl FmodProbe {
-    /// 一行摘要（日志用）。
+    /// One-line summary (for logging).
     pub fn summary(&self) -> String {
         format!(
             "{} @ {} (symbols: {})",
@@ -78,7 +80,7 @@ impl FmodProbe {
     }
 }
 
-/// 平台默认库名。
+/// Platform default library name.
 pub fn default_library_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "fmod.dll"
@@ -89,12 +91,12 @@ pub fn default_library_name() -> &'static str {
     }
 }
 
-/// 构建脚本探测到的库路径（若找到）。
+/// Library path probed by the build script (if found).
 pub fn probed_library_path() -> Option<PathBuf> {
     option_env!("RELESTE_FMOD_PATH").map(PathBuf::from)
 }
 
-/// 候选库路径：优先环境变量，其次构建脚本探测结果，最后平台默认名。
+/// Candidate library paths: environment variables first, then the build-script probe result, then the platform default name.
 fn candidate_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
     for var in ["RELESTE_FMOD_LIB", "RELESTE_FMOD_PATH"] {
@@ -113,11 +115,11 @@ fn candidate_paths() -> Vec<PathBuf> {
     out
 }
 
-/// 按符号探测 API 代际。
+/// Probes the API generation by symbol.
 ///
-/// 只解析符号、**不调用**任何函数指针，因此对未经验证的库也安全。
+/// Only resolves symbols and **does not call** any function pointers, so it is safe even for unverified libraries.
 fn probe_generation(library: &Library) -> Option<(FmodGeneration, Vec<&'static str>)> {
-    // (代际, 必需符号, 辅助符号)
+    // (generation, required symbol, helper symbols)
     const CANDIDATES: &[(FmodGeneration, &str, &[&str])] = &[
         (
             FmodGeneration::Studio,
@@ -167,9 +169,9 @@ fn probe_generation(library: &Library) -> Option<(FmodGeneration, Vec<&'static s
     None
 }
 
-/// FMOD 后端。
+/// FMOD backend.
 ///
-/// 持有着已打开的库句柄，保证符号有效。
+/// Holds the opened library handle so the symbols stay valid.
 pub struct FmodBackend {
     _library: Library,
     probe: FmodProbe,
@@ -177,18 +179,18 @@ pub struct FmodBackend {
 }
 
 impl FmodBackend {
-    /// 打开并识别 FMOD 库。
+    /// Opens and identifies the FMOD library.
     ///
     /// # Errors
-    /// - 所有候选路径都打不开 → [`AudioError::FmodNotFound`]（AGENTS.md §4.7 原文）。
-    /// - 打开了但没有可识别的 FMOD 符号 → [`AudioError::FmodUnusable`]。
+    /// - None of the candidate paths open -> [`AudioError::FmodNotFound`] (the exact AGENTS.md 4.7 text).
+    /// - It opens but has no recognizable FMOD symbols -> [`AudioError::FmodUnusable`].
     pub fn new() -> Result<Self, AudioError> {
         let candidates = candidate_paths();
         let mut attempts: Vec<String> = Vec::new();
 
         for path in &candidates {
-            // SAFETY: 加载外部动态库本质上不受 Rust 保护。
-            // 我们只解析符号、不调用未经验证的函数指针。
+            // SAFETY: loading an external dynamic library is inherently outside Rust's
+            // guarantees. We only resolve symbols and do not call unverified function pointers.
             match unsafe { Library::new(path) } {
                 Ok(library) => {
                     let Some((generation, symbols)) = probe_generation(&library) else {
@@ -226,8 +228,9 @@ impl FmodBackend {
             }
         }
 
-        // 只要候选里有一个真实存在的文件，就报"不可用"并附上原始错误
-        // （例如位数不匹配）——比笼统的 not found 有用得多。
+        // As soon as one candidate is a real existing file, report "unusable" with the
+        // original error (for example a bitness mismatch) -- far more useful than a vague
+        // not found.
         if candidates.iter().any(|p| p.exists()) {
             Err(AudioError::FmodUnusable(format!(
                 "FMOD library was found but could not be used.\n\
@@ -241,12 +244,12 @@ impl FmodBackend {
         }
     }
 
-    /// 探测结果。
+    /// Probe result.
     pub fn probe(&self) -> &FmodProbe {
         &self.probe
     }
 
-    /// API 代际。
+    /// API generation.
     pub fn generation(&self) -> FmodGeneration {
         self.probe.generation
     }
@@ -262,8 +265,8 @@ impl std::fmt::Debug for FmodBackend {
 
 impl AudioBackend for FmodBackend {
     fn play(&mut self, event: &str, _volume: f32, _pitch: f32) -> Result<u64, AudioError> {
-        // 完整接线需要代际相关的 C API 调用（见模块文档）。
-        // 目前只递增句柄，保持混音层可用。
+        // Full wiring needs generation-specific C API calls (see the module docs).
+        // For now just increment the handle so the mixing layer stays usable.
         self.next_handle += 1;
         tracing::debug!(
             event,
@@ -292,7 +295,7 @@ impl AudioBackend for FmodBackend {
     }
 }
 
-/// 指定的库路径是否存在（用于诊断信息）。
+/// Whether the given library path exists (for diagnostics).
 pub fn library_exists(path: &Path) -> bool {
     path.exists()
 }
@@ -326,7 +329,7 @@ mod tests {
 
     #[test]
     fn error_message_matches_agent_md() {
-        // AGENTS.md §4.7 指定的文本必须逐项出现。
+        // The text specified by AGENTS.md 4.7 must appear item by item.
         for needle in [
             "FMOD library not found.",
             "https://www.fmod.com/download",
@@ -342,19 +345,20 @@ mod tests {
         }
     }
 
-    /// 若设置了 `RELESTE_FMOD_LIB`，真的去加载它。
+    /// If `RELESTE_FMOD_LIB` is set, actually load it.
     ///
-    /// 这是"用实物测"的入口：
+    /// This is the "test with the real thing" entry point:
     /// ```text
     /// RELESTE_FMOD_LIB=/path/to/libfmod.so cargo test -p releste-audio \
     ///     --features fmod -- --nocapture
     /// ```
     ///
-    /// 若同时设置 `RELESTE_FMOD_EXPECT`（`studio` / `ex` / `legacy3`），
-    /// 还会断言识别出的 API 代际与之一致——这样 CI 可以用桩库
-    /// 验证探测逻辑，而本地可以用真实库验证兼容性。
+    /// If `RELESTE_FMOD_EXPECT` (`studio` / `ex` / `legacy3`) is also set, it additionally
+    /// asserts that the recognized API generation matches -- this way CI can use a stub
+    /// library to verify the probe logic while a local run can use the real library to
+    /// verify compatibility.
     ///
-    /// 未设置 `RELESTE_FMOD_LIB` 时**跳过并说明**，不假装成功。
+    /// When `RELESTE_FMOD_LIB` is not set, **skip and explain**, do not pretend to succeed.
     #[test]
     fn load_real_library_when_provided() {
         let Ok(path) = std::env::var("RELESTE_FMOD_LIB") else {
@@ -394,8 +398,8 @@ mod tests {
                 }
             }
             Err(AudioError::FmodUnusable(msg)) => {
-                // 位数不匹配等：这是有效结论，不是测试失败。
-                // 打印出来供人工确认（64 位进程加载 32 位 .so 就是这种）。
+                // A bitness mismatch, for example: this is a valid conclusion, not a test failure.
+                // Print it for manual confirmation (a 64-bit process loading a 32-bit .so is this case).
                 println!("library unusable in this process:\n{msg}\n");
                 assert!(
                     expected.is_none(),
@@ -406,17 +410,17 @@ mod tests {
         }
     }
 
-    /// 32 位库在 64 位进程里必须给出可诊断的错误，而不是笼统的 not found。
+    /// A 32-bit library in a 64-bit process must produce a diagnosable error, not a vague not found.
     #[test]
     fn architecture_mismatch_is_reported_as_unusable() {
-        // 用一个内容合法但不是 ELF 的文件冒充库。
+        // Use a file with valid content but not an ELF as a fake library.
         let dir = std::env::temp_dir().join("releste-fmod-arch-test");
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("libfmod-fake.so");
         std::fs::write(&fake, b"not an ELF file at all").unwrap();
 
-        // 直接走 Library::new 看错误是否被捕获成 FmodUnusable。
-        // 这里不通过 FmodBackend::new，避免候选路径污染。
+        // Go straight through Library::new to see whether the error is captured as FmodUnusable.
+        // This does not go through FmodBackend::new, avoiding candidate-path pollution.
         assert!(unsafe { libloading::Library::new(&fake) }.is_err());
 
         std::fs::remove_file(&fake).ok();

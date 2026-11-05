@@ -1,39 +1,39 @@
-//! 历史版本 schema 的**冻结**副本。
+//! **Frozen** copies of historical schema versions.
 //!
-//! `bincode` 不自描述（ROADMAP 附录 E.6）：动一个字段等于让所有旧文件
-//! 解码失败。因此"读旧文件"必须靠**旧结构体 + 迁移函数**，而不是靠
-//! `#[serde(default)]`（在 bincode 下永远不生效，E.9 #5）。
+//! `bincode` is not self-describing (ROADMAP Appendix E.6): touching a single field makes every old file
+//! fail to decode. So "reading an old file" must go through **old structs + migration functions**, not through
+//! `#[serde(default)]` (which never fires under bincode, E.9 #5).
 //!
-//! 这里的结构体一旦发布就**不得再改**：它们的字节布局就是磁盘上的
-//! 事实。任何演进都在 `crates/map/src/format.rs` 里做，并在这里留下新的一份。
+//! Once the structs here are released they **must not change again**: their byte layout is the on-disk
+//! truth. All evolution happens in `crates/map/src/format.rs`, leaving a new copy here.
 //!
-//! 当前持有：
-//! - [`v1`] —— 引入 `nodes` / `style` / 贴花 / 装饰层之前的版本；
-//! - [`v2`] —— 引入 backdrop 房间过滤（`only` / `exclude`）与转场可见性
-//!   （`instantIn` / `instantOut`）之前的版本。
+//! Currently holding:
+//! - [`v1`] -- the version before `nodes` / `style` / decals / decoration layers were introduced;
+//! - [`v2`] -- the version before backdrop room filtering (`only` / `exclude`) and transition visibility
+//!   (`instantIn` / `instantOut`) were introduced.
 
 use serde::{Deserialize, Serialize};
 
 use releste_world::{EntityId, FieldValue};
 
-/// `MAP_VERSION == 1` 时的完整磁盘结构（只用于解码旧文件）。
+/// The complete on-disk structure when `MAP_VERSION == 1` (used only to decode old files).
 ///
-/// 字段顺序与 `crates/map/src/format.rs` 在 v1 时的声明顺序**逐一对应**，
-/// 顺序即磁盘布局，不得调整。
+/// The field order **corresponds one-to-one** to the declaration order of
+/// `crates/map/src/format.rs` at v1; the order is the on-disk layout and must not be adjusted.
 ///
-/// 注意 [`v1::EntityData`] 是 v1 自己的副本，**不是**
-/// `releste_world::EntityData`：后者在 v2 追加了 `nodes`，直接复用会让
-/// 旧文件从 `nodes` 处开始读错位。这正是"冻结副本"存在的理由。
+/// Note that [`v1::EntityData`] is v1's own copy, **not**
+/// `releste_world::EntityData`: the latter gained `nodes` in v2, and reusing it directly would make
+/// old files read misaligned starting at `nodes`. This is exactly why the "frozen copy" exists.
 ///
-/// 唯一刻意的偏离：`properties` 用 `BTreeMap` 而不是 v1 当时写的
-/// `HashMap`。bincode 对两者的编码**逐字节相同**（长度前缀 + 键值对
-/// 序列），所以磁盘布局不变；换来的是不再引入 `HashMap` 的随机顺序。
+/// The one deliberate deviation: `properties` uses `BTreeMap` instead of the
+/// `HashMap` written at v1. bincode encodes **both byte for byte identically** (length prefix + key/value
+/// sequence), so the on-disk layout is unchanged; what we gain is no longer introducing `HashMap`'s random order.
 pub mod v1 {
     use std::collections::BTreeMap;
 
     use super::*;
 
-    /// v1 的实体数据（`releste_world::EntityData` 去掉 `nodes`）。
+    /// v1 entity data (`releste_world::EntityData` minus `nodes`).
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct EntityData {
         pub id: EntityId,
@@ -47,7 +47,7 @@ pub mod v1 {
         pub properties: BTreeMap<String, FieldValue>,
     }
 
-    /// 带版本头部的磁盘格式。
+    /// On-disk format with the version header.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct MapDisk {
         pub magic: [u8; 8],
@@ -55,7 +55,7 @@ pub mod v1 {
         pub document: MapDocument,
     }
 
-    /// v1 的地图文档。
+    /// The v1 map document.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct MapDocument {
         pub area: String,
@@ -64,7 +64,7 @@ pub mod v1 {
         pub sync_rules: Vec<SyncRule>,
     }
 
-    /// v1 的房间。
+    /// The v1 room.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct Room {
         pub name: String,
@@ -80,7 +80,7 @@ pub mod v1 {
         pub script: Option<std::path::PathBuf>,
     }
 
-    /// v1 的矩形定义。
+    /// The v1 rectangle definition.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct RectDef {
         pub x: f32,
@@ -89,7 +89,7 @@ pub mod v1 {
         pub h: f32,
     }
 
-    /// v1 的 tile 网格。
+    /// The v1 tile grid.
     #[derive(Debug, Default, Serialize, Deserialize)]
     pub struct Tileset {
         #[serde(default)]
@@ -102,7 +102,7 @@ pub mod v1 {
         pub tiles: Vec<u8>,
     }
 
-    /// v1 的触发器。
+    /// The v1 trigger.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct TriggerData {
         pub kind: String,
@@ -114,7 +114,7 @@ pub mod v1 {
         pub properties: BTreeMap<String, String>,
     }
 
-    /// v1 的同步规则。
+    /// The v1 sync rule.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct SyncRule {
         pub kind: String,
@@ -123,7 +123,7 @@ pub mod v1 {
         pub flag: Option<String>,
     }
 
-    /// v1 的同步模式。
+    /// The v1 sync mode.
     #[derive(Debug, Serialize, Deserialize)]
     pub enum SyncMode {
         Flag,
@@ -132,15 +132,15 @@ pub mod v1 {
     }
 }
 
-/// `MAP_VERSION == 2` 时的磁盘结构（只用于解码旧文件）。
+/// The on-disk structure when `MAP_VERSION == 2` (used only to decode old files).
 ///
-/// v2 → v3 只在 [`v2::Backdrop`] 末尾追加了四个字段（房间过滤 + 转场
-/// 可见性），其余结构逐字节相同 —— 直接**别名复用** `crate::format`
-/// 的类型，别名即同构，不会引入布局偏差。
+/// v2 -> v3 only appended four fields at the end of [`v2::Backdrop`] (room filtering + transition
+/// visibility); every other structure is byte for byte identical -- so we directly **alias and reuse**
+/// `crate::format`'s types; an alias is isomorphic and introduces no layout drift.
 pub mod v2 {
     use super::*;
 
-    /// `releste_world::EntityData` 在 v2/v3 之间没有变化。
+    /// `releste_world::EntityData` did not change between v2/v3.
     pub use releste_world::EntityData;
     pub type RectDef = crate::format::RectDef;
     pub type Tileset = crate::format::Tileset;
@@ -150,7 +150,7 @@ pub mod v2 {
     pub type SyncMode = crate::format::SyncMode;
     pub type Room = crate::format::Room;
 
-    /// 带版本头部的磁盘格式。
+    /// On-disk format with the version header.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct MapDisk {
         pub magic: [u8; 8],
@@ -158,7 +158,7 @@ pub mod v2 {
         pub document: MapDocument,
     }
 
-    /// v2 的地图文档。
+    /// The v2 map document.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct MapDocument {
         pub area: String,
@@ -169,7 +169,7 @@ pub mod v2 {
         pub style: MapStyle,
     }
 
-    /// v2 的样式（与 v3 相同，只是 backdrop 类型不同）。
+    /// The v2 style (same as v3, only the backdrop type differs).
     #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
     pub struct MapStyle {
         #[serde(default)]
@@ -180,9 +180,9 @@ pub mod v2 {
         pub foregrounds: Vec<Backdrop>,
     }
 
-    /// v2 的 backdrop：v3 追加的四个字段之前的完整字段序。
+    /// The v2 backdrop: the complete field sequence before the four fields appended in v3.
     ///
-    /// 字段顺序与 v2 时的 `crates/map/src/format.rs` 逐一对应，不得调整。
+    /// The field order corresponds one-to-one to `crates/map/src/format.rs` at v2; must not be adjusted.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct Backdrop {
         pub kind: String,
@@ -245,8 +245,8 @@ impl From<v1::Tileset> for crate::format::Tileset {
             atlas: value.atlas,
             width: value.width,
             height: value.height,
-            // v1 是 `Vec<u8>`，v2 放宽到 `Vec<u16>`（装饰层下标能到 352）。
-            // 逐元素加宽：`u8` → `u16` 永远不丢信息。
+            // v1 was `Vec<u8>`; v2 widened it to `Vec<u16>` (decoration layer indices can reach 352).
+            // Widen element by element: `u8` -> `u16` never loses information.
             tiles: value.tiles.into_iter().map(u16::from).collect(),
         }
     }
@@ -254,7 +254,7 @@ impl From<v1::Tileset> for crate::format::Tileset {
 
 impl From<v1::EntityData> for releste_world::EntityData {
     fn from(value: v1::EntityData) -> Self {
-        // `nodes` 是 v2 才有的表达力：旧文件里不存在，迁移后取空。
+        // `nodes` is expressiveness that only v2 has: it does not exist in old files, so it is empty after migration.
         releste_world::EntityData {
             id: value.id,
             kind: value.kind,
@@ -270,19 +270,19 @@ impl From<v1::EntityData> for releste_world::EntityData {
     }
 }
 
-/// 把一个 v1 文档迁移到 v2（冻结形态）。
+/// Migrate a v1 document to v2 (frozen form).
 ///
-/// 迁移是**纯函数**：只做数据搬运，不碰磁盘、不碰全局状态，因此可以
-/// 串联（`v0 → v1 → v2 → v3 …`，ROADMAP E.7）。
+/// Migration is a **pure function**: it only moves data, touching neither disk nor global state, so it can
+/// be chained (`v0 -> v1 -> v2 -> v3 ...`, ROADMAP E.7).
 ///
-/// v2 新增的字段一律取"旧文件没有表达力"的那个值 —— 空。旧版本根本
-/// 没有视差背景、贴花和装饰层，所以迁移后的文档渲染出来与旧解释器
-/// **逐像素一致**：不会凭空多出东西，也不会少。
+/// Every field added in v2 takes the value "old files had no expressiveness for it" -- empty. Old versions
+/// simply had no parallax backgrounds, decals or decoration layers, so a migrated document renders
+/// **pixel-identical** to the old interpreter: nothing appears out of nowhere and nothing is lost.
 ///
-/// 出处：`pureCeleste.cs:112593-112618`（`CreateBackdrops`、
-/// `112428-112449` 的 `<Style>`）、`77244-77253`（`TileGrid.Overlay`）、
-/// `113467-113497`（`bgdecals` / `fgdecals` 解析）、
-/// `113135-113198`（`EntityData.Nodes`）。
+/// Sources: `pureCeleste.cs:112593-112618` (`CreateBackdrops`,
+/// the `<Style>` at `112428-112449`), `77244-77253` (`TileGrid.Overlay`),
+/// `113467-113497` (`bgdecals` / `fgdecals` parsing),
+/// `113135-113198` (`EntityData.Nodes`).
 pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> v2::MapDocument {
     v2::MapDocument {
         area: doc.area,
@@ -332,13 +332,13 @@ pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> v2::MapDocument {
     }
 }
 
-/// 把一个 v2 文档迁移到当前版本（v3）。
+/// Migrate a v2 document to the current version (v3).
 ///
-/// v3 只给 backdrop 追加了房间过滤与转场可见性。旧文件没有这个表达力，
-/// 一律取"未设置"：`only_in` / `exclude_from` 为空（所有房间可见），
-/// `instant_in` 取原版默认 `true`、`instant_out` 取默认 `false`
-/// （`pureCeleste.cs:109411-109418` 的字段初始化）—— 迁移后的渲染与
-/// v2 解释器逐像素一致。
+/// v3 only appended room filtering and transition visibility to backdrop. Old files have no such
+/// expressiveness, so they all take "unset": `only_in` / `exclude_from` empty (visible in all rooms),
+/// `instant_in` takes the vanilla default `true` and `instant_out` the default `false`
+/// (the field initialization at `pureCeleste.cs:109411-109418`) -- the migrated rendering is
+/// pixel-identical to the v2 interpreter.
 pub fn migrate_v2_to_v3(doc: v2::MapDocument) -> crate::format::MapDocument {
     fn backdrop(bd: v2::Backdrop) -> crate::format::Backdrop {
         crate::format::Backdrop {
@@ -376,10 +376,10 @@ pub fn migrate_v2_to_v3(doc: v2::MapDocument) -> crate::format::MapDocument {
     }
 }
 
-/// 把任意版本的文档迁移到当前版本。
+/// Migrate a document of any version to the current version.
 ///
-/// 链式：每加一版就多一个 `v_n → v_{n+1}` 分支，N 版之前的老文件
-/// 依然能不加特例地读进来（ROADMAP E.7）。
+/// Chained: every added version adds one `v_n -> v_{n+1}` branch, and files older than N versions
+/// can still be read without special cases (ROADMAP E.7).
 pub fn migrate(version: u32, bytes: &[u8]) -> Result<crate::format::MapDocument, crate::MapError> {
     match version {
         0 => Err(crate::MapError::UnsupportedVersion { found: version }),
@@ -401,17 +401,17 @@ pub fn migrate(version: u32, bytes: &[u8]) -> Result<crate::format::MapDocument,
     }
 }
 
-/// 夹具与测试用的构造辅助。
+/// Construction helpers for fixtures and tests.
 ///
-/// 保留在非 `cfg(test)` 下：`tests/` 集成测试和夹具生成器都要用它写出
-/// "真正的旧文件"。夹具由当前 schema **降级**得到，所以不会腐烂。
+/// Kept outside `cfg(test)`: the `tests/` integration tests and the fixture generator both need it to write
+/// "real old files". Fixtures are produced by **downgrading** the current schema, so they never rot.
 pub mod fixtures {
     use super::*;
     use crate::format::MapDocument as Current;
 
-    /// v2 的 `u16` tile 下标 → v1 的 `u8`，只在放得下时保留。
+    /// v2 `u16` tile index -> v1 `u8`, kept only when it fits.
     ///
-    /// 这是**测试 fixture 专用**的降级方向：真实迁移只会 v1 → v2。
+    /// This is a downgrade direction **only for test fixtures**: real migration only goes v1 -> v2.
     fn narrowed(tiles: &[u16]) -> Vec<u8> {
         tiles
             .iter()
@@ -419,7 +419,7 @@ pub mod fixtures {
             .collect()
     }
 
-    /// 从当前文档里丢掉 v2 新增的东西，得到它的 v1 形态。
+    /// Drop what v2 added from the current document to get its v1 form.
     pub fn downgrade(doc: &Current) -> v1::MapDocument {
         v1::MapDocument {
             area: doc.area.clone(),
@@ -438,8 +438,8 @@ pub mod fixtures {
                         atlas: r.tiles.atlas.clone(),
                         width: r.tiles.width,
                         height: r.tiles.height,
-                        // 反向收窄：v2 → v1 只在全部下标 ≤ 255 时无损。
-                        // fixture 用的是自己造的窄网格，不会踩到。
+                        // Reverse narrowing: v2 -> v1 is lossless only when every index <= 255.
+                        // The fixture uses its own narrow grid, so it never hits this.
                         tiles: narrowed(&r.tiles.tiles),
                     },
                     bg: v1::Tileset {
@@ -490,7 +490,7 @@ pub mod fixtures {
         }
     }
 
-    /// 把 v1 文档写成磁盘字节（含版本头）。
+    /// Write a v1 document to on-disk bytes (including the version header).
     pub fn to_v1_bytes(doc: &Current) -> Vec<u8> {
         let disk = v1::MapDisk {
             magic: *crate::format::MAP_MAGIC,
@@ -500,7 +500,7 @@ pub mod fixtures {
         bincode::serialize(&disk).expect("v1 fixture must serialize")
     }
 
-    /// 把文档写成任意版本号的字节（用于"未来版本"夹具）。
+    /// Write a document to bytes at an arbitrary version number (for "future version" fixtures).
     pub fn to_bytes_with_version(doc: &Current, version: u32) -> Vec<u8> {
         let disk = v1::MapDisk {
             magic: *crate::format::MAP_MAGIC,
@@ -510,7 +510,7 @@ pub mod fixtures {
         bincode::serialize(&disk).expect("fixture must serialize")
     }
 
-    /// 从当前文档里丢掉 v3 新增的四个 backdrop 字段，得到它的 v2 形态。
+    /// Drop the four backdrop fields added in v3 from the current document to get its v2 form.
     pub fn downgrade_to_v2(doc: &Current) -> v2::MapDocument {
         fn backdrop(bd: &crate::format::Backdrop) -> v2::Backdrop {
             v2::Backdrop {
@@ -544,7 +544,7 @@ pub mod fixtures {
         }
     }
 
-    /// 把 v2 文档写成磁盘字节（含版本头）—— v3 迁移的金样夹具。
+    /// Write a v2 document to on-disk bytes (including the version header) -- the golden fixture for the v3 migration.
     pub fn to_v2_bytes(doc: &Current) -> Vec<u8> {
         let disk = v2::MapDisk {
             magic: *crate::format::MAP_MAGIC,
@@ -554,10 +554,10 @@ pub mod fixtures {
         bincode::serialize(&disk).expect("v2 fixture must serialize")
     }
 
-    /// 迁移后**必须**逐字段相等的那部分（v2 新增字段除外）。
+    /// The part that **must** be field-for-field equal after migration (except fields added in v2).
     ///
-    /// 用于迁移测试：当前文档 → 降级成 v1 字节 → 迁移回 v2，v1 本来就
-    /// 有的字段一个都不能变。`nodes`（v2 新增）不参与比较。
+    /// Used by migration tests: current document -> downgrade to v1 bytes -> migrate back to v2; every field
+    /// that v1 already had must be unchanged. `nodes` (added in v2) does not take part in the comparison.
     pub fn assert_v1_fields_survive(before: &Current, after: &Current) -> Result<(), String> {
         if before.area != after.area {
             return Err(format!("area: {:?} != {:?}", before.area, after.area));

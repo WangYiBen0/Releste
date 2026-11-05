@@ -59,7 +59,7 @@ mlua = { version = "0.10", features = ["luajit", "vendored", "serialize", "send"
 # Rendering
 wgpu = "24"
 winit = "0.30"
-# Editor UI（egui 0.31 ↔ wgpu 24，与 render crate 对齐）
+# Editor UI (egui 0.31 <-> wgpu 24, aligned with the render crate)
 egui = "0.31"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
@@ -67,7 +67,7 @@ egui-winit = "0.31"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # GPU buffer casts
 bytemuck = { version = "1", features = ["derive"] }
-# 运行期动态库加载（用户自备 FMOD）
+# Runtime dynamic library loading (user-provided FMOD)
 libloading = "0.8"
 # File watching
 notify = "7"

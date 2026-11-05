@@ -1,4 +1,4 @@
-//! `plugin.toml` — the plugin manifest.
+//! `plugin.toml` -- the plugin manifest.
 //!
 //! A manifest is **data, not code**: it is parsed without instantiating the
 //! artifact, which is what lets the host decide what to load before it ever
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// When a plugin materializes, as written in `load = "…"` (ROADMAP 3.x).
+/// When a plugin materializes, as written in `load = "..."` (ROADMAP 3.x).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum LoadMode {
     /// Load at startup. The default.

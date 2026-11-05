@@ -1,7 +1,9 @@
-//! `releste-math`: 基础数学类型。
+//! `releste-math`: basic math types.
 //!
-//! 提供定点数 [`Fx`]、二维向量 [`Vec2`] 与轴对齐矩形 [`Rect`]。
-//! 仿真层所有实数运算必须使用 [`Fx`]，禁止 `f32`。
+//! Provides the fixed-point number [`Fx`], the 2D vector [`Vec2`], and the
+//! axis-aligned rectangle [`Rect`].
+//! All real-number arithmetic in the simulation layer must use [`Fx`]; `f32` is
+//! forbidden.
 
 #![deny(warnings)]
 
@@ -13,10 +15,11 @@ pub use fixed::Fx;
 pub use rect::Rect;
 pub use vec2::Vec2;
 
-/// 世界坐标空间使用的分量类型。
+/// The component type used in the world coordinate space.
 ///
-/// Releste 的仿真全部使用定点数，帧时间戳 `dt` 固定为 `Fx::from(1) / 60`。
+/// Releste's simulation is entirely fixed-point; the frame time step `dt` is
+/// fixed at `Fx::from(1) / 60`.
 pub type WorldScalar = Fx;
 
-/// 一帧的固定时间步长（1/60 秒）。
+/// The fixed time step of one frame (1/60 second).
 pub const FIXED_DT: Fx = Fx::from_bits(Fx::DT_ONE_SIXTIETH);

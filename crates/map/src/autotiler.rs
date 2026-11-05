@@ -1,39 +1,39 @@
-//! Autotiler：把房间的瓦片网格变成每块瓦片在 tileset 纹理里的 `(col, row)`。
+//! Autotiler: turn a room's tile grid into each tile's `(col, row)` in the tileset texture.
 //!
-//! 算法转录自原版 Celeste `Autotiler.cs`（经 `references/Ruleste` 核对）：
-//! 每块固体瓦片探测自己的 3×3 邻居，把邻接情况与 tileset 的掩码列表匹配；
-//! 九个邻居全连上时走 `center` / `padding`，否则取第一条匹配的掩码
-//! （按通配符数升序，最具体的先）。
+//! The algorithm is transcribed from vanilla Celeste `Autotiler.cs` (checked against `references/Ruleste`):
+//! every solid tile probes its own 3x3 neighborhood and matches the adjacency pattern against
+//! the tileset's mask list; when all nine neighbors connect it uses `center` / `padding`,
+//! otherwise it takes the first matching mask (ascending wildcard count, most specific first).
 //!
-//! 变体选择用**位置哈希**而不是 RNG：同一块瓦片永远取同一个变体，
-//! 热重载后画面不跳（AGENTS.md §4.3），也不需要流式状态。
+//! Variant selection uses a **position hash** rather than an RNG: the same tile always picks the
+//! same variant, so the picture does not jump after a hot reload (AGENTS.md 4.3), and no streaming state is needed.
 
 use crate::format::Tileset;
 use crate::tilesets::{tile_char, TilesetDef, TilesetsDoc};
 
-/// 网格之外（越界）的探测行为，对应原版 `Autotiler.Behaviour.EdgesExtend`
-/// （`pureCeleste.cs:87693`）。
+/// Out-of-grid (out-of-bounds) probe behavior, corresponding to vanilla `Autotiler.Behaviour.EdgesExtend`
+/// (`pureCeleste.cs:87693`).
 ///
-/// 掩码匹配靠 3×3 邻居，越界怎么算直接决定边缘块取哪张图：
+/// Mask matching relies on the 3x3 neighborhood, so how out-of-bounds is treated decides which tile an edge cell gets:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Oob {
-    /// 边缘外延：越界探测钳到边缘格子再读（`GenerateMap` 的房间瓦片行为，
-    /// `CheckTile`/`GetTile` 的 `EdgesExtend` 分支，`87986-87996` / `88017-88031`）。
+    /// Edge extension: an out-of-bounds probe clamps to the edge cell and reads it (the room-tile behavior of `GenerateMap`,
+    /// the `EdgesExtend` branch of `CheckTile`/`GetTile`, `87986-87996` / `88017-88031`).
     Extend,
-    /// 越界为空：网格之外一律当空（`GenerateBox` 的默认 `Behaviour`
-    /// —— `mapData == null` 时返回 `EdgesExtend` = false，`87985-87989`；
-    /// `IntroCrusher` 的盒子走的就是它，`106322 → 87832`）。
+    /// Out-of-bounds is empty: anything outside the grid counts as empty (the default `Behaviour` of `GenerateBox`
+    /// -- it returns `EdgesExtend` = false when `mapData == null`, `87985-87989`;
+    /// the `IntroCrusher` box uses exactly this, `106322 -> 87832`).
     Empty,
 }
 
-/// 每块瓦片在 tileset 纹理里的坐标（房间瓦片：越界外延）。
+/// Each tile's coordinate in the tileset texture (room tiles: out-of-bounds extends).
 ///
-/// 空白格子的坐标无意义（调用方不会渲染它们）；越界的格子不存在。
+/// The coordinate of a blank cell is meaningless (callers do not render them); out-of-bounds cells do not exist.
 pub fn generate(tiles: &Tileset, defs: &TilesetsDoc) -> Vec<(u32, u32)> {
     generate_with(tiles, defs, Oob::Extend)
 }
 
-/// [`generate`] 的可配置版：`oob` 选择越界探测行为（见 [`Oob`]）。
+/// Configurable version of [`generate`]: `oob` selects the out-of-bounds probe behavior (see [`Oob`]).
 pub fn generate_with(tiles: &Tileset, defs: &TilesetsDoc, oob: Oob) -> Vec<(u32, u32)> {
     let mut out = vec![(0u32, 0u32); (tiles.width as usize) * (tiles.height as usize)];
 
@@ -41,11 +41,11 @@ pub fn generate_with(tiles: &Tileset, defs: &TilesetsDoc, oob: Oob) -> Vec<(u32,
         for tx in 0..tiles.width {
             let value = match tiles.get(tx, ty) {
                 Some(v) if v != 0 => v,
-                _ => continue, // 0 = 空
+                _ => continue, // 0 = empty
             };
             let id = tile_char(value);
             let Some(def) = defs.def(id) else {
-                continue; // 未定义的 tile id：调用方负责告警
+                continue; // undefined tile id: the caller is responsible for warning
             };
 
             let adjacency = adjacency(tiles, tx, ty, def, oob);
@@ -56,11 +56,11 @@ pub fn generate_with(tiles: &Tileset, defs: &TilesetsDoc, oob: Oob) -> Vec<(u32,
     out
 }
 
-/// 3×3 邻接数组（`Autotiler.cs:295-321`）。
+/// 3x3 adjacency array (`Autotiler.cs:295-321`).
 ///
-/// 九个探测全部走 `neighbor_connects`，不越界短路 —— 越界怎么处理由
-/// `oob` 决定（`Oob::Extend` 钳到边缘格子 = `GenerateMap` 的房间行为；
-/// `Oob::Empty` 返回 false = `GenerateBox` 的盒外行为）。
+/// All nine probes go through `neighbor_connects` with no out-of-bounds short-circuit -- how out-of-bounds
+/// is decided by `oob` (`Oob::Extend` clamps to the edge cell = the room behavior of `GenerateMap`;
+/// `Oob::Empty` returns false = the outside-the-box behavior of `GenerateBox`).
 fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef, oob: Oob) -> [u8; 9] {
     let offsets: [(i32, i32); 9] = [
         (-1, -1), // TL
@@ -76,7 +76,7 @@ fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef, oob: Oob) -> [
     let mut adjacency = [0u8; 9];
     for (i, (dx, dy)) in offsets.iter().enumerate() {
         if i == 4 {
-            adjacency[i] = 1; // 中心对非空瓦片恒为固体
+            adjacency[i] = 1; // the center is always solid for a non-empty tile
             continue;
         }
         adjacency[i] = u8::from(neighbor_connects(
@@ -90,11 +90,11 @@ fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef, oob: Oob) -> [
     adjacency
 }
 
-/// `(x, y)` 处的瓦片是否与 `def` 的 tileset 相连（`CheckTile`）。
+/// Whether the tile at `(x, y)` connects to `def`'s tileset (`CheckTile`).
 ///
-/// 越界时：`Oob::Empty` 直接不连（`CheckTile` 的 `!EdgesExtend` 分支，
-/// `87990-87993`）；`Oob::Extend` 钳到边缘格子再读（`87995-88001`）。
-/// 在网格内的空格子不连。
+/// Out of bounds: `Oob::Empty` simply does not connect (the `!EdgesExtend` branch of `CheckTile`,
+/// `87990-87993`); `Oob::Extend` clamps to the edge cell and reads it (`87995-88001`).
+/// An empty cell inside the grid does not connect.
 fn neighbor_connects(tiles: &Tileset, x: i32, y: i32, def: &TilesetDef, oob: Oob) -> bool {
     let w = tiles.width as i32;
     let h = tiles.height as i32;
@@ -110,7 +110,7 @@ fn neighbor_connects(tiles: &Tileset, x: i32, y: i32, def: &TilesetDef, oob: Oob
     def.connects(tile_char(value))
 }
 
-/// 选 `(col, row)`：全连走 center/padding，否则取第一条匹配的掩码。
+/// Pick `(col, row)`: all-connected uses center/padding, otherwise the first matching mask.
 fn pick(
     def: &TilesetDef,
     adjacency: [u8; 9],
@@ -122,7 +122,7 @@ fn pick(
     let all_solid = adjacency.iter().all(|&v| v == 1);
 
     let candidates = if all_solid {
-        // 2-away 探测（`Autotiler.cs:316-331`）：任一失败 → padding。
+        // 2-away probe (`Autotiler.cs:316-331`): any failure -> padding.
         let far = [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)];
         let padded = far
             .iter()
@@ -133,7 +133,7 @@ fn pick(
             &def.center
         }
     } else {
-        // 第一条匹配的掩码（已按通配符数升序）。
+        // The first matching mask (already sorted ascending by wildcard count).
         def.masks
             .iter()
             .find(|m| m.matches(&adjacency))
@@ -144,14 +144,14 @@ fn pick(
     if candidates.is_empty() {
         return (0, 0);
     }
-    // 位置哈希选变体：确定性，热重载后不跳。
+    // Position hash picks the variant: deterministic, no jump after hot reload.
     let index = variant_index(tx, ty, &def.path, candidates.len());
     candidates[index]
 }
 
-/// 确定性的变体下标。
+/// Deterministic variant index.
 fn variant_index(tx: u32, ty: u32, path: &str, len: usize) -> usize {
-    // FNV-1a：够散，也够便宜。
+    // FNV-1a: spread enough, and cheap enough.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in tx.to_le_bytes().iter().chain(ty.to_le_bytes().iter()) {
         hash ^= u64::from(*byte);
@@ -170,7 +170,7 @@ mod tests {
     use crate::tilesets::MaskEntry;
     use std::collections::BTreeMap;
 
-    /// 一个只有一条掩码的 tileset：`x0x-111-x1x` → (0,0)，center → (0,2)。
+    /// A tileset with a single mask: `x0x-111-x1x` -> (0,0), center -> (0,2).
     fn defs() -> TilesetsDoc {
         TilesetsDoc {
             tilesets: BTreeMap::from([(
@@ -189,7 +189,7 @@ mod tests {
         }
     }
 
-    /// 3×3 全 '3' 的网格。
+    /// A 3x3 grid that is all '3'.
     fn full_grid() -> Tileset {
         let mut tiles = Tileset::new("Gameplay", 3, 3);
         for y in 0..3 {
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn interior_tiles_take_the_center() {
-        // 4×4 全 '3'：内部 (1,1)/(2,1)/(1,2)/(2,2) 九邻居全连 → center。
+        // 4x4 all '3': the interior (1,1)/(2,1)/(1,2)/(2,2) has all nine neighbors connected -> center.
         let mut tiles = Tileset::new("Gameplay", 4, 4);
         for y in 0..4 {
             for x in 0..4 {
@@ -211,19 +211,19 @@ mod tests {
         }
         let coords = generate(&tiles, &defs());
         let w = 4usize;
-        // 第 1 行第 1 格（row-major：row * w + col）。
+        // Row 1, cell 1 (row-major: row * w + col).
         let (col, row) = coords[w + 1];
         assert_eq!((col, row), (0, 2), "interior takes the center variant");
     }
 
     #[test]
     fn border_tiles_take_a_masked_edge() {
-        // 只有底行是固体：三块瓦片的 T 邻居都是空 → x0x-111-x1x 匹配。
-        // 角上的左/右邻居越界后钳到自身（EdgesExtend），掩码照样匹配 ——
-        // 所以三块都取上边缘变体 (0,0)，与原版一致。
+        // Only the bottom row is solid: all three tiles have an empty T neighbor -> x0x-111-x1x matches.
+        // After clamping, corner tiles' left/right out-of-bounds neighbors become themselves (EdgesExtend), and the mask still matches --
+        // so all three take the top-edge variant (0,0), matching vanilla.
         let mut tiles = Tileset::new("Gameplay", 3, 3);
         for x in 0..3 {
-            tiles.set(x, 2, 3); // 只有底行是固体
+            tiles.set(x, 2, 3); // only the bottom row is solid
         }
         let coords = generate(&tiles, &defs());
         for x in 0..3 {
@@ -236,8 +236,8 @@ mod tests {
         }
     }
 
-    /// `GenerateBox`（`IntroCrusher` 的盒子）：越界 = 空，所以内块的
-    /// 2-away 探测碰到盒外 → padding；房间模式（外延）则全连 → center。
+    /// `GenerateBox` (the `IntroCrusher` box): out-of-bounds = empty, so an inner cell's
+    /// 2-away probe leaves the box -> padding; room mode (extends) connects everywhere -> center.
     #[test]
     fn box_mode_treats_outside_the_grid_as_empty() {
         let tiles = full_grid();
@@ -277,30 +277,30 @@ mod tests {
     fn undefined_tile_ids_are_skipped() {
         let mut tiles = Tileset::new("Gameplay", 2, 1);
         tiles.set(0, 0, 3);
-        tiles.set(1, 0, 9); // 没定义 '9'
+        tiles.set(1, 0, 9); // '9' is not defined
         let coords = generate(&tiles, &defs());
         assert_eq!(coords[1], (0, 0), "undefined ids stay at (0,0)");
     }
 
     #[test]
     fn ignores_change_connectivity() {
-        // '3' ignores '*'：'3' 不与任何别的 id 连 —— 但同 id 恒连，
-        // 所以 3×3 全 '3' 仍然是全连。
+        // '3' ignores '*': '3' does not connect to any other id -- but the same id always connects,
+        // so a 3x3 all-'3' grid is still fully connected.
         let mut doc = defs();
         doc.tilesets.get_mut("3").unwrap().ignores = vec!['*'];
         let tiles = full_grid();
         let coords = generate(&tiles, &doc);
         let w = 3usize;
-        // 第 1 行第 1 格（row-major：row * w + col）。
+        // Row 1, cell 1 (row-major: row * w + col).
         let (col, row) = coords[w + 1];
         assert_eq!((col, row), (0, 2), "same id always connects");
     }
 
-    /// golden：真实地图 + 真实 tileset 定义必须产出**多样**的瓦片坐标。
+    /// golden: a real map + real tileset definitions must produce **varied** tile coordinates.
     ///
-    /// 这是「所有东西同一张贴图」的直接回归守卫：如果 autotiler 退化成
-    /// 全部瓦片取同一个 (col,row)，这个测试就红。数据在 gitignored 的
-    /// `assets/` 里，缺了就跳过。
+    /// This is the direct regression guard for "everything uses the same texture": if the autotiler degrades
+    /// so that every tile takes the same (col,row), this test goes red. The data lives in gitignored
+    /// `assets/`, so it is skipped when missing.
     #[test]
     fn real_map_and_tilesets_produce_varied_tiles() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -327,7 +327,7 @@ mod tests {
         }
         assert!(
             used.len() > 2,
-            "expected varied tile coordinates, got {used:?} — \
+            "expected varied tile coordinates, got {used:?} - \
              the autotiler collapsed every tile onto one variant"
         );
     }

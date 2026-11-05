@@ -1,29 +1,29 @@
-//! Celeste 地图 `.bin` 解析。
+//! Celeste map `.bin` parsing.
 //!
-//! # 格式
+//! # Format
 //! ```text
 //! string "CELESTE MAP"
 //! string map_name
 //! u16    lookup_count
-//! repeat: string            （字符串查找表）
-//! element                   （根元素，递归）
+//! repeat: string            (string lookup table)
+//! element                   (root element, recursive)
 //! ```
 //!
-//! `element`：
+//! `element`:
 //! ```text
-//! u16 lookup_index          （元素名）
+//! u16 lookup_index          (element name)
 //! u8  attribute_count
 //! repeat: u16 lookup_index, encoded_var
 //! u16 child_count
 //! repeat: element
 //! ```
 //!
-//! `encoded_var` 首字节为类型标签：
+//! The first byte of `encoded_var` is a type tag:
 //! `0=bool 1=byte 2=i16 3=i32 4=f32 5=lookup_index 6=string 7=rle_string`
 
 use crate::error::PipelineError;
 
-/// 编码变量。
+/// Encoded variable.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinValue {
     Bool(bool),
@@ -31,14 +31,14 @@ pub enum BinValue {
     Short(i16),
     Int(i32),
     Float(f32),
-    /// 指向查找表的索引（已解析为字符串）。
+    /// An index into the lookup table (already resolved to a string).
     String(String),
-    /// RLE 压缩字符串。
+    /// RLE-compressed string.
     RleString(String),
 }
 
 impl BinValue {
-    /// 尽力取整数值（用于 tile / 坐标）。
+    /// Best-effort integer value (for tile / coordinates).
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             BinValue::Bool(b) => Some(i64::from(*b)),
@@ -50,7 +50,7 @@ impl BinValue {
         }
     }
 
-    /// 尽力取浮点值。
+    /// Best-effort float value.
     pub fn as_f32(&self) -> Option<f32> {
         match self {
             BinValue::Float(f) => Some(*f),
@@ -62,7 +62,7 @@ impl BinValue {
         }
     }
 
-    /// 尽力取字符串。
+    /// Best-effort string value.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             BinValue::String(s) | BinValue::RleString(s) => Some(s),
@@ -70,10 +70,10 @@ impl BinValue {
         }
     }
 
-    /// 尽力取布尔值（`loopx` / `flipx` / `broken` 这类属性）。
+    /// Best-effort boolean value (attributes like `loopx` / `flipx` / `broken`).
     ///
-    /// 数值按「非 0 即真」解释，字符串按 `bool::from_str` 的
-    /// `true` / `false` 解释。
+    /// Numbers are interpreted as "non-zero is true", strings via `bool::from_str`'s
+    /// `true` / `false`.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             BinValue::Bool(b) => Some(*b),
@@ -90,7 +90,7 @@ impl BinValue {
     }
 }
 
-/// 地图元素。
+/// A map element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapBinElement {
     pub name: String,
@@ -99,7 +99,7 @@ pub struct MapBinElement {
 }
 
 impl MapBinElement {
-    /// 取属性。
+    /// Get an attribute.
     pub fn attr(&self, key: &str) -> Option<&BinValue> {
         self.attributes
             .iter()
@@ -107,18 +107,18 @@ impl MapBinElement {
             .map(|(_, v)| v)
     }
 
-    /// 按名称取第一个子元素。
+    /// Get the first child element by name.
     pub fn child(&self, name: &str) -> Option<&MapBinElement> {
         self.children.iter().find(|c| c.name == name)
     }
 
-    /// 按名称取全部子元素。
+    /// Get all child elements by name.
     pub fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a MapBinElement> {
         self.children.iter().filter(move |c| c.name == name)
     }
 }
 
-/// 解析后的 Celeste 地图。
+/// A parsed Celeste map.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapBin {
     pub name: String,
@@ -126,7 +126,7 @@ pub struct MapBin {
     pub root: MapBinElement,
 }
 
-/// 二进制读取器。
+/// Binary reader.
 struct Reader<'a> {
     data: &'a [u8],
     cur: usize,
@@ -180,7 +180,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// 7-bit varint 长度前缀字符串（ASCII）。
+    /// 7-bit varint length-prefixed string (ASCII).
     fn string(&mut self) -> Result<String, PipelineError> {
         let mut len: u32 = 0;
         let mut shift = 0;
@@ -205,7 +205,7 @@ impl<'a> Reader<'a> {
         Ok(bytes.iter().map(|b| *b as char).collect())
     }
 
-    /// RLE 压缩字符串（`i16` 字节数，然后 `(重复次数 u8, 字符 u8)` 对）。
+    /// RLE-compressed string (`i16` byte count, then `(repeat count u8, character u8)` pairs).
     fn rle_string(&mut self) -> Result<String, PipelineError> {
         let byte_count = self.i16()?;
         let mut out = String::with_capacity((byte_count.max(0) as usize) / 2);
@@ -221,7 +221,7 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    /// 读取编码变量（返回类型标签与原始索引，供上层解析查表）。
+    /// Read an encoded variable (returns the type tag and the raw index for the caller to resolve).
     fn encoded_var(&mut self) -> Result<EncodedVar, PipelineError> {
         let tag = self.u8()?;
         Ok(match tag {
@@ -265,7 +265,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// 未解析查找表的元素。
+/// An element whose lookup table is not yet resolved.
 struct RawElement {
     name_index: u16,
     attributes: Vec<(u16, EncodedVar)>,
@@ -284,7 +284,7 @@ enum EncodedVar {
 }
 
 impl MapBin {
-    /// 从字节解析。
+    /// Parse from bytes.
     pub fn parse(data: &[u8]) -> Result<Self, PipelineError> {
         let mut r = Reader::new(data);
 
@@ -311,7 +311,7 @@ impl MapBin {
         Ok(MapBin { name, lookup, root })
     }
 
-    /// 从文件读取。
+    /// Read from a file.
     pub fn from_file(path: &std::path::Path) -> Result<Self, PipelineError> {
         let data = std::fs::read(path).map_err(|e| PipelineError::io(path.display(), e))?;
         Self::parse(&data)
@@ -377,7 +377,7 @@ mod tests {
         out.extend_from_slice(s.as_bytes());
     }
 
-    /// 构造一个最小但完整的地图：1 个 lookup 项 + 根元素带 1 属性 1 子元素。
+    /// Build a minimal but complete map: 1 lookup entry + a root element with 1 attribute and 1 child.
     fn build_map() -> Vec<u8> {
         let mut out = Vec::new();
         push_string(&mut out, "CELESTE MAP");
@@ -436,7 +436,7 @@ mod tests {
     fn truncated_input_errors_not_panics() {
         let full = build_map();
         for cut in 0..full.len() {
-            // 不应 panic；允许 Ok/Err 任一。
+            // Must not panic; either Ok or Err is allowed.
             let _ = MapBin::parse(&full[..cut]);
         }
     }

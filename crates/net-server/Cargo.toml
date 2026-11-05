@@ -9,9 +9,9 @@ path = "src/main.rs"
 
 [features]
 default = []
-# 真实网络监听（laminar UDP）。
+# Real network listener (laminar UDP).
 udp = ["dep:laminar", "dep:tokio", "dep:quinn"]
-# 自检用的纯逻辑中继（无网络依赖）。
+# Pure-logic relay for the self-check (no network dependency).
 relay = []
 
 [dependencies]

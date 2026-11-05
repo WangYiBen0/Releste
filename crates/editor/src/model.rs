@@ -1,7 +1,7 @@
-//! 编辑器数据模型：文档、选区、撤销栈。
+//! Editor data model: document, selection, undo stack.
 //!
-//! 这一层不依赖 egui，因此可以被测试，也能在 headless 环境
-//! 用于脚本化编辑（如批量修图）。
+//! This layer does not depend on egui, so it can be tested and can be used for
+//! scripted editing (for example batch map fixes) in a headless environment.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ use releste_math::Vec2;
 use releste_world::{EntityData, EntityId, FieldValue};
 use thiserror::Error;
 
-/// 编辑器错误。
+/// Editor error.
 #[derive(Debug, Error)]
 pub enum EditorError {
     #[error("map error: {0}")]
@@ -27,18 +27,18 @@ pub enum EditorError {
     DuplicateRoom(String),
 }
 
-/// 撤销栈的默认深度。
+/// Default depth of the undo stack.
 pub const DEFAULT_UNDO_DEPTH: usize = 200;
 
-/// 选区。
+/// Selection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Selection {
-    /// 无选中。
+    /// Nothing selected.
     #[default]
     None,
-    /// 选中一个实体。
+    /// One entity is selected.
     Entity(EntityId),
-    /// 选中 tile 矩形（房间索引 + 半开区间）。
+    /// A tile rectangle is selected (room index + half-open range).
     Tiles {
         room: usize,
         x0: u32,
@@ -49,7 +49,7 @@ pub enum Selection {
 }
 
 impl Selection {
-    /// 是否选中了实体。
+    /// Whether an entity is selected.
     pub fn entity(&self) -> Option<EntityId> {
         match self {
             Selection::Entity(id) => Some(*id),
@@ -58,15 +58,15 @@ impl Selection {
     }
 }
 
-/// 文档快照（撤销单位）。
+/// Document snapshot (the undo unit).
 #[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
     document: MapDocument,
-    /// 操作描述（UI 显示 "撤销：移动实体"）。
+    /// Action description (the UI shows "Undo: Move entity").
     label: String,
 }
 
-/// 编辑器状态。
+/// Editor state.
 pub struct Editor {
     document: MapDocument,
     path: Option<PathBuf>,
@@ -85,7 +85,7 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// 新建空文档。
+    /// Creates a new empty document.
     pub fn new() -> Self {
         Editor {
             document: MapDocument {
@@ -104,7 +104,7 @@ impl Editor {
         }
     }
 
-    /// 打开已有地图。
+    /// Opens an existing map.
     pub fn open(path: &Path) -> Result<Self, EditorError> {
         let document = load_map(path)?;
         Ok(Editor {
@@ -119,52 +119,52 @@ impl Editor {
         })
     }
 
-    /// 设置撤销深度。
+    /// Sets the undo depth.
     pub fn with_undo_depth(mut self, depth: usize) -> Self {
         self.undo_depth = depth.max(1);
         self
     }
 
-    // ---------- 查询 ----------
+    // ---------- Queries ----------
 
-    /// 文档（只读）。
+    /// The document (read-only).
     pub fn document(&self) -> &MapDocument {
         &self.document
     }
 
-    /// 文档（可变）。**不会**记录撤销；仅供渲染 / 只读同步使用。
+    /// The document (mutable). **Does not** record undo; only for rendering / read-only sync.
     ///
-    /// 修改后请调用 [`Editor::touch`]。
+    /// Call [`Editor::touch`] after modifying.
     pub fn document_mut(&mut self) -> &mut MapDocument {
         &mut self.document
     }
 
-    /// 当前文件路径。
+    /// Current file path.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
-    /// 是否有未保存修改。
+    /// Whether there are unsaved changes.
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
-    /// 选区。
+    /// Selection.
     pub fn selection(&self) -> &Selection {
         &self.selection
     }
 
-    /// 设置选区（不记录撤销）。
+    /// Sets the selection (does not record undo).
     pub fn select(&mut self, selection: Selection) {
         self.selection = selection;
     }
 
-    /// 当前房间索引。
+    /// Current room index.
     pub fn current_room(&self) -> usize {
         self.current_room
     }
 
-    /// 切换当前房间。
+    /// Switches the current room.
     pub fn set_current_room(&mut self, index: usize) -> Result<(), EditorError> {
         if index >= self.document.rooms.len() {
             return Err(EditorError::NoRoom(index));
@@ -173,34 +173,34 @@ impl Editor {
         Ok(())
     }
 
-    /// 当前房间。
+    /// The current room.
     pub fn room(&self) -> Option<&Room> {
         self.document.rooms.get(self.current_room)
     }
 
-    /// 可撤销步数。
+    /// Number of undoable steps.
     pub fn undo_len(&self) -> usize {
         self.undo.len()
     }
 
-    /// 可重做步数。
+    /// Number of redoable steps.
     pub fn redo_len(&self) -> usize {
         self.redo.len()
     }
 
-    /// 下一步撤销的标签。
+    /// Label of the next undo.
     pub fn undo_label(&self) -> Option<&str> {
         self.undo.last().map(|s| s.label.as_str())
     }
 
-    /// 标记文档已被外部修改（如渲染层同步）。
+    /// Marks the document as modified externally (for example a render-layer sync).
     pub fn touch(&mut self) {
         self.dirty = true;
     }
 
-    // ---------- 保存 ----------
+    // ---------- Saving ----------
 
-    /// 保存到当前路径。
+    /// Saves to the current path.
     pub fn save(&mut self) -> Result<(), EditorError> {
         let Some(path) = self.path.clone() else {
             return Err(EditorError::Map(releste_map::MapError::Io(
@@ -210,7 +210,7 @@ impl Editor {
         self.save_as(&path)
     }
 
-    /// 另存为。
+    /// Saves as.
     pub fn save_as(&mut self, path: &Path) -> Result<(), EditorError> {
         save_map(&self.document, path)?;
         self.path = Some(path.to_path_buf());
@@ -218,9 +218,9 @@ impl Editor {
         Ok(())
     }
 
-    // ---------- 撤销 / 重做 ----------
+    // ---------- Undo / redo ----------
 
-    /// 记录一次可撤销操作。
+    /// Records one undoable operation.
     fn record(&mut self, label: impl Into<String>) {
         let label = label.into();
         self.undo.push(Snapshot {
@@ -230,12 +230,12 @@ impl Editor {
         if self.undo.len() > self.undo_depth {
             self.undo.remove(0);
         }
-        // 新操作使重做栈失效。
+        // A new operation invalidates the redo stack.
         self.redo.clear();
         self.dirty = true;
     }
 
-    /// 撤销一步。
+    /// Undoes one step.
     pub fn undo(&mut self) -> Result<&str, EditorError> {
         let snapshot = self.undo.pop().ok_or(EditorError::NothingToUndo)?;
         let current = Snapshot {
@@ -248,7 +248,7 @@ impl Editor {
         Ok(self.redo.last().map(|s| s.label.as_str()).unwrap_or(""))
     }
 
-    /// 重做一步。
+    /// Redoes one step.
     pub fn redo(&mut self) -> Result<&str, EditorError> {
         let snapshot = self.redo.pop().ok_or(EditorError::NothingToRedo)?;
         let current = Snapshot {
@@ -269,30 +269,30 @@ impl Editor {
         }
     }
 
-    // ---------- 房间操作 ----------
+    // ---------- Room operations ----------
 
-    /// 新增房间。
+    /// Adds a room.
     pub fn add_room(&mut self, room: Room) -> Result<usize, EditorError> {
         if self.document.rooms.iter().any(|r| r.name == room.name) {
             return Err(EditorError::DuplicateRoom(room.name));
         }
-        self.record(format!("新增房间 {}", room.name));
+        self.record(format!("Add room {}", room.name));
         self.document.rooms.push(room);
         Ok(self.document.rooms.len() - 1)
     }
 
-    /// 删除房间。
+    /// Removes a room.
     pub fn remove_room(&mut self, index: usize) -> Result<Room, EditorError> {
         if index >= self.document.rooms.len() {
             return Err(EditorError::NoRoom(index));
         }
-        self.record(format!("删除房间 {index}"));
+        self.record(format!("Remove room {index}"));
         let room = self.document.rooms.remove(index);
         self.clamp_current_room();
         Ok(room)
     }
 
-    /// 重命名房间。
+    /// Renames a room.
     pub fn rename_room(
         &mut self,
         index: usize,
@@ -309,15 +309,15 @@ impl Editor {
             .ok_or(EditorError::NoRoom(index))?
             .name
             .clone();
-        self.record(format!("重命名房间 {old} → {name}"));
+        self.record(format!("Rename room {old} -> {name}"));
         self.document.rooms[index].name = name;
         Ok(())
     }
 
-    /// 设置房间边界。
+    /// Sets the room bounds.
     ///
-    /// 缩小边界时若玩家在外面，热重载会回滚——但编辑器阶段
-    /// 先允许，由保存后的 reload 校验。
+    /// If the bounds shrink and the player ends up outside, hot reload rolls back -- but
+    /// the editor stage allows it first and the reload after saving validates it.
     pub fn set_room_bounds(&mut self, index: usize, bounds: RectDef) -> Result<(), EditorError> {
         let name = self
             .document
@@ -326,14 +326,14 @@ impl Editor {
             .ok_or(EditorError::NoRoom(index))?
             .name
             .clone();
-        self.record(format!("调整房间 {name} 边界"));
+        self.record(format!("Resize room {name} bounds"));
         self.document.rooms[index].bounds = bounds;
         Ok(())
     }
 
-    // ---------- Tile 操作 ----------
+    // ---------- Tile operations ----------
 
-    /// 确保当前房间的 tile 网格尺寸（不足则扩容，保留已有内容）。
+    /// Ensures the current room's tile grid size (grows it when too small, preserving existing content).
     pub fn ensure_tile_grid(&mut self, width: u32, height: u32) -> Result<(), EditorError> {
         let idx = self.current_room;
         let room = self
@@ -351,7 +351,7 @@ impl Editor {
         let old_h = room.tiles.height;
         let old_tiles = room.tiles.tiles.clone();
 
-        self.record("调整 tile 网格");
+        self.record("Resize tile grid");
 
         let mut next = Tileset::new(atlas, width, height);
         for y in 0..old_h.min(height) {
@@ -367,7 +367,7 @@ impl Editor {
         Ok(())
     }
 
-    /// 画笔：设置一个 tile。
+    /// Brush: sets one tile.
     pub fn paint_tile(&mut self, x: u32, y: u32, value: u16) -> Result<(), EditorError> {
         let idx = self.current_room;
         let room = self
@@ -377,26 +377,26 @@ impl Editor {
             .ok_or(EditorError::NoRoom(idx))?;
 
         let Some(current) = room.tiles.get(x, y) else {
-            // 越界静默忽略（刷子拖到边界外）。
+            // Out of bounds: silently ignore (the brush was dragged past the edge).
             return Ok(());
         };
         if current == value {
             return Ok(());
         }
 
-        self.record(format!("绘制 tile ({x},{y})"));
+        self.record(format!("Paint tile ({x},{y})"));
         self.document.rooms[idx].tiles.set(x, y, value);
         Ok(())
     }
 
-    /// 橡皮：清除一个 tile。
+    /// Eraser: clears one tile.
     pub fn erase_tile(&mut self, x: u32, y: u32) -> Result<(), EditorError> {
         self.paint_tile(x, y, 0)
     }
 
-    /// 填充矩形区域。
+    /// Fills a rectangular region.
     ///
-    /// 返回实际改动的格数（0 表示 no-op）。
+    /// Returns the number of cells actually changed (0 means no-op).
     pub fn fill_tiles(
         &mut self,
         x0: u32,
@@ -427,7 +427,7 @@ impl Editor {
             return Ok(0);
         }
 
-        self.record(format!("填充 ({lx},{ly})-({hx},{hy})"));
+        self.record(format!("Fill ({lx},{ly})-({hx},{hy})"));
         let room = &mut self.document.rooms[idx];
         for y in ly..=hy {
             for x in lx..=hx {
@@ -437,21 +437,21 @@ impl Editor {
         Ok(changed)
     }
 
-    // ---------- 实体操作 ----------
+    // ---------- Entity operations ----------
 
-    /// 加入实体。
+    /// Adds an entity.
     pub fn add_entity(&mut self, entity: EntityData) -> Result<EntityId, EditorError> {
         let idx = self.current_room;
         if idx >= self.document.rooms.len() {
             return Err(EditorError::NoRoom(idx));
         }
-        self.record(format!("新增实体 {}", entity.kind));
+        self.record(format!("Add entity {}", entity.kind));
         let id = entity.id;
         self.document.rooms[idx].entities.push(entity);
         Ok(id)
     }
 
-    /// 移除实体。
+    /// Removes an entity.
     pub fn remove_entity(&mut self, id: EntityId) -> Result<EntityData, EditorError> {
         let idx = self.current_room;
         let room = self
@@ -465,7 +465,7 @@ impl Editor {
             .position(|e| e.id == id)
             .ok_or(EditorError::NoEntity(id))?;
 
-        self.record(format!("删除实体 {id}"));
+        self.record(format!("Remove entity {id}"));
         let entity = self.document.rooms[idx].entities.remove(pos);
         if self.selection.entity() == Some(id) {
             self.selection = Selection::None;
@@ -473,7 +473,7 @@ impl Editor {
         Ok(entity)
     }
 
-    /// 移动实体。
+    /// Moves an entity.
     pub fn move_entity(&mut self, id: EntityId, pos: Vec2) -> Result<(), EditorError> {
         let idx = self.current_room;
         let room = self
@@ -493,7 +493,7 @@ impl Editor {
             return Ok(());
         }
 
-        self.record(format!("移动实体 {id}"));
+        self.record(format!("Move entity {id}"));
         let entity = self.document.rooms[idx]
             .entities
             .iter_mut()
@@ -504,7 +504,7 @@ impl Editor {
         Ok(())
     }
 
-    /// 修改实体属性。
+    /// Sets an entity property.
     pub fn set_entity_prop(
         &mut self,
         id: EntityId,
@@ -527,7 +527,7 @@ impl Editor {
             return Ok(());
         }
 
-        self.record(format!("修改 {id}.{key}"));
+        self.record(format!("Set {id}.{key}"));
         let entity = self.document.rooms[idx]
             .entities
             .iter_mut()
@@ -682,7 +682,7 @@ mod tests {
         let n = e.fill_tiles(0, 0, 2, 2, 4).unwrap();
         assert_eq!(n, 9);
 
-        // 再填同样的值 → 0 变化
+        // Filling the same value again -> 0 changes
         assert_eq!(e.fill_tiles(0, 0, 2, 2, 4).unwrap(), 0);
 
         e.undo().unwrap();
@@ -779,7 +779,7 @@ mod tests {
     fn undo_label_describes_the_action() {
         let mut e = Editor::new();
         e.add_room(room("start")).unwrap();
-        assert_eq!(e.undo_label(), Some("新增房间 start"));
+        assert_eq!(e.undo_label(), Some("Add room start"));
     }
 
     #[test]

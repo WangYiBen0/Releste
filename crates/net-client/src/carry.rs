@@ -1,105 +1,108 @@
-//! 携带状态机。
+//! Carry state machine.
 //!
-//! # 关键机制：被携带者本地禁用碰撞
+//! # Key mechanism: the carried player disables collision locally
 //!
-//! 当玩家被另一名玩家携带时，其碰撞在**本地**被禁用。
-//! 这使得携带者可以把被携带者带过墙 / 刺 / 关卡边界——
-//! "世界不同步"是玩法而非 bug（AGENTS.md §4.4）。
+//! When a player is carried by another player, its collision is disabled
+//! **locally**. This lets the carrier bring the passenger through walls /
+//! spikes / level boundaries -- "the world is not synced" is gameplay, not a
+//! bug (AGENTS.md 4.4).
 //!
-//! 服务器对此完全无感知：它只转发 [`CarryRequest`](crate::protocol::Up::CarryRequest)
-//! 与接受 / 结束消息，不参与物理。
+//! The server is completely unaware of this: it only forwards
+//! [`CarryRequest`](crate::protocol::Up::CarryRequest)
+//! and accept / end messages, and takes no part in physics.
 
 use releste_math::{Fx, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{CarryMode, PlayerId};
 
-/// 本地的携带关系。
+/// Local carry relationship.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct CarryLink {
-    /// 携带者。
+    /// The carrier.
     pub carrier: PlayerId,
-    /// 被携带者。
+    /// The passenger.
     pub passenger: PlayerId,
-    /// 模式。
+    /// The mode.
     pub mode: CarryMode,
 }
 
-/// 携带状态机（本地权威）。
+/// Carry state machine (locally authoritative).
 ///
-/// 每个客户端只维护与"自己"相关的携带关系。
+/// Each client only maintains carry relationships involving "itself".
 #[derive(Debug, Default)]
 pub struct CarryState {
-    /// 谁在携带我（`None` 表示我是自由的）。
+    /// Who is carrying me (`None` means I am free).
     carried_by: Option<CarryLink>,
-    /// 我在携带谁。
+    /// Who I am carrying.
     carrying: Option<CarryLink>,
-    /// 被抛出后的短暂无碰撞窗口（帧）。
+    /// Short collision-disabled window after being launched (frames).
     launch_grace: u8,
 }
 
-/// 抛出后保持无碰撞的帧数：够穿一层墙。
+/// Frames to stay collision-free after a launch: enough to pass through one
+/// wall.
 pub const LAUNCH_GRACE_FRAMES: u8 = 12;
 
-/// 绳索模式的弹性系数（每帧把被携带者拉向携带者）。
+/// Tether mode stiffness (pulls the passenger toward the carrier each frame).
 const TETHER_STIFFNESS: f32 = 0.25;
 
 impl CarryState {
-    /// 新建。
+    /// New.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 我是否正被携带。
+    /// Whether I am being carried.
     pub fn is_carried(&self) -> bool {
         self.carried_by.is_some()
     }
 
-    /// 我是否正在携带别人。
+    /// Whether I am carrying someone.
     pub fn is_carrying(&self) -> bool {
         self.carrying.is_some()
     }
 
-    /// 我在携带谁。
+    /// Who I am carrying.
     pub fn carrying(&self) -> Option<PlayerId> {
         self.carrying.map(|l| l.passenger)
     }
 
-    /// 谁在携带我。
+    /// Who is carrying me.
     pub fn carried_by(&self) -> Option<PlayerId> {
         self.carried_by.map(|l| l.carrier)
     }
 
-    /// 当前携带模式。
+    /// The current carry mode.
     pub fn mode(&self) -> Option<CarryMode> {
         self.carried_by
             .map(|l| l.mode)
             .or_else(|| self.carrying.map(|l| l.mode))
     }
 
-    /// **核心**：本地是否应禁用碰撞。
+    /// **Core**: whether collision should be disabled locally.
     ///
-    /// 被携带时禁用；抛出后的 grace 窗口内也禁用，
-    /// 以便"穿墙带人"能真正穿过去。
+    /// Disabled while carried; also disabled during the grace window after a
+    /// launch, so that "carry through a wall" can really pass through.
     pub fn collides(&self) -> bool {
         !self.is_carried() && self.launch_grace == 0
     }
 
-    /// 接受携带请求（我是被携带者）。
+    /// Accept a carry request (I am the passenger).
     pub fn accept_from(&mut self, carrier: PlayerId, mode: CarryMode) -> bool {
         if self.carried_by.is_some() || self.carrying.is_some() {
-            // 已经在携带关系里，拒绝嵌套。
+            // Already in a carry relationship; reject nesting.
             return false;
         }
         self.carried_by = Some(CarryLink {
             carrier,
-            passenger: PlayerId(0), // 本地玩家 ID 由上层填充
+            passenger: PlayerId(0), // the local player ID is filled in by the upper layer
             mode,
         });
         true
     }
 
-    /// 记录我发出的携带请求被接受（我是携带者）。
+    /// Record that a carry request I sent was accepted (I am the carrier).
     pub fn mark_carrying(&mut self, passenger: PlayerId, mode: CarryMode) -> bool {
         if self.carrying.is_some() || self.carried_by.is_some() {
             return false;
@@ -112,10 +115,10 @@ impl CarryState {
         true
     }
 
-    /// 结束携带（任一方发起）。
+    /// End the carry (initiated by either side).
     pub fn end(&mut self) -> Option<CarryLink> {
         let link = self.carried_by.take().or_else(|| self.carrying.take());
-        // 抛出 / 结束后的无碰撞窗口。
+        // Collision-free window after a launch / end.
         if let Some(l) = &link {
             if l.mode == CarryMode::Launch {
                 self.launch_grace = LAUNCH_GRACE_FRAMES;
@@ -124,18 +127,19 @@ impl CarryState {
         link
     }
 
-    /// 每帧推进 grace 计时。
+    /// Advance the grace timer each frame.
     pub fn tick(&mut self) {
         self.launch_grace = self.launch_grace.saturating_sub(1);
     }
 
-    /// 计算被携带时的本地位置。
+    /// Compute the local position while being carried.
     ///
-    /// - `Grab` / `Ride`：直接吸附到携带者的相对偏移。
-    /// - `Tether`：按弹性插值。
-    /// - `Launch`：不吸附（由抛出速度决定，通常已结束关系）。
+    /// - `Grab` / `Ride`: snap directly to the carrier's relative offset.
+    /// - `Tether`: elastic interpolation.
+    /// - `Launch`: no snapping (determined by launch velocity; the relationship
+    ///   has usually ended).
     ///
-    /// 返回 `None` 表示本帧不需要修正位置。
+    /// Returns `None` when the position needs no correction this frame.
     pub fn resolve_position(&self, my_pos: Vec2, carrier_pos: Vec2, offset: Vec2) -> Option<Vec2> {
         let link = self.carried_by?;
         match link.mode {
@@ -201,7 +205,7 @@ mod tests {
                 Vec2::ZERO,
             )
             .expect("tether should move");
-        // 25% 靠近
+        // 25% of the way closer
         assert!((pos.x.to_f32() - 25.0).abs() < 0.01);
     }
 

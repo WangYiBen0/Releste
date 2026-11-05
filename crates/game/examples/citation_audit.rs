@@ -4,7 +4,7 @@
 //! Why it exists: the rule in this repository is that every behavioural line
 //! points back to a vanilla line number
 //! (`.agents/skills/releste-vanilla-audit`). When a citation is wrong or has
-//! drifted, reading the code by eye will not show it — this tool lays every
+//! drifted, reading the code by eye will not show it -- this tool lays every
 //! citation out and supports one **verifiable citation style**:
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! A backtick-quoted snippet **immediately** after a citation (only spaces
 //! between) is treated as "that is what the cited lines should contain" and is
 //! verified by whitespace-normalised substring match. A citation without a
-//! snippet is recorded as `unchecked` — not a failure, but it cannot catch drift.
+//! snippet is recorded as `unchecked` -- not a failure, but it cannot catch drift.
 //!
 //! Usage (from the repository root):
 //!
@@ -49,7 +49,7 @@ struct Entry {
     /// Excerpt of the cited vanilla lines (whitespace-normalised, cut at 120
     /// characters).
     excerpt: String,
-    /// `ok` / `unchecked` / `out_of_range` / `snippet_mismatch`。
+    /// `ok` / `unchecked` / `out_of_range` / `snippet_mismatch`.
     status: &'static str,
 }
 
@@ -141,7 +141,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode, String> {
 }
 
 const HELP: &str = "\
-citation_audit — verify pureCeleste.cs citations (line ranges + optional snippets)
+citation_audit - verify pureCeleste.cs citations (line ranges + optional snippets)
 
 USAGE:
     cargo run -p releste-game --example citation_audit -- [FLAGS] [FILES...]
@@ -166,7 +166,7 @@ EXIT: 0 = clean; 1 = out_of_range / snippet_mismatch present.";
 /// `LINE| content` (at most 40 hits).
 ///
 /// Use it to locate line numbers when writing a citation instead of trusting
-/// memory — remembered line numbers are exactly where drift comes from.
+/// memory -- remembered line numbers are exactly where drift comes from.
 fn find_in_reference(needle: &str) -> Result<(), String> {
     let reference = default_reference();
     let text = std::fs::read_to_string(&reference)
@@ -181,7 +181,7 @@ fn find_in_reference(needle: &str) -> Result<(), String> {
         }
     }
     if hits > 40 {
-        println!("… {} more hit(s); narrow the pattern", hits - 40);
+        println!("... {} more hit(s); narrow the pattern", hits - 40);
     }
     if hits == 0 {
         println!("no match for {needle:?}");
@@ -192,7 +192,7 @@ fn find_in_reference(needle: &str) -> Result<(), String> {
 /// `--methods`: the vanilla method declaration list (`LINE| declaration`).
 ///
 /// For checking the endpoints of function-level citations (such as
-/// `UpdateSprite (pureCeleste.cs:…)`).
+/// `UpdateSprite (pureCeleste.cs:...)`).
 fn list_methods() -> Result<(), String> {
     let reference = default_reference();
     let text = std::fs::read_to_string(&reference)
@@ -297,7 +297,7 @@ fn parse_range(s: &str) -> (Option<usize>, usize, usize) {
 ///
 /// Only snippets that look like code are accepted: at least one ASCII letter
 /// or digit. A backtick directly after a citation is often punctuation or
-/// prose, and treating those as assertions produces pure noise — they are not
+/// prose, and treating those as assertions produces pure noise -- they are not
 /// counted as snippets (recorded as unchecked).
 fn parse_snippet(s: &str) -> Option<String> {
     let s = s.trim_start();
@@ -378,7 +378,7 @@ fn truncate(s: &str, max: usize) -> String {
         return s.to_string();
     }
     let mut out: String = s.chars().take(max).collect();
-    out.push('…');
+    out.push_str("...");
     out
 }
 
@@ -442,7 +442,7 @@ fn print_text(reference: &Path, entries: &[Entry], files: &[PathBuf], all: bool,
     println!("\nsummary: ok {ok}, unchecked {unchecked}, problems {problems}");
     if unchecked > 0 {
         println!(
-            "note: {unchecked} citation(s) carry no snippet — adding one \
+            "note: {unchecked} citation(s) carry no snippet -- adding one \
              (`// pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f``) makes drift detectable."
         );
     }

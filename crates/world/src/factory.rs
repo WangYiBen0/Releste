@@ -1,11 +1,11 @@
-//! EntityFactory trait、BuildCtx、Persistence。
+//! EntityFactory trait, BuildCtx, Persistence.
 
 use crate::entity::{Entity, EntityData};
 use crate::schema::Schema;
 
-/// 实体种类标识符。
+/// Entity kind identifier.
 ///
-/// 每个注册的实体工厂有一个唯一 `EntityKindId`。
+/// Each registered entity factory has a unique `EntityKindId`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct EntityKindId(pub u32);
 
@@ -15,38 +15,40 @@ impl EntityKindId {
     }
 }
 
-/// 实体工厂：构建运行时 [`Entity`] 并声明其 Schema 与持久化策略。
+/// Entity factory: builds a runtime [`Entity`] and declares its Schema and
+/// persistence policy.
 pub trait EntityFactory: Send + Sync {
-    /// 本工厂对应的实体种类标识。
+    /// The entity kind identifier for this factory.
     fn id(&self) -> EntityKindId;
 
-    /// 从地图数据构建运行时实体。
+    /// Build a runtime entity from map data.
     fn build(&self, data: &EntityData, ctx: &mut BuildCtx) -> Entity;
 
-    /// 返回属性 Schema（编辑器用来自动生成面板）。
+    /// Return the property Schema (used by the editor to auto-generate panels).
     fn schema(&self) -> &Schema;
 
-    /// 热重载时的持久化策略。
+    /// Persistence policy for hot reload.
     fn persistence(&self) -> Persistence;
 }
 
-/// 实体在热重载时的持久化策略。
+/// Persistence policy for an entity during hot reload.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Persistence {
-    /// 热重载时重建（墙壁、装饰等静态实体）。
+    /// Rebuild on hot reload (static entities such as walls and decorations).
     Rebuild,
-    /// 保留状态，仅更新属性（可拾取物、门等状态实体）。
+    /// Preserve state, only update properties (stateful entities such as
+    /// pickups and doors).
     Preserve,
-    /// 永不卸载（玩家、摄像机）。
+    /// Never unload (player, camera).
     Persistent,
 }
 
-/// 构建上下文。
+/// Build context.
 ///
-/// 在 `EntityFactory::build` 期间提供对其它实体的查询
-/// 及事件发送。
+/// During `EntityFactory::build` it provides queries against other entities
+/// and event dispatch.
 pub struct BuildCtx {
-    // 稍后扩展：事件总线、World 读引用等。
+    // Extended later: event bus, World read references, etc.
 }
 
 impl BuildCtx {

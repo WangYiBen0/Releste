@@ -1,11 +1,11 @@
 //! Schema-driven property panel.
 //!
-//! AGENTS.md §2: the editor UI **auto-generates** panels from entity Schemas.
+//! AGENTS.md 2: the editor UI **auto-generates** panels from entity Schemas.
 //!
 //! This module compiles a [`Schema`] into a reusable form description
 //! ([`FormField`] / [`WidgetKind`]) that the `ui` module then renders.
-//! Compilation and value extraction are pure and testable — which also helps
-//! AGENTS.md §13's "hundreds-of-entities generation" (form descriptions are cacheable).
+//! Compilation and value extraction are pure and testable -- which also helps
+//! AGENTS.md 13's "hundreds-of-entities generation" (form descriptions are cacheable).
 
 use std::collections::HashMap;
 
@@ -77,7 +77,7 @@ pub struct SchemaPanel {
 /// Generates a human-readable label from a property name.
 ///
 /// Splits words at `_` and camel-case boundaries and capitalises each word:
-/// `cameraOffsetX` → `Camera Offset X`, `already_snake` → `Already Snake`.
+/// `cameraOffsetX` -> `Camera Offset X`, `already_snake` -> `Already Snake`.
 fn humanize(name: &str) -> String {
     let mut words: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -91,7 +91,7 @@ fn humanize(name: &str) -> String {
             prev_lower = false;
             continue;
         }
-        // 驼峰边界：小写/数字后紧跟大写 → 切词。
+        // Camel-case boundary: an uppercase letter right after a lowercase letter or digit -> split the word.
         if ch.is_uppercase() && prev_lower && !cur.is_empty() {
             words.push(std::mem::take(&mut cur));
         }
@@ -116,7 +116,7 @@ fn humanize(name: &str) -> String {
 }
 
 impl SchemaPanel {
-    /// 由 [`Schema`] 编译。
+    /// Compiled from a [`Schema`].
     pub fn compile(kind: impl Into<String>, schema: &Schema) -> Self {
         SchemaPanel {
             kind: kind.into(),
@@ -124,7 +124,7 @@ impl SchemaPanel {
         }
     }
 
-    /// 由 [`Schema`] 编译，并用实体当前属性覆盖默认值。
+    /// Compiled from a [`Schema`], with the entity's current properties overriding the defaults.
     pub fn compile_with_values(
         kind: impl Into<String>,
         schema: &Schema,
@@ -139,29 +139,29 @@ impl SchemaPanel {
         panel
     }
 
-    /// 按名取字段。
+    /// Looks up a field by name.
     pub fn field(&self, name: &str) -> Option<&FormField> {
         self.fields.iter().find(|f| f.name == name)
     }
 
-    /// 按名取字段（可变）。
+    /// Looks up a field by name (mutable).
     pub fn field_mut(&mut self, name: &str) -> Option<&mut FormField> {
         self.fields.iter_mut().find(|f| f.name == name)
     }
 
-    /// 是否有字段被改动。
+    /// Whether any field has been modified.
     pub fn is_dirty(&self) -> bool {
         self.fields.iter().any(FormField::is_modified)
     }
 
-    /// 全部重置。
+    /// Resets everything.
     pub fn reset_all(&mut self) {
         for f in &mut self.fields {
             f.reset();
         }
     }
 
-    /// 导出为属性表（仅包含 **当前值**）。
+    /// Exports to a property map (containing only the **current values**).
     pub fn to_properties(&self) -> HashMap<String, FieldValue> {
         self.fields
             .iter()
@@ -169,9 +169,9 @@ impl SchemaPanel {
             .collect()
     }
 
-    /// 导出为属性表，但只包含与默认值不同的字段。
+    /// Exports to a property map, but only containing fields that differ from their defaults.
     ///
-    /// 用于写回地图时保持 `.map` 精简。
+    /// Used when writing back to the map to keep the `.map` compact.
     pub fn to_modified_properties(&self) -> HashMap<String, FieldValue> {
         self.fields
             .iter()
@@ -181,7 +181,7 @@ impl SchemaPanel {
     }
 }
 
-/// 把单个 schema 字段编译为表单字段。
+/// Compiles a single schema field into a form field.
 fn compile_field(field: &SchemaField) -> FormField {
     let widget = match &field.field_type {
         FieldType::Int => WidgetKind::IntInput {
@@ -224,7 +224,7 @@ mod tests {
                 name: Cow::Borrowed("width"),
                 field_type: FieldType::Int,
                 default: FieldValue::Int(8),
-                tooltip: Some(Cow::Borrowed("tile 宽度")),
+                tooltip: Some(Cow::Borrowed("tile width")),
             },
             SchemaField {
                 name: Cow::Borrowed("cameraOffsetX"),
@@ -289,7 +289,7 @@ mod tests {
         let panel = SchemaPanel::compile("level", &schema());
         assert_eq!(
             panel.field("width").unwrap().tooltip.as_deref(),
-            Some("tile 宽度")
+            Some("tile width")
         );
     }
 
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(modified.len(), 1);
         assert_eq!(modified.get("width"), Some(&FieldValue::Int(16)));
 
-        // 全量导出包含所有字段
+        // The full export contains every field
         assert_eq!(panel.to_properties().len(), 4);
     }
 

@@ -1,12 +1,13 @@
-//! `releste-script`: 过场脚本层与 [`CutsceneBridge`]。
+//! `releste-script`: the cutscene scripting layer and [`CutsceneBridge`].
 //!
-//! # 核心不变量（AGENTS.md §4.5）
-//! **Lua 永远不直接改物理状态。** 所有副作用通过
-//! [`SimCommand`] 排队，下一帧由 sim 消费。
+//! # Core invariant (AGENTS.md 4.5)
+//! **Lua never directly modifies physics state.** All side effects go through
+//! [`SimCommand`] queued and consumed by the sim on the next frame.
 //!
 //! # Feature
-//! - 默认：仅 [`CutsceneBridge`] / [`SimCommand`]（纯逻辑，无外部依赖）。
-//! - `lua`：启用 mlua 集成（`ScriptEngine`，默认关闭）。
+//! - Default: only [`CutsceneBridge`] / [`SimCommand`] (pure logic, no external
+//!   dependencies).
+//! - `lua`: enables the mlua integration (`ScriptEngine`, off by default).
 
 #![deny(warnings)]
 

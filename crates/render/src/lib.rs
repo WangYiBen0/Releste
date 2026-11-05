@@ -1,7 +1,7 @@
 //! `releste-render`: wgpu renderer, camera, batching.
 //!
 //! # Layering
-//! - [`camera`]: world ↔ screen/NDC transforms (pure math, tested).
+//! - [`camera`]: world <-> screen/NDC transforms (pure math, tested).
 //! - [`atlas`]: loads the `.atlas` descriptors produced by content-pipeline.
 //! - [`batch`]: merges draw calls by layer and texture (pure logic, tested).
 //! - [`gpu`]: wgpu device / pipeline / texture upload (needs a GPU, manual checklist).
@@ -32,7 +32,7 @@ pub enum Layer {
     Tiles = 0,
     /// Entities.
     Entities = 100,
-    /// Player hair（原版头发画在身体后面）。
+    /// Player hair (in the original, hair is drawn behind the body).
     PlayerHair = 150,
     /// Player.
     Player = 200,

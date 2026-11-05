@@ -1,4 +1,4 @@
-//! 文件监听：debounce 后触发重载事件。
+//! File watching: trigger a reload event after debounce.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -7,25 +7,25 @@ use std::time::{Duration, Instant};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, warn};
 
-/// 监听事件。
+/// Watch event.
 #[derive(Debug, Clone)]
 pub enum WatchEvent {
-    /// `.map` 文件被修改，需要重载。
+    /// A `.map` file was modified and needs a reload.
     MapChanged(PathBuf),
-    /// 监听出错。
+    /// The watcher errored.
     Error(String),
 }
 
-/// `.map` 文件监听器（带 debounce）。
+/// `.map` file watcher (with debounce).
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
     rx: mpsc::Receiver<WatchEvent>,
     debounce: Duration,
-    /// 上次事件时间（用于 debounce）。
+    /// Time of the last event (used for debounce).
     pending: Option<(PathBuf, Instant)>,
 }
 
-/// Watcher 错误。
+/// Watcher error.
 #[derive(Debug, thiserror::Error)]
 pub enum WatcherError {
     #[error("failed to create watcher: {0}")]
@@ -38,9 +38,9 @@ pub enum WatcherError {
 }
 
 impl FileWatcher {
-    /// 创建监听器，监听 `dir` 下的 `.map` 文件。
+    /// Create a watcher that watches `.map` files under `dir`.
     ///
-    /// `debounce_ms` 默认 100ms。
+    /// `debounce_ms` defaults to 100ms.
     pub fn new(dir: &Path, debounce_ms: u64) -> Result<Self, WatcherError> {
         let (tx, rx) = mpsc::channel();
 
@@ -74,7 +74,7 @@ impl FileWatcher {
         })
     }
 
-    /// 是否是 `.map` 的写入事件。
+    /// Whether this is a write event for a `.map` file.
     fn is_map_write(event: &Event) -> bool {
         let is_write = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_));
         is_write
@@ -84,18 +84,19 @@ impl FileWatcher {
                 .any(|p| p.extension().map(|e| e == "map").unwrap_or(false))
     }
 
-    /// 非阻塞轮询：返回 debounce 后确认的变更路径。
+    /// Non-blocking poll: return the change path confirmed after debounce.
     ///
-    /// 同一路径在 debounce 窗口内的多次写入只触发一次。
+    /// Multiple writes to the same path within the debounce window trigger
+    /// only once.
     pub fn poll(&mut self) -> Option<PathBuf> {
-        // 先清空 channel，收集最新事件
+        // First drain the channel and collect the latest events.
         loop {
             match self.rx.try_recv() {
                 Ok(WatchEvent::MapChanged(path)) => {
                     let now = Instant::now();
                     match &self.pending {
                         Some((_, at)) if now.duration_since(*at) < self.debounce => {
-                            // 在 debounce 窗口内，更新路径
+                            // Within the debounce window; update the path.
                             self.pending = Some((path, *at));
                         }
                         _ => {
@@ -115,7 +116,7 @@ impl FileWatcher {
             }
         }
 
-        // 检查 pending 是否已过 debounce 窗口
+        // Check whether pending has passed the debounce window.
         if let Some((path, at)) = &self.pending {
             if at.elapsed() >= self.debounce {
                 let path = path.clone();
@@ -128,14 +129,15 @@ impl FileWatcher {
         None
     }
 
-    /// 阻塞等待下一个变更（会睡到 debounce 窗口结束）。
+    /// Block until the next change (sleeps until the debounce window ends).
     pub fn wait(&mut self) -> Option<PathBuf> {
         self.wait_timeout(Duration::from_secs(60 * 60))
     }
 
-    /// 带超时的阻塞等待。
+    /// Blocking wait with a timeout.
     ///
-    /// 超时返回 `None`。用于测试与"只在有变化时才重载"的宿主循环。
+    /// Returns `None` on timeout. Used by tests and by host loops that reload
+    /// only when something changed.
     pub fn wait_timeout(&mut self, timeout: Duration) -> Option<PathBuf> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -146,7 +148,7 @@ impl FileWatcher {
             if now >= deadline {
                 return None;
             }
-            // 睡到 min(10ms, 剩余时间)。
+            // Sleep for min(10ms, remaining time).
             let slice = (deadline - now).min(Duration::from_millis(10));
             match self.rx.recv_timeout(slice) {
                 Ok(WatchEvent::MapChanged(path)) => {

@@ -1,17 +1,18 @@
-//! wgpu 渲染后端。
+//! wgpu render backend.
 //!
-//! # 手动 checklist（AGENTS.md §9：纯渲染代码不写单测，但需 checklist）
-//! - [ ] 窗口 resize 后画面不拉伸、不变形（letterbox 生效）
-//! - [ ] 摄像机 zoom 1.0 时，320x180 内的 sprite 与美术像素 1:1 对齐
-//! - [ ] 大量 sprite（>5000）时 draw call 数等于纹理组数，且帧耗时 < 4ms
-//! - [ ] 纹理采样用 nearest，不出现模糊（还原像素风）
-//! - [ ] alpha 混合为预乘，半透明边缘不发黑
-//! - [ ] 切出 / 切回窗口后能正常重配置 surface
+//! # Manual checklist (AGENTS.md 9: pure rendering code has no unit tests, but needs a checklist)
+//! - [ ] After a window resize the image is neither stretched nor distorted (letterbox works)
+//! - [ ] With camera zoom 1.0, sprites within 320x180 align 1:1 with the art pixels
+//! - [ ] With many sprites (>5000) the draw call count equals the texture group count, and the frame time stays < 4ms
+//! - [ ] Texture sampling uses nearest, with no blurring (preserving the pixel look)
+//! - [ ] Alpha blending is premultiplied, so semi-transparent edges do not darken
+//! - [ ] After switching out of and back into the window, the surface can still be reconfigured
 //!
-//! # `.data` 载荷
-//! 原版 `.data` 不是 Crunch，而是逐命令的**像素 RLE**。`tools/content-pipeline`
-//! 离线把它解成 PNG（`kind = "png"`）；管线尚未转码的载荷（per-sprite 图集）
-//! 会被跳过并 `warn`，而不是渲染出错误内容（AGENTS.md §13）。
+//! # `.data` payloads
+//! The vanilla `.data` is not Crunch but a per-command **pixel RLE**. `tools/content-pipeline`
+//! decodes it to PNG offline (`kind = "png"`); payloads the pipeline has not yet converted
+//! (per-sprite atlases) are skipped with a `warn` instead of rendering wrong content
+//! (AGENTS.md 13).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,7 +26,7 @@ use crate::atlas::{SpriteAtlas, TextureKind};
 use crate::batch::{SpriteBatch, SpriteVertex};
 use crate::camera::Camera;
 
-/// 渲染错误。
+/// Render error.
 #[derive(Debug, Error)]
 pub enum RenderError {
     #[error("no suitable GPU adapter found: {0}")]
@@ -46,7 +47,7 @@ pub enum RenderError {
     },
     #[error(
         "texture `{path}` uses {kind:?}, which is Crunch-compressed. \
-         Pixel decoding is not implemented yet (AGENTS.md §13). \
+         Pixel decoding is not implemented yet (AGENTS.md 13). \
          Re-export the atlas with PNG payloads in the content pipeline."
     )]
     UndecodableTexture { path: String, kind: TextureKind },
@@ -56,16 +57,16 @@ pub enum RenderError {
     BufferCast,
 }
 
-/// 渲染器配置。
+/// Renderer configuration.
 #[derive(Debug, Clone)]
 pub struct GpuRendererConfig {
-    /// 初始窗口宽度（物理像素）。
+    /// Initial window width (physical pixels).
     pub width: u32,
-    /// 初始窗口高度（物理像素）。
+    /// Initial window height (physical pixels).
     pub height: u32,
-    /// 垂直同步。
+    /// Vertical sync.
     pub vsync: bool,
-    /// MSAA 采样数（1 = 关闭）。
+    /// MSAA sample count (1 = off).
     pub msaa_samples: u32,
 }
 
@@ -75,7 +76,7 @@ impl Default for GpuRendererConfig {
             width: 1280,
             height: 720,
             vsync: true,
-            // 像素风：MSAA 会糊掉美术，默认关闭。
+            // Pixel look: MSAA blurs the art, so it is off by default.
             msaa_samples: 1,
         }
     }
@@ -84,21 +85,21 @@ impl Default for GpuRendererConfig {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
-    /// 预留：时间 / 全局 tint。
+    /// Reserved: time / global tint.
     time: f32,
     _pad: [f32; 3],
 }
 
-/// 已上传的纹理。
+/// An uploaded texture.
 ///
-/// `bind_group` 内部持有 texture view 的引用，因此无需另存 view。
+/// The `bind_group` holds a reference to the texture view internally, so the view does not need to be stored separately.
 struct GpuTexture {
     bind_group: wgpu::BindGroup,
-    /// 纹理像素尺寸（`uv_for_sprite` 归一化 UV 需要）。
+    /// Texture pixel size (needed by `uv_for_sprite` to normalize UVs).
     size: (u32, u32),
 }
 
-/// wgpu 渲染器。
+/// wgpu renderer.
 pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -111,18 +112,18 @@ pub struct GpuRenderer {
     vertex_capacity: usize,
     textures: HashMap<u32, GpuTexture>,
     sampler: wgpu::Sampler,
-    /// 实际视口尺寸。
+    /// Actual viewport size.
     viewport: (u32, u32),
-    /// 清屏色（原版 `Level` 的 `<Style color=...>` → `BackgroundColor`，
-    /// `MapData`/`Style` 解析见 `pureCeleste.cs:112430-112436`）。
-    /// 默认纯黑，与原版 `Level.BackgroundColor` 默认值一致。
+    /// Clear color (the vanilla `Level`'s `<Style color=...>` -> `BackgroundColor`;
+    /// see `pureCeleste.cs:112430-112436` for the `MapData`/`Style` parsing).
+    /// Defaults to pure black, matching the vanilla `Level.BackgroundColor` default.
     clear_color: wgpu::Color,
 }
 
 impl GpuRenderer {
-    /// 创建渲染器。
+    /// Creates the renderer.
     ///
-    /// `window` 需以 `Arc` 形式传入（wgpu 要求 surface 的 `'static`）。
+    /// `window` must be passed as an `Arc` (wgpu requires the surface to be `'static`).
     pub async fn new(
         window: std::sync::Arc<winit::window::Window>,
         config: GpuRendererConfig,
@@ -148,7 +149,7 @@ impl GpuRenderer {
             })?;
 
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // 原版图集最大 4096x2048，留出余量。
+        // Vanilla atlases are at most 4096x2048; leave some headroom.
         limits.max_texture_dimension_2d = 8192;
 
         let (device, queue) = adapter
@@ -179,7 +180,7 @@ impl GpuRenderer {
         };
 
         let surface_config = wgpu::SurfaceConfiguration {
-            // COPY_SRC：`--screenshot` 要把渲染目标拷回 CPU 读像素。
+            // COPY_SRC: `--screenshot` copies the render target back to the CPU to read pixels.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format,
             width: config.width.max(1),
@@ -300,7 +301,7 @@ impl GpuRenderer {
             cache: None,
         });
 
-        // 像素风：nearest 采样。
+        // Pixel look: nearest sampling.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nearest-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -344,10 +345,10 @@ impl GpuRenderer {
         })
     }
 
-    /// 设置清屏色（每帧 `LoadOp::Clear` 用）。
+    /// Sets the clear color (used by each frame's `LoadOp::Clear`).
     ///
-    /// 由地图样式的 `background_color` 驱动（`MapStyle::background_color`），
-    /// 见 `pureCeleste.cs:112434`（`Calc.HexToColor` → `BackgroundColor`）。
+    /// Driven by the map style's `background_color` (`MapStyle::background_color`);
+    /// see `pureCeleste.cs:112434` (`Calc.HexToColor` -> `BackgroundColor`).
     pub fn set_clear_color(&mut self, rgb: [u8; 3]) {
         self.clear_color = wgpu::Color {
             r: f64::from(rgb[0]) / 255.0,
@@ -357,17 +358,17 @@ impl GpuRenderer {
         };
     }
 
-    /// 当前视口尺寸。
+    /// Current viewport size.
     pub fn viewport(&self) -> (u32, u32) {
         self.viewport
     }
 
-    /// 表面像素格式。
+    /// Surface pixel format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
 
-    /// 窗口尺寸变化后重配置 surface。
+    /// Reconfigures the surface after a window size change.
     pub fn resize(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -380,7 +381,7 @@ impl GpuRenderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// 把一个 PNG 纹理上传到 GPU，并绑定到 `atlas_id`。
+    /// Uploads a PNG texture to the GPU and binds it to `atlas_id`.
     pub fn upload_png(&mut self, atlas_id: u32, path: &Path) -> Result<(), RenderError> {
         let img = image::open(path).map_err(|source| RenderError::TextureDecode {
             path: path.display().to_string(),
@@ -391,7 +392,7 @@ impl GpuRenderer {
         self.upload_rgba(atlas_id, w, h, rgba.as_raw())
     }
 
-    /// 直接上传 RGBA8 像素。
+    /// Uploads RGBA8 pixels directly.
     pub fn upload_rgba(
         &mut self,
         atlas_id: u32,
@@ -458,9 +459,9 @@ impl GpuRenderer {
         Ok(())
     }
 
-    /// 按 [`SpriteAtlas`] 载入所有可解码（PNG）纹理。
+    /// Loads all decodable (PNG) textures from a [`SpriteAtlas`].
     ///
-    /// 尚未由管线转码的 `.data` 载荷会跳过并 `warn`（见模块文档）。
+    /// `.data` payloads the pipeline has not converted yet are skipped with a `warn` (see the module docs).
     pub fn load_atlas(&mut self, atlas: &SpriteAtlas) -> Result<usize, RenderError> {
         let mut loaded = 0usize;
         for (id, group) in atlas.descriptor().textures.iter().enumerate() {
@@ -479,23 +480,24 @@ impl GpuRenderer {
         Ok(loaded)
     }
 
-    /// 上传一帧顶点并绘制。
+    /// Uploads one frame of vertices and draws it.
     ///
-    /// 调用前应 `batch.sort()`。
+    /// Call `batch.sort()` first.
     pub fn render(&mut self, batch: &SpriteBatch, camera: &Camera) -> Result<(), RenderError> {
         self.render_inner(batch, camera, None)
     }
 
-    /// 渲染一帧并把像素读回 CPU：紧凑 RGBA8（BGRA 表面格式已换回 RGBA）。
-    /// 返回 `(宽, 高, 像素)` —— 高可能比视口矮（见下）。
+    /// Renders one frame and reads the pixels back to the CPU: compact RGBA8 (BGRA surface formats are swapped back to RGBA).
+    /// Returns `(width, height, pixels)` -- the height may be shorter than the viewport (see below).
     ///
-    /// "画得对不对"不该只靠肉眼盯窗口 —— `--screenshot` 用它把真实
-    /// 管线的输出落成 PNG，CI / 远程环境也能核对渲染结果。
+    /// "Is the drawing correct?" should not rely only on staring at the window -- `--screenshot` uses this
+    /// to write the real pipeline output to a PNG, so CI / remote environments can check the render result too.
     ///
-    /// `copy_texture_to_buffer` 的行距必须 256 对齐，所以行距 ≥ `宽×4`。
-    /// 个别驱动（llvmpipe）映射回来的范围会被削到无 padding 的尺寸，
-    /// 按行距只能读出**前面若干整行** —— 被裁掉的是底部（窗口里通常
-    /// 是 letterbox 黑边），游戏内容仍在；按实际行数取，宁缺不炸。
+    /// `copy_texture_to_buffer` requires the row pitch to be 256-aligned, so the pitch is >= `width*4`.
+    /// Some drivers (llvmpipe) shrink the mapped range back to a padding-free size, so with the pitch
+    /// only the **first several whole rows** can be read -- the cropped part is the bottom (usually the
+    /// letterbox black bars in a window) and the game content is still there; take the actual row count,
+    /// prefer missing content over crashing.
     pub fn capture_pixels(
         &mut self,
         batch: &SpriteBatch,
@@ -518,7 +520,7 @@ impl GpuRenderer {
         Ok((width, rows, pixels))
     }
 
-    /// 渲染一帧；`capture` 给出时把渲染目标额外拷进 CPU 可读缓冲。
+    /// Renders one frame; when `capture` is given, additionally copies the render target into a CPU-readable buffer.
     fn render_inner(
         &mut self,
         batch: &SpriteBatch,
@@ -541,7 +543,7 @@ impl GpuRenderer {
             Err(e) => return Err(RenderError::Surface(e.to_string())),
         };
 
-        // 没有可见 sprite 时仍然清屏——否则首帧会留下未初始化的表面内容。
+        // Clear even when no sprite is visible -- otherwise the first frame leaves uninitialized surface contents.
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -585,10 +587,10 @@ impl GpuRenderer {
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
-            // 每段 = 一次 draw call。
+            // One run = one draw call.
             for range in batch.ranges() {
                 let Some(tex) = self.textures.get(&range.atlas) else {
-                    // 未上传的纹理（例如尚未转码的 `.data`）：跳过而不是渲染错误内容。
+                    // A texture that was not uploaded (for example `.data` not yet converted): skip instead of rendering wrong content.
                     continue;
                 };
                 pass.set_bind_group(1, &tex.bind_group, &[]);
@@ -598,8 +600,9 @@ impl GpuRenderer {
             }
         }
 
-        // 截屏：在 submit 前把渲染目标整块拷进暂存缓冲（GPU 时间线上
-        // 与 present 无关，present 照常做，不改变交换链节奏）。
+        // Screenshot: copy the whole render target into the staging buffer before submit
+        // (on the GPU timeline this is independent of present; present still happens as
+        // usual and the swapchain cadence is unchanged).
         if let Some(cap) = capture {
             encoder.copy_texture_to_buffer(
                 frame.texture.as_image_copy(),
@@ -624,29 +627,31 @@ impl GpuRenderer {
         Ok(())
     }
 
-    /// 已上传纹理数。
+    /// Number of uploaded textures.
     pub fn texture_count(&self) -> usize {
         self.textures.len()
     }
 
-    /// 顶点容量。
+    /// Vertex capacity.
     pub fn vertex_capacity(&self) -> usize {
         self.vertex_capacity
     }
 
-    /// 是否已上传某纹理组。
+    /// Whether a given texture group has been uploaded.
     pub fn has_texture(&self, atlas_id: u32) -> bool {
         self.textures.contains_key(&atlas_id)
     }
 
-    /// 已上传纹理组的像素尺寸；未上传（例如尚未转码的 `.data`）返回 `None`。
+    /// Pixel size of an uploaded texture group; returns `None` when it is not uploaded
+    /// (for example `.data` not yet converted).
     ///
-    /// `.atlas` 描述里没有写纹理尺寸，所以归一化 UV 只能问 GPU 侧。
+    /// The `.atlas` descriptor does not record texture sizes, so normalized UVs can only be
+    /// asked of the GPU side.
     pub fn texture_size(&self, atlas_id: u32) -> Option<(u32, u32)> {
         self.textures.get(&atlas_id).map(|t| t.size)
     }
 
-    /// 便捷：从世界坐标算出 sprite 的 UV。
+    /// Convenience: computes a sprite's UVs from world coordinates.
     pub fn uv_for_sprite(
         sprite: &crate::atlas::Sprite,
         texture_size: Vec2,
@@ -661,10 +666,10 @@ impl GpuRenderer {
     }
 }
 
-/// Sprite 着色器。
+/// Sprite shader.
 ///
-/// 顶点坐标已在 CPU 侧变换到 NDC（见 [`crate::batch::SpriteBatch::vertices`]），
-/// 因此这里只做透传。
+/// Vertex coordinates are already transformed to NDC on the CPU side
+/// (see [`crate::batch::SpriteBatch::vertices`]), so this only passes them through.
 const SPRITE_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -696,11 +701,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// 一帧的 CPU 回读暂存。
+/// CPU readback staging for one frame.
 ///
-/// `copy_texture_to_buffer` 要求每行 256 字节对齐，所以行距可能大于
-/// `宽×4`；[`FrameCapture::read`] 返回**带 padding 的原始行**，交给
-/// [`unpack_rows`] 去边角料并按需交换 R/B。
+/// `copy_texture_to_buffer` requires each row to be 256-byte aligned, so the row pitch may be
+/// larger than `width*4`; [`FrameCapture::read`] returns the **raw rows with padding**, which
+/// [`unpack_rows`] trims and swaps R/B as needed.
 struct FrameCapture {
     buffer: wgpu::Buffer,
     width: u32,
@@ -709,7 +714,7 @@ struct FrameCapture {
 }
 
 impl FrameCapture {
-    /// 为 `width × height` 的帧建映射缓冲，行距 `bytes_per_row`（256 对齐）。
+    /// Creates a mapped buffer for a `width x height` frame with row pitch `bytes_per_row` (256-aligned).
     fn new(device: &wgpu::Device, width: u32, height: u32, bytes_per_row: u32) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame-capture"),
@@ -725,9 +730,9 @@ impl FrameCapture {
         }
     }
 
-    /// 提交完成后把整帧读回（阻塞到映射完成为止）。
+    /// Reads the whole frame back after submission completes (blocking until the mapping is done).
     ///
-    /// 返回映射范围内**原样**的字节；行距见 [`FrameCapture::bytes_per_row`]。
+    /// Returns the bytes **as-is** within the mapped range; for the row pitch see [`FrameCapture::bytes_per_row`].
     fn read(self, device: &wgpu::Device) -> Vec<u8> {
         let (tx, rx) = std::sync::mpsc::channel();
         let slice = self.buffer.slice(..);
@@ -744,7 +749,7 @@ impl FrameCapture {
     }
 }
 
-/// 把带行距的帧缓冲行转成紧凑 RGBA8；`swap_rb` 处理 BGRA 表面格式。
+/// Converts padded frame-buffer rows into compact RGBA8; `swap_rb` handles BGRA surface formats.
 fn unpack_rows(
     padded: &[u8],
     width: u32,
@@ -758,8 +763,8 @@ fn unpack_rows(
     for r in 0..height as usize {
         let src = &padded[r * row..r * row + stride];
         if swap_rb {
-            // `as_chunks` 把每个 RGBA 像素变成 `&[u8; 4]`（clippy
-            // chunks_exact_to_as_chunks：块大小是常量时就该这么写）。
+            // `as_chunks` turns each RGBA pixel into a `&[u8; 4]` (clippy
+            // chunks_exact_to_as_chunks: write it this way when the chunk size is constant).
             for px in src.as_chunks::<4>().0 {
                 out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
             }
@@ -775,8 +780,8 @@ mod tests {
     use super::*;
     use crate::atlas::Sprite;
 
-    /// 帧行去 padding + 按需交换 R/B：2×2 帧、行距 16（代替 256 对齐的
-    /// 极简替身），BGRA 像素必须还原成 RGBA 紧凑排列。
+    /// Frame rows strip padding + swap R/B as needed: a 2x2 frame with pitch 16 (a minimal
+    /// stand-in instead of 256-alignment); BGRA pixels must be restored to compact RGBA order.
     #[test]
     fn unpack_rows_strips_padding_and_swaps_rb() {
         let padded: Vec<u8> = vec![
@@ -787,7 +792,7 @@ mod tests {
             unpack_rows(&padded, 2, 2, 16, true),
             vec![3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16]
         );
-        // 非 swap：原样紧凑化（两行各取前 8 字节，padding 丢弃）。
+        // No swap: compact as-is (take the first 8 bytes of each row, dropping the padding).
         assert_eq!(
             unpack_rows(&padded, 2, 2, 16, false),
             vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -817,7 +822,7 @@ mod tests {
 
     #[test]
     fn vertex_layout_is_pod() {
-        // bytemuck 派生已保证；此处确认 stride 与字段一致。
+        // The bytemuck derive already guarantees this; here we confirm the stride matches the fields.
         assert_eq!(
             std::mem::size_of::<SpriteVertex>(),
             std::mem::size_of::<[f32; 8]>()

@@ -1,29 +1,29 @@
-//! `.map` 文件格式定义。
+//! `.map` file format definition.
 //!
-//! 磁盘布局即字段声明顺序（bincode 不自描述，ROADMAP 附录 E.6）：
-//! **只能追加到末尾，不能插队，不能删**。任何改动都是
-//! [`MAP_VERSION`] 自增 + [`crate::legacy`] 里留一份冻结副本 +
-//! 一条 `v_n → v_{n+1}` 迁移。
+//! The on-disk layout is the field declaration order (bincode is not self-describing, ROADMAP Appendix E.6):
+//! **append only at the end, never insert in the middle, never delete**. Any change is a
+//! [`MAP_VERSION`] bump plus one frozen copy kept in [`crate::legacy`] plus
+//! one `v_n -> v_{n+1}` migration.
 //!
-//! v2 相对 v1 的追加（全部在各自结构体末尾）：
-//! - [`MapDocument::style`] —— 区域级视差背景（`<Style>`，`pureCeleste.cs:112428-112449`）；
-//! - [`Room::bg_decals`] / [`Room::fg_decals`] —— 贴花（`113467-113497`）；
-//! - [`Room::bg_scenery`] / [`Room::fg_scenery`] —— `Scenery` 装饰层覆盖（`77244-77253`）；
-//! - [`EntityData::nodes`] —— 实体节点（`introCrusher` 的终点、`wire` 的折线、`bridge` 的桥墩）。
+//! Appended in v2 relative to v1 (all at the end of their respective structs):
+//! - [`MapDocument::style`] -- area-level parallax background (`<Style>`, `pureCeleste.cs:112428-112449`);
+//! - [`Room::bg_decals`] / [`Room::fg_decals`] -- decals (`113467-113497`);
+//! - [`Room::bg_scenery`] / [`Room::fg_scenery`] -- `Scenery` decoration layer overrides (`77244-77253`);
+//! - [`EntityData::nodes`] -- entity nodes (the `introCrusher` endpoint, the `wire` polyline, the `bridge` piers).
 //!
-//! v3 相对 v2 的追加（全部在 [`Backdrop`] 末尾）：
-//! - [`Backdrop::only_in`] / [`Backdrop::exclude_from`] —— 房间过滤
-//!   （原版 `Backdrop.OnlyIn` / `ExcludeFrom`，`109406-109409`，来自
-//!   `only=` / `exclude=`，`112860-112873`；通配符转换期展开，见
-//!   `ParseLevelsList`，`113019-113036`）；
-//! - [`Backdrop::instant_in`] / [`Backdrop::instant_out`] —— 转场可见性
-//!   （原版 `InstantIn` / `InstantOut`，`109411-109418`，来自
-//!   `instantIn=` / `instantOut=`，`112895-112905`）。
+//! Appended in v3 relative to v2 (all at the end of [`Backdrop`]):
+//! - [`Backdrop::only_in`] / [`Backdrop::exclude_from`] -- room filtering
+//!   (vanilla `Backdrop.OnlyIn` / `ExcludeFrom`, `109406-109409`, from
+//!   `only=` / `exclude=`, `112860-112873`; wildcards are expanded at conversion time, see
+//!   `ParseLevelsList`, `113019-113036`);
+//! - [`Backdrop::instant_in`] / [`Backdrop::instant_out`] -- transition visibility
+//!   (vanilla `InstantIn` / `InstantOut`, `109411-109418`, from
+//!   `instantIn=` / `instantOut=`, `112895-112905`).
 //!
-//! 同时把 `properties` / `Props.fields` 从 `HashMap` 换成 `BTreeMap`：
-//! `HashMap` 按 `RandomState` 顺序遍历，同一张地图两次序列化的字节
-//! 不同，内容哈希因此不可用（ROADMAP E.8 / E.9 #3），而 `HashMap` 的
-//! `PartialEq` 忽略顺序，所以 §9 的 roundtrip 测试一直没发现。
+//! At the same time `properties` / `Props.fields` moves from `HashMap` to `BTreeMap`:
+//! `HashMap` iterates in `RandomState` order, so two serializations of the same map
+//! differ byte for byte and content hashing is therefore unusable (ROADMAP E.8 / E.9 #3),
+//! and since `HashMap`'s `PartialEq` ignores order the roundtrip test in AGENTS.md 9 never caught it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -33,124 +33,124 @@ use serde::{Deserialize, Serialize};
 use releste_math::{Rect, Vec2};
 use releste_world::{EntityData, FieldValue};
 
-/// 魔术字节：`"RELMAP\0\0"`
+/// Magic bytes: `"RELMAP\0\0"`
 pub const MAP_MAGIC: &[u8; 8] = b"RELMAP\x00\x00";
 
-/// 当前 `.map` 格式版本。
+/// Current `.map` format version.
 ///
-/// v3：backdrop 的房间过滤（`only` / `exclude`）与转场可见性
-/// （`instantIn` / `instantOut`）。
+/// v3: room filtering (`only` / `exclude`) and transition visibility for backdrops
+/// (`instantIn` / `instantOut`).
 pub const MAP_VERSION: u32 = 3;
 
-/// `.map` 文件的完整结构。
+/// Complete structure of a `.map` file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MapDocument {
     pub area: String,
     pub rooms: Vec<Room>,
-    /// 同步规则（v1 已有，声明位置保持不变）。
+    /// Sync rules (present in v1 already; the declaration position stays the same).
     #[serde(default)]
     pub sync_rules: Vec<SyncRule>,
-    /// 区域级样式：清屏色与视差背景（v2 追加）。
+    /// Area-level style: clear color and parallax background (appended in v2).
     #[serde(default)]
     pub style: MapStyle,
 }
 
-/// 单张地图的样式（原版 `MapData` 里来自 `<Style>` 元素）。
+/// Style of a single map (from the vanilla `<Style>` element in `MapData`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MapStyle {
-    /// 清屏色（RGB）。
+    /// Clear color (RGB).
     ///
-    /// 原版默认 `Color.Black`，只有 `<Style color="…">` 才覆盖
-    /// （`pureCeleste.cs:112310` 默认值、`112432-112435` 覆盖）。
+    /// Vanilla default is `Color.Black`; only `<Style color="...">` overrides it
+    /// (default at `pureCeleste.cs:112310`, override at `112432-112435`).
     #[serde(default)]
     pub background_color: [u8; 3],
-    /// 世界**之后**绘制的背景（原版 `<Backgrounds>`）。
+    /// Backgrounds drawn **after** the world (vanilla `<Backgrounds>`).
     #[serde(default)]
     pub backgrounds: Vec<Backdrop>,
-    /// 世界**之前**绘制的前景（原版 `<Foregrounds>`）。
+    /// Foregrounds drawn **before** the world (vanilla `<Foregrounds>`).
     #[serde(default)]
     pub foregrounds: Vec<Backdrop>,
 }
 
-/// 一条背景 / 前景。
+/// One background / foreground layer.
 ///
-/// `kind` 是原版元素名（`"parallax"`、`"snowBg"`、`"snowFg"`…），
-/// 引擎按它决定行为；表里没写出来的字段一律取原版默认值。
+/// `kind` is the vanilla element name (`"parallax"`, `"snowBg"`, `"snowFg"`...);
+/// the engine decides behavior from it; every field not written in the file falls back to the vanilla default.
 ///
-/// 默认值出处：`pureCeleste.cs:109341-109430`（`Backdrop` 字段默认）、
-/// `112620-112900`（`ParseBackdrop` 逐属性覆盖）。
+/// Default value sources: `pureCeleste.cs:109341-109430` (`Backdrop` field defaults),
+/// `112620-112900` (`ParseBackdrop` per-attribute overrides).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Backdrop {
-    /// 元素名（小写比较，同 `ParseBackdrop`）。
+    /// Element name (compared lowercased, same as `ParseBackdrop`).
     pub kind: String,
-    /// 纹理名（`parallax texture="…"`）。
+    /// Texture name (`parallax texture="..."`).
     #[serde(default)]
     pub texture: String,
-    /// 纹理来源图集：`"game"` / `"gui"` / `"misc"`（`112635-112646`）。
+    /// Source atlas of the texture: `"game"` / `"gui"` / `"misc"` (`112635-112646`).
     #[serde(default)]
     pub atlas: String,
-    /// 位置（`x` / `y`，默认 0）。
+    /// Position (`x` / `y`, default 0).
     #[serde(default)]
     pub x: f32,
     #[serde(default)]
     pub y: f32,
-    /// 滚动系数（`scrollx` / `scrolly`，默认 1 —— 即跟着相机走）。
+    /// Scroll factor (`scrollx` / `scrolly`, default 1 -- i.e. it follows the camera).
     #[serde(default)]
     pub scroll_x: f32,
     #[serde(default)]
     pub scroll_y: f32,
-    /// 自漂移速度（`speedx` / `speedy`，默认 0）。
+    /// Self-drift speed (`speedx` / `speedy`, default 0).
     #[serde(default)]
     pub speed_x: f32,
     #[serde(default)]
     pub speed_y: f32,
-    /// 颜色（`color`，默认白）。
+    /// Color (`color`, default white).
     #[serde(default)]
     pub color: [u8; 4],
-    /// 是否 X / Y 方向循环（`loopx` / `loopy`，原版默认**都是 true**）。
+    /// Whether to loop on X / Y (`loopx` / `loopy`; vanilla default is **true for both**).
     #[serde(default)]
     pub loop_x: bool,
     #[serde(default)]
     pub loop_y: bool,
-    /// 是否翻转（`flipx` / `flipy`）。
+    /// Whether it is flipped (`flipx` / `flipy`).
     #[serde(default)]
     pub flip_x: bool,
     #[serde(default)]
     pub flip_y: bool,
-    /// 风力倍率（`wind`）。
+    /// Wind multiplier (`wind`).
     #[serde(default)]
     pub wind: f32,
-    /// 混合模式：`"alphablend"`（默认）或 `"additive"`（`112658-112673`）。
+    /// Blend mode: `"alphablend"` (default) or `"additive"` (`112658-112673`).
     #[serde(default)]
     pub blend: String,
-    /// 只在哪些房间渲染（v3 追加；原版 `Backdrop.OnlyIn`，`109406`，
-    /// `only=`，`112860-112873`）。转换期已展开通配符为具体房间名。
+    /// Render only in these rooms (appended in v3; vanilla `Backdrop.OnlyIn`, `109406`,
+    /// `only=`, `112860-112873`). Wildcards were already expanded to concrete room names at conversion time.
     #[serde(default)]
     pub only_in: Vec<String>,
-    /// 不在哪些房间渲染（v3 追加；原版 `Backdrop.ExcludeFrom`，`109409`，
-    /// `exclude=`，`112855-112860`）。
+    /// Do not render in these rooms (appended in v3; vanilla `Backdrop.ExcludeFrom`, `109409`,
+    /// `exclude=`, `112855-112860`).
     #[serde(default)]
     pub exclude_from: Vec<String>,
-    /// 转场切入时立即可见（v3 追加；原版 `InstantIn`，默认 `true`，
-    /// `109411`、`112895-112900`）。
+    /// Immediately visible when a transition cuts in (appended in v3; vanilla `InstantIn`, default `true`,
+    /// `109411`, `112895-112900`).
     #[serde(default = "default_true")]
     pub instant_in: bool,
-    /// 转场切出时立即隐藏（v3 追加；原版 `InstantOut`，默认 `false`，
-    /// `109413`、`112900-112905`）。
+    /// Immediately hidden when a transition cuts out (appended in v3; vanilla `InstantOut`, default `false`,
+    /// `109413`, `112900-112905`).
     #[serde(default)]
     pub instant_out: bool,
 }
 
-/// serde 默认值辅助：`true`。
+/// serde default helper: `true`.
 fn default_true() -> bool {
     true
 }
 
 impl Backdrop {
-    /// 原版默认色：白（`112793`）。
+    /// Vanilla default color: white (`112793`).
     pub const WHITE: [u8; 4] = [255, 255, 255, 255];
 
-    /// 新建一条（颜色留空表示"用原版默认白"）。
+    /// Create a new one (an empty color means "use the vanilla default white").
     pub fn new(kind: impl Into<String>) -> Self {
         Backdrop {
             kind: kind.into(),
@@ -176,7 +176,7 @@ impl Backdrop {
         }
     }
 
-    /// 有效颜色：全零（"未设置"）视为原版默认白。
+    /// Effective color: all-zero ("unset") is treated as the vanilla default white.
     pub fn effective_color(&self) -> [u8; 4] {
         if self.color == [0, 0, 0, 0] {
             Self::WHITE
@@ -186,19 +186,19 @@ impl Backdrop {
     }
 }
 
-/// 单张贴花（原版 `DecalData`，`pureCeleste.cs:113199-113206`）。
+/// A single decal (vanilla `DecalData`, `pureCeleste.cs:113199-113206`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decal {
-    /// 纹理名（相对 `decals/`，可能带 `.png` 后缀，原版会剥掉）。
+    /// Texture name (relative to `decals/`, may carry a `.png` suffix; vanilla strips it).
     pub texture: String,
     pub x: f32,
     pub y: f32,
-    /// 缩放；`scale_x == -1` 表示水平镜像（原版直接喂给 `SpriteBatch.Draw` 的 `scale`）。
+    /// Scale; `scale_x == -1` means horizontal mirror (vanilla feeds it straight to `SpriteBatch.Draw`'s `scale`).
     pub scale_x: f32,
     pub scale_y: f32,
 }
 
-/// 单个房间。
+/// A single room.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Room {
     pub name: String,
@@ -212,28 +212,28 @@ pub struct Room {
     pub triggers: Vec<TriggerData>,
     #[serde(default)]
     pub script: Option<PathBuf>,
-    /// 背景贴花（原版 `bgdecals`，Depth 9000，`115083-115086`）。
+    /// Background decals (vanilla `bgdecals`, Depth 9000, `115083-115086`).
     #[serde(default)]
     pub bg_decals: Vec<Decal>,
-    /// 前景贴花（原版 `fgdecals`，Depth -10500，`115079-115082`）。
+    /// Foreground decals (vanilla `fgdecals`, Depth -10500, `115079-115082`).
     #[serde(default)]
     pub fg_decals: Vec<Decal>,
-    /// `bgtiles` 装饰层（`Scenery` 图集，`77244-77248`）。
+    /// `bgtiles` decoration layer (`Scenery` atlas, `77244-77248`).
     #[serde(default)]
     pub bg_scenery: Tileset,
-    /// `fgtiles` 装饰层（同上，`77249-77254`）。
+    /// `fgtiles` decoration layer (same as above, `77249-77254`).
     #[serde(default)]
     pub fg_scenery: Tileset,
 }
 
 impl Room {
-    /// 房间左上角的世界坐标。
+    /// World coordinate of the room's top-left corner.
     pub fn origin(&self) -> Vec2 {
         Vec2::from_f32s(self.bounds.x, self.bounds.y)
     }
 }
 
-/// 矩形定义（f32，地图坐标）。
+/// Rectangle definition (f32, map coordinates).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct RectDef {
     pub x: f32,
@@ -251,36 +251,36 @@ impl RectDef {
     }
 }
 
-/// Tile 集定义。
+/// Tile set definition.
 ///
-/// 行优先的 tile 索引网格；`0` 表示空。索引的语义由 `atlas`
-/// 决定（引擎在渲染层解释，映射层不理解美术）。
+/// Row-major grid of tile indices; `0` means empty. The meaning of an index is
+/// decided by `atlas` (the engine interprets it in the render layer; the map layer does not understand art).
 ///
-/// `0` 是"空"这个约定是 Releste 自己的（AGENTS.md §4.2：映射层不认识
-/// 美术），转换器负责把原版的 `-1`（"不覆盖"）压成 `0`。
+/// The convention that `0` is "empty" is Releste's own (AGENTS.md 4.2: the map layer does not
+/// understand art); the converter is responsible for squashing the vanilla `-1` ("do not override") into `0`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Tileset {
-    /// 纹理图集名称（如 `"Gameplay"`）。
+    /// Texture atlas name (e.g. `"Gameplay"`).
     #[serde(default)]
     pub atlas: String,
-    /// 网格宽度（tile 数）。
+    /// Grid width (in tiles).
     #[serde(default)]
     pub width: u32,
-    /// 网格高度（tile 数）。
+    /// Grid height (in tiles).
     #[serde(default)]
     pub height: u32,
-    /// 行优先 tile 索引，长度应为 `width * height`。
+    /// Row-major tile indices; the length should be `width * height`.
     ///
-    /// `u16` 而不是 `u8`：装饰层的下标数的是整张 `tilesets/scenery`
-    /// （`Tileset.this[int]` 的扁平下标，`pureCeleste.cs:15215-15226`），
-    /// 原版那张图有 360 格（30×12），`5-MirrorTemple` 里就有到 352 的用法。
-    /// 阻碍层（`solids`/`bg`）走的是字母表 0-9a-z，最大 35，装得下。
+    /// `u16` rather than `u8`: decoration layer indices count the whole `tilesets/scenery`
+    /// (the flat index of `Tileset.this[int]`, `pureCeleste.cs:15215-15226`);
+    /// the vanilla image has 360 cells (30x12), and `5-MirrorTemple` uses indices up to 352.
+    /// The solid layers (`solids`/`bg`) use the 0-9a-z alphabet, max 35, which fits.
     #[serde(default)]
     pub tiles: Vec<u16>,
 }
 
 impl Tileset {
-    /// 新建网格。
+    /// Create a new grid.
     pub fn new(atlas: impl Into<String>, width: u32, height: u32) -> Self {
         Tileset {
             atlas: atlas.into(),
@@ -290,7 +290,7 @@ impl Tileset {
         }
     }
 
-    /// 取 tile。
+    /// Get a tile.
     pub fn get(&self, x: u32, y: u32) -> Option<u16> {
         if x >= self.width || y >= self.height {
             return None;
@@ -300,7 +300,7 @@ impl Tileset {
             .copied()
     }
 
-    /// 设置 tile。
+    /// Set a tile.
     pub fn set(&mut self, x: u32, y: u32, value: u16) {
         if x < self.width && y < self.height {
             let idx = (y as usize) * (self.width as usize) + (x as usize);
@@ -310,13 +310,13 @@ impl Tileset {
         }
     }
 
-    /// 是否有任意非空 tile。
+    /// Whether there is any non-empty tile.
     pub fn is_empty(&self) -> bool {
         self.tiles.iter().all(|t| *t == 0)
     }
 }
 
-/// 触发器数据。
+/// Trigger data.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriggerData {
     pub kind: String,
@@ -328,7 +328,7 @@ pub struct TriggerData {
     pub properties: BTreeMap<String, String>,
 }
 
-/// 同步规则。
+/// Sync rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SyncRule {
     pub kind: String,
@@ -337,7 +337,7 @@ pub struct SyncRule {
     pub flag: Option<String>,
 }
 
-/// 同步模式。
+/// Sync mode.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncMode {
@@ -346,16 +346,16 @@ pub enum SyncMode {
     Event,
 }
 
-/// 实体属性集合（用于 diff）。
+/// Entity property set (used by diff).
 ///
-/// `BTreeMap` 而不是 `HashMap`：见本模块头部关于字节确定性的说明。
+/// `BTreeMap` rather than `HashMap`: see the byte-determinism note at the top of this module.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Props {
     pub fields: BTreeMap<String, FieldValue>,
 }
 
 impl Props {
-    /// 从实体数据取属性。
+    /// Extract properties from entity data.
     pub fn from_entity(entity: &EntityData) -> Self {
         Props {
             fields: entity.properties.clone(),

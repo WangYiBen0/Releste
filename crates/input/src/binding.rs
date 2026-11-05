@@ -1,4 +1,4 @@
-//! Key bindings: physical input → virtual buttons.
+//! Key bindings: physical input -> virtual buttons.
 
 use std::collections::HashMap;
 

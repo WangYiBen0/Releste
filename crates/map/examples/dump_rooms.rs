@@ -1,16 +1,16 @@
-//! 打印一张 `.map` 的房间几何与**边界通道**，用于排查「玩家到底站在
-//! 哪个房间 / 会不会在接缝处卡住或坠落」。
+//! Print a `.map` room's geometry and **boundary openings**, to investigate "which room the
+//! player is actually standing in / whether they get stuck or fall at a seam".
 //!
-//! 用法：`cargo run -p releste-map --example dump_rooms -- assets/maps/0-Intro.map`
+//! Usage: `cargo run -p releste-map --example dump_rooms -- assets/maps/0-Intro.map`
 //!
-//! 输出三部分：
-//! 1. 每个房间一行：世界矩形、瓦片尺寸、实体数；`player` 实体另起一行。
-//! 2. 每个房间四条边的**开孔**（连续的空格段，世界坐标区间）。
-//! 3. 接缝风险：某侧开孔在所有共享该缝的邻室对面都是实心 → 跨缝卡墙；
-//!    开孔段对面没有任何房间 → 走出去就是掉出世界。
+//! Prints three parts:
+//! 1. One line per room: world rect, tile size, entity count; `player` entities get their own line.
+//! 2. The **openings** on each of the room's four edges (contiguous empty runs, in world-coordinate intervals).
+//! 3. Seam risks: an opening on one side that is solid across the seam in every neighboring room sharing that seam -> wall stuck across the seam;
+//!    an opening with no room on the other side -> walking through means falling out of the world.
 //!
-//! 注意：原版数据按「切屏转场」设计，不保证两侧瓦片对齐；本引擎是
-//! 连续世界，所以这类风险点要靠房间转场（ROADMAP §4.3）或碰撞兜底消化。
+//! Note: the vanilla data is designed around "screen-cut transitions" and does not guarantee the tiles on both sides line up; this engine is
+//! a continuous world, so these risk points must be absorbed by room transitions (ROADMAP 4.3) or collision fallbacks.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for room in &doc.rooms {
         for (edge, spans) in openings(room) {
             if spans.is_empty() {
-                continue; // 整条边都是实心，没有通道
+                continue; // the whole edge is solid, no opening
             }
             let spans = spans
                 .iter()
@@ -133,8 +133,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// 一条边的开孔：`cells` 是沿边方向的瓦片列/行是否有固体。
-/// 返回的区间是**世界坐标**（像素），只含空段。
+/// An opening on one edge: `cells` is whether the tile column/row along the edge direction is solid.
+/// The returned intervals are in **world coordinates** (pixels) and contain only empty runs.
 fn spans_of(cells: Vec<bool>, origin: f32) -> Vec<(f32, f32)> {
     let mut spans = Vec::new();
     let mut start: Option<usize> = None;
@@ -151,7 +151,7 @@ fn spans_of(cells: Vec<bool>, origin: f32) -> Vec<(f32, f32)> {
     spans
 }
 
-/// 四条边的开孔（世界坐标）。
+/// The openings on all four edges (world coordinates).
 fn openings(room: &Room) -> Vec<(&'static str, Vec<(f32, f32)>)> {
     let w = room.tiles.width as usize;
     let h = room.tiles.height as usize;
@@ -188,22 +188,22 @@ fn rect(r: &Room) -> (f32, f32, f32, f32) {
     )
 }
 
-/// `a.edge` 对面的接缝：返回邻室 `b` 的对边与共享线段（沿缝方向）。
+/// The seam opposite `a.edge`: returns neighbor `b`'s opposite edge and the shared segment (along the seam direction).
 fn opposite_edge(a: &Room, edge: &str, b: &Room) -> Option<(&'static str, (f32, f32))> {
     let (ax0, ay0, ax1, ay1) = rect(a);
     let (bx0, by0, bx1, by1) = rect(b);
     match edge {
-        // 垂直接缝：共享线段沿 y。
+        // Vertical seam: the shared segment runs along y.
         "right" if f32::abs(ax1 - bx0) < 0.5 => Some(("left", (ay0.max(by0), ay1.min(by1)))),
         "left" if f32::abs(ax0 - bx1) < 0.5 => Some(("right", (ay0.max(by0), ay1.min(by1)))),
-        // 水平接缝：共享线段沿 x。
+        // Horizontal seam: the shared segment runs along x.
         "bottom" if f32::abs(ay1 - by0) < 0.5 => Some(("top", (ax0.max(bx0), ax1.min(bx1)))),
         "top" if f32::abs(ay0 - by1) < 0.5 => Some(("bottom", (ax0.max(bx0), ax1.min(bx1)))),
         _ => None,
     }
 }
 
-/// `[o0,o1)` 减去 `covered` 里的所有区间，剩下的未覆盖空档。
+/// `[o0,o1)` minus every interval in `covered`, the remaining uncovered gaps.
 fn gaps(o0: f32, o1: f32, covered: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let mut cov = covered.to_vec();
     cov.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -227,15 +227,15 @@ fn gaps(o0: f32, o1: f32, covered: &[(f32, f32)]) -> Vec<(f32, f32)> {
     out
 }
 
-/// 对每条边的每个开孔：找共享该缝的所有邻室，把开孔减去所有邻室的
-/// 开孔后，剩下的未覆盖子段就是风险点 —— 对面是实心（跨缝卡墙）
-/// 或虚空（走出去掉出世界）。
+/// For every opening on every edge: find all neighboring rooms sharing that seam, subtract all of their
+/// openings from the opening, and the remaining uncovered sub-segments are the risk points -- the other side is solid (wall stuck across the seam)
+/// or void (walking through falls out of the world).
 fn seam_risks(doc: &MapDocument) -> Vec<String> {
     let mut out = Vec::new();
     for a in &doc.rooms {
         for (edge, spans) in openings(a) {
             for (o0, o1) in spans {
-                // 邻室元数据 + 它们的开孔与 [o0,o1) 的交集。
+                // Neighbor metadata + the intersection of their openings with [o0,o1).
                 let mut neighbors: Vec<(&Room, &str, (f32, f32))> = Vec::new();
                 let mut covered: Vec<(f32, f32)> = Vec::new();
                 for b in &doc.rooms {
@@ -247,7 +247,7 @@ fn seam_risks(doc: &MapDocument) -> Vec<String> {
                     };
                     let (s0, s1) = (o0.max(seg.0), o1.min(seg.1));
                     if s0 >= s1 {
-                        continue; // 邻室与这段开孔不共线
+                        continue; // the neighbor is not collinear with this opening run
                     }
                     neighbors.push((b, bedge, (s0, s1)));
                     for (p0, p1) in spans_of_room(b, bedge) {
@@ -258,8 +258,8 @@ fn seam_risks(doc: &MapDocument) -> Vec<String> {
                     }
                 }
                 for (g0, g1) in gaps(o0, o1, &covered) {
-                    // 空档还没区分「对面是实心」还是「对面是虚空」：
-                    // 按邻室矩形的段边界把空档切碎，逐段分类。
+                    // The gap has not yet distinguished "the other side is solid" from "the other side is void":
+                    // split the gap at the neighbor rectangles' segment boundaries and classify each piece.
                     let mut cuts: Vec<f32> = vec![g0, g1];
                     for (_, _, (s0, s1)) in &neighbors {
                         if *s0 > g0 && *s0 < g1 {

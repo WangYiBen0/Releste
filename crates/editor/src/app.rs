@@ -304,13 +304,13 @@ impl ApplicationHandler for EditorApp {
 ///
 /// wgpu's `request_adapter` / `request_device` return futures;
 /// editor startup is synchronous, so block and wait here.
-/// Does not pull in the `pollster` dependency (AGENTS.md §15 constraint 1).
+/// Does not pull in the `pollster` dependency (AGENTS.md 15 constraint 1).
 ///
 /// # Why `clippy::manual_noop_waker` is allowed
 /// The standard library's `Waker::noop()` requires Rust 1.85, but this
-/// workspace's `rust-version` is pinned to 1.80 — AGENTS.md §15 constraint 2
+/// workspace's `rust-version` is pinned to 1.80 -- AGENTS.md 15 constraint 2
 /// forbids changing it. So the no-op waker is written by hand, with the
-/// reason stated here as AGENTS.md §5.1 requires.
+/// reason stated here as AGENTS.md 5.1 requires.
 #[allow(clippy::manual_noop_waker)]
 fn pollster_block_on<F: std::future::Future>(fut: F) -> F::Output {
     use std::pin::pin;

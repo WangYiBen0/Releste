@@ -1,65 +1,65 @@
-//! 混音层：总线音量、同帧去重、优先级抢占。
+//! Mixing layer: bus volumes, same-frame deduplication, priority preemption.
 //!
-//! 这一层是**纯逻辑**，不依赖 FMOD，因此可以在任何环境测试。
-//! 真实播放由 [`AudioBackend`] 实现负责。
+//! This layer is **pure logic** and does not depend on FMOD, so it can be tested in any environment.
+//! Real playback is the responsibility of the [`AudioBackend`] implementation.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::command::{AudioRequest, Bus, SoundHandle, SoundPriority};
 use crate::AudioError;
 
-/// 默认同时播放的音效上限（超过则按优先级抢占）。
+/// Default cap on simultaneously playing sound effects (beyond it, preemption by priority kicks in).
 pub const DEFAULT_SFX_VOICES: usize = 32;
 
-/// 音频后端。
+/// Audio backend.
 ///
-/// 用 trait 隔离 FMOD，使混音逻辑可独立测试。
+/// Isolates FMOD behind a trait so the mixing logic can be tested independently.
 pub trait AudioBackend: Send {
-    /// 播放一个事件，返回句柄。
+    /// Plays an event and returns a handle.
     fn play(&mut self, event: &str, volume: f32, pitch: f32) -> Result<u64, AudioError>;
 
-    /// 停止一个句柄。
+    /// Stops one handle.
     fn stop(&mut self, handle: u64);
 
-    /// 停止所有声音。
+    /// Stops all sounds.
     fn stop_all(&mut self);
 
-    /// 设置总线音量。
+    /// Sets a bus volume.
     fn set_bus_volume(&mut self, bus: Bus, volume: f32);
 
-    /// 后端名称。
+    /// Backend name.
     fn name(&self) -> &'static str;
 }
 
-/// 静音后端的可观测状态。
+/// Observable state of the silent backend.
 #[derive(Debug, Default)]
 pub struct NullState {
-    /// 收到的播放请求（诊断 / 测试断言用）。
+    /// Play requests received (for diagnostics / test assertions).
     pub played: Vec<String>,
-    /// 收到 `stop_all` 的次数。
+    /// Number of times `stop_all` was received.
     pub stops: usize,
-    /// 总线音量设置记录。
+    /// Record of bus volume settings.
     pub volumes: HashMap<Bus, f32>,
-    /// 下一个句柄。
+    /// Next handle.
     next: u64,
 }
 
-/// 静音后端：记录调用但不出声。
+/// Silent backend: records calls but makes no sound.
 ///
-/// 用于 headless 测试与缺少 FMOD 的环境。状态通过
-/// [`NullBackend::state`] 共享，便于断言。
+/// For headless tests and environments without FMOD. State is shared through
+/// [`NullBackend::state`] to make assertions easy.
 #[derive(Debug, Clone, Default)]
 pub struct NullBackend {
     state: std::sync::Arc<std::sync::Mutex<NullState>>,
 }
 
 impl NullBackend {
-    /// 新建。
+    /// Creates a new one.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 共享状态句柄（测试可在 `Mixer` 持有后端后继续观测）。
+    /// Shared state handle (tests can keep observing after the `Mixer` takes ownership of the backend).
     pub fn state(&self) -> std::sync::Arc<std::sync::Mutex<NullState>> {
         std::sync::Arc::clone(&self.state)
     }
@@ -91,52 +91,52 @@ impl AudioBackend for NullBackend {
     }
 }
 
-/// 正在播放的音效。
+/// A sound effect that is currently playing.
 #[derive(Debug, Clone, Copy)]
 struct Voice {
     handle: u64,
     priority: SoundPriority,
-    /// 提交时的帧号（低优先级可被抢占）。
+    /// Frame number when it was submitted (low priorities can be preempted).
     started_frame: u64,
 }
 
-/// 混音统计。
+/// Mixing statistics.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MixerStats {
-    /// 实际播放的次数。
+    /// Number of times playback actually happened.
     pub played: usize,
-    /// 被同帧去重挡掉的次数。
+    /// Number of times it was blocked by same-frame deduplication.
     pub deduped: usize,
-    /// 被优先级抢占的次数。
+    /// Number of times a voice was preempted by priority.
     pub preempted: usize,
-    /// 因通道耗尽而丢弃的次数。
+    /// Number of times a request was dropped because channels ran out.
     pub dropped: usize,
-    /// 当前活跃音效数。
+    /// Number of currently active sound effects.
     pub active: usize,
 }
 
-/// 混音器。
+/// Mixer.
 pub struct Mixer {
     backend: Box<dyn AudioBackend>,
-    /// 各总线音量（已应用）。
+    /// Per-bus volumes (already applied).
     volumes: [f32; 4],
-    /// 当前帧号。
+    /// Current frame number.
     frame: u64,
-    /// 本帧已播放的事件（同帧去重）。
+    /// Events already played this frame (same-frame deduplication).
     played_this_frame: HashSet<String>,
-    /// 活跃音效。
+    /// Active sound effects.
     voices: Vec<Voice>,
-    /// 音效通道上限。
+    /// Sound effect channel cap.
     max_voices: usize,
-    /// 待停止的音乐句柄。
+    /// Music handle to stop.
     music: Option<u64>,
-    /// 环境音句柄。
+    /// Ambience handle.
     ambience: Option<u64>,
     stats: MixerStats,
 }
 
 impl Mixer {
-    /// 使用指定后端创建。
+    /// Creates with the given backend.
     pub fn new(backend: Box<dyn AudioBackend>) -> Self {
         let mut mixer = Mixer {
             backend,
@@ -149,40 +149,40 @@ impl Mixer {
             ambience: None,
             stats: MixerStats::default(),
         };
-        // 初始音量推给后端。
+        // Push the initial volumes to the backend.
         for bus in Bus::ALL {
             mixer.backend.set_bus_volume(bus, 1.0);
         }
         mixer
     }
 
-    /// 设置音效通道上限。
+    /// Sets the sound effect channel cap.
     pub fn with_max_voices(mut self, max: usize) -> Self {
         self.max_voices = max.max(1);
         self
     }
 
-    /// 后端（可变）。
+    /// The backend (mutable).
     pub fn backend_mut(&mut self) -> &mut dyn AudioBackend {
         self.backend.as_mut()
     }
 
-    /// 后端名。
+    /// Backend name.
     pub fn backend_name(&self) -> &'static str {
         self.backend.name()
     }
 
-    /// 统计。
+    /// Statistics.
     pub fn stats(&self) -> &MixerStats {
         &self.stats
     }
 
-    /// 某总线的当前音量。
+    /// Current volume of a bus.
     pub fn bus_volume(&self, bus: Bus) -> f32 {
         self.volumes[bus.index()]
     }
 
-    /// 提交一条请求。
+    /// Submits one request.
     pub fn submit(&mut self, req: AudioRequest) -> Result<SoundHandle, AudioError> {
         match req {
             AudioRequest::PlaySfx {
@@ -249,7 +249,7 @@ impl Mixer {
         }
     }
 
-    /// 播放音效（含去重与抢占）。
+    /// Plays a sound effect (including deduplication and preemption).
     fn play_sfx(
         &mut self,
         event: &str,
@@ -257,13 +257,13 @@ impl Mixer {
         priority: SoundPriority,
         pitch: f32,
     ) -> Result<SoundHandle, AudioError> {
-        // 同帧去重：同一事件一帧内只响一次（Celeste 行为）。
+        // Same-frame deduplication: one event only sounds once per frame (Celeste behavior).
         if !self.played_this_frame.insert(event.to_string()) {
             self.stats.deduped += 1;
             return Ok(SoundHandle(0));
         }
 
-        // 通道不足 → 尝试抢占最低优先级。
+        // Not enough channels -> try to preempt the lowest priority.
         if self.voices.len() >= self.max_voices {
             let weakest = self
                 .voices
@@ -296,19 +296,20 @@ impl Mixer {
         Ok(SoundHandle(handle))
     }
 
-    /// 应用总线音量（主音量 × 分总线）。
+    /// Applies the bus volumes (master volume x per-bus volume).
     fn scaled(&self, bus: Bus, volume: f32) -> f32 {
         (volume.clamp(0.0, 1.0) * self.volumes[Bus::Master.index()] * self.volumes[bus.index()])
             .clamp(0.0, 1.0)
     }
 
-    /// 每帧推进：重置去重窗口，清理已播完的语音。
+    /// Advances one frame: resets the dedup window and cleans up finished voices.
     pub fn tick(&mut self) {
         self.frame += 1;
         self.played_this_frame.clear();
 
-        // 简化：假设音效只在一帧内有效（真实后端会回报播放完毕）。
-        // 保留最近 8 帧的语音以模拟通道占用。
+        // Simplification: assume a sound effect lives for only one frame (a real backend
+        // would report when playback finishes). Keep voices from the last 8 frames to
+        // simulate channel occupancy.
         const VOICE_LIFETIME_FRAMES: u64 = 8;
         let now = self.frame;
         self.voices
@@ -323,7 +324,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// 测试夹具：Mixer + 可观测的后端状态。
+    /// Test fixture: a Mixer plus observable backend state.
     struct Fixture {
         mixer: Mixer,
         state: Arc<Mutex<NullState>>,
@@ -413,7 +414,7 @@ mod tests {
         f.mixer
             .submit(AudioRequest::play_sfx("low2", 1.0, SoundPriority::Low))
             .unwrap();
-        // 通道已满，高优先级应该抢占
+        // Channels are full, so the high priority should preempt
         f.mixer
             .submit(AudioRequest::play_sfx("crit", 1.0, SoundPriority::Critical))
             .unwrap();

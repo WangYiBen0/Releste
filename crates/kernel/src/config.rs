@@ -1,13 +1,13 @@
-//! 内核配置。
+//! Kernel configuration.
 
 use releste_math::Fx;
 
-/// 内核运行配置。
+/// Kernel runtime configuration.
 #[derive(Clone, Debug)]
 pub struct KernelConfig {
-    /// 目标固定时间步长（默认 `FIXED_DT` = 1/60）。
+    /// Target fixed time step (default `FIXED_DT` = 1/60).
     pub fixed_dt: Fx,
-    /// 最大追赶帧数（防止 death-spiral）。
+    /// Maximum number of catch-up frames (prevents a death spiral).
     pub max_catchup_frames: u32,
 }
 

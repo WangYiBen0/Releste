@@ -1,7 +1,7 @@
-//! 一张已加载的 `.map` + 它的图集，以及「这帧该画什么」的静态部分。
+//! A loaded `.map` plus its atlas, and the static part of "what to draw this frame".
 //!
-//! 地图是数据（AGENTS.md §4.2）：这里只把瓦片与实体翻成
-//! [`SpriteDraw`]，不含任何玩法分支。
+//! Maps are data (AGENTS.md 4.2): here we only turn tiles and entities into
+//! [`SpriteDraw`], with no gameplay branching at all.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -17,39 +17,44 @@ use tracing::{debug, warn};
 use crate::paths::Paths;
 use crate::sprites;
 
-/// 一格瓦片的世界像素数（`lvl_-1` 宽 320 / 40 格 = 8px）。
+/// World pixels per tile (320 / 40 = 8px for `lvl_-1`).
 const TILE: f32 = sprites::TILE_PX as f32;
 
-/// `introCrusher` 的画层：原版 `Depth = -10501`（`pureCeleste.cs:106324`），
-/// 数值越小越靠前 —— 排在 SolidTiles 的 −10000（`124913`）之前，玩家
-/// （`0`）更在其后，但仍在最后绘制的前景视差层之前。引擎层序（值越小
-/// 越先画）取 `Effects(300) < 本层 < Foreground(500)`。
+/// Draw layer for `introCrusher`: vanilla `Depth = -10501` (`pureCeleste.cs:106324`),
+/// where smaller values draw in front -- ahead of SolidTiles' -10000 (`124913`), with
+/// the player (`0`) further back still, but in front of the foreground parallax layer
+/// that is drawn last. The engine layer order (smaller value draws first) uses
+/// `Effects(300) < this layer < Foreground(500)`.
 const LAYER_INTRO_CRUSHER: i32 = Layer::Foreground.value() - 100;
 
-/// `wire`（`above=false`）的画层：原版 `Depth = 2000`
-/// （`pureCeleste.cs:106687`）—— 画在背景层之后、地形与玩家之前
-/// （原版数值越小越靠前）。引擎层序（值越小越先画）落在
-/// `BgTiles(-500)` 与 `Tiles(0)` 之间。
+/// Draw layer for `wire` (`above=false`): vanilla `Depth = 2000`
+/// (`pureCeleste.cs:106687`) -- drawn after the background layer and before the
+/// terrain and the player (in vanilla, smaller values draw in front). The engine layer
+/// order (smaller value draws first) places it between
+/// `BgTiles(-500)` and `Tiles(0)`.
 const LAYER_WIRE: i32 = Layer::BgTiles.value() + 100;
 
-/// `wire above=true` 的画层：原版 `Depth = -8500`（`106692`）—— 在玩家
-/// 之前、地形之后。引擎的地形在玩家之后才画，两个原版顺序无法同时
-/// 保持；取"玩家之前、压路机与前景之前"：`Player(200)` 之后、
-/// `LAYER_INTRO_CRUSHER(400)` / `Foreground(500)` 之前。0-Intro 没有
-/// `above` 的线（属性表里无该键）。
+/// Draw layer for `wire above=true`: vanilla `Depth = -8500` (`106692`) -- before the
+/// player and after the terrain. The engine draws terrain after the player, so the two
+/// vanilla orders cannot both hold; take "before the player, before the crusher and the
+/// foreground": after `Player(200)` and before `LAYER_INTRO_CRUSHER(400)` /
+/// `Foreground(500)`. 0-Intro has no `above` wire (the property table has no such key).
 const LAYER_WIRE_ABOVE: i32 = Layer::Player.value() + 150;
 
-/// `BridgeTile` 的画层：原版不设 Depth → `Entity.Depth` 默认 `0`
-/// （属性见 `pureCeleste.cs:12997`），与玩家同深；引擎取 `Entities(100)`
-/// —— 在地形之后、玩家之前（木板铺在地形前方，Madeline 从上面走过）。
+/// Draw layer for `BridgeTile`: vanilla sets no Depth -> `Entity.Depth` defaults to
+/// `0` (property at `pureCeleste.cs:12997`), the same depth as the player; the engine
+/// uses `Entities(100)` -- after the terrain and before the player (the planks lie in
+/// front of the terrain and Madeline walks over them).
 const LAYER_BRIDGE: i32 = Layer::Entities.value();
 
-/// 一条 `Wire` 的 16 段折线：返回每段的 `(起点, 长度, 旋转弧度)`。
+/// The 16-segment polyline of one `Wire`: returns `(start, length, rotation radians)`
+/// per segment.
 ///
-/// 对照 `Wire.Render`（`pureCeleste.cs:106699-106710`）：控制点 = 两端中点
-/// 下垂 24px（`106702`），点取二次贝塞尔 `GetPoint(i/16)`
-/// （Everest `Patches/Monocle/SimpleCurve.cs:22-28`），逐段 `Draw.Line`
-/// 把上一段终点当起点。风摆取 0（见 [`Session::push_wire`] 文档）。
+/// Follows `Wire.Render` (`pureCeleste.cs:106699-106710`): control point = midpoint of
+/// the two ends sagged 24px (`106702`); points come from the quadratic Bezier
+/// `GetPoint(i/16)` (Everest `Patches/Monocle/SimpleCurve.cs:22-28`); each segment is
+/// a `Draw.Line` that uses the previous segment's end as its start. Wind sway is taken
+/// as 0 (see the [`Session::push_wire`] docs).
 fn wire_segments(from: (f32, f32), to: (f32, f32)) -> Vec<((f32, f32), f32, f32)> {
     let (fx, fy) = from;
     let (tx, ty) = to;
@@ -77,8 +82,8 @@ fn wire_segments(from: (f32, f32), to: (f32, f32)) -> Vec<((f32, f32), f32, f32)
     out
 }
 
-/// 原版 `Bridge` 的 `tileSizes` 表（`pureCeleste.cs:107719-107729`）：
-/// `(图内 x, 宽, 高)`；`y` 恒为 0。
+/// Vanilla `Bridge`'s `tileSizes` table (`pureCeleste.cs:107719-107729`):
+/// `(image x, width, height)`; `y` is always 0.
 const BRIDGE_TILE_SIZES: [(i16, i16, i16); 11] = [
     (0, 16, 52),
     (16, 8, 52),
@@ -93,11 +98,13 @@ const BRIDGE_TILE_SIZES: [(i16, i16, i16); 11] = [
     (96, 8, 52),
 ];
 
-/// 一块 `BridgeTile` 该画的竖条：`(图内 x, 图内 y, 宽, 高, 相对桥面的 y)`。
+/// The vertical strips one `BridgeTile` should draw: `(image x, image y, width,
+/// height, y relative to the deck)`.
 ///
-/// 对照 `BridgeTile` 的构造（`pureCeleste.cs:107836-107890`）：宽度 16 的
-/// 端头沿高度切 24 + 12 + 12 + …（`107854-107863`），其余整块一条
-/// （`107866-107873`）；两者都把图内 y 抹平到 `-8`（`107874-107878`）。
+/// Follows the `BridgeTile` constructor (`pureCeleste.cs:107836-107890`): a width-16
+/// end cap is cut along its height into 24 + 12 + 12 + ... (`107854-107863`), while the
+/// rest is a single strip (`107866-107873`); both flatten the image y to `-8`
+/// (`107874-107878`).
 fn bridge_tile_strips(cell_x: i16, cell_w: i16, cell_h: i16) -> Vec<(i16, i16, i16, i16, f32)> {
     let mut out = Vec::new();
     if cell_w == 16 {
@@ -115,17 +122,20 @@ fn bridge_tile_strips(cell_x: i16, cell_w: i16, cell_h: i16) -> Vec<(i16, i16, i
     out
 }
 
-/// 一座 `Bridge` 的逐格布局：`(桥面 x, 图内 x, 宽, 高, 是否可见)`。
+/// The cell-by-cell layout of one `Bridge`: `(deck x, image x, width, height,
+/// visible)`.
 ///
-/// 对照 `Bridge.Added`（`pureCeleste.cs:107704-107731`）：从 `Position` 起
-/// 沿 `width` 逐格推进，`tileSizes` 循环取用；`num` 落在 `2..=7` 时原版
-/// 用 `Calc.Random.Next(6)` 抽木纹段（`PushRandom(1)` 定种，`107721`），
-/// 这 6 个候选**全是 8px 宽**，所以引擎直接按序号取 —— 步进与原版逐格
-/// 一致，只有 8px 段的图内花色成了固定序列。
+/// Follows `Bridge.Added` (`pureCeleste.cs:107704-107731`): starting at `Position`,
+/// advance cell by cell along `width`, cycling through `tileSizes`; when `num` falls in
+/// `2..=7` vanilla picks a wood-grain strip with `Calc.Random.Next(6)` (seeded by
+/// `PushRandom(1)`, `107721`), and those 6 candidates are **all 8px wide**, so the
+/// engine just takes them by index -- the stepping matches vanilla cell for cell, and
+/// only the image pattern of the 8px strips becomes a fixed sequence.
 ///
-/// 返回**全部**格子、用 `bool` 标记是否落在缺口里，因为原版是"先推进
-/// 游标、再决定要不要 `level.Add`"（`107722-107726`）：缺口宽度照样计入
-/// 步进，若把缺口格子直接丢掉，缺口之后的木板会整体错位。
+/// Returns **all** cells and marks with a `bool` whether each falls in the gap, because
+/// vanilla "advances the cursor first, then decides whether to `level.Add`"
+/// (`107722-107726`): the gap width still counts toward the stepping, and dropping the
+/// gap cells outright would shift every plank after the gap.
 fn bridge_cells(start_x: f32, width: i32, gap: (f32, f32)) -> Vec<(f32, i16, i16, i16, bool)> {
     let (gap_start, gap_end) = gap;
     let mut out = Vec::new();
@@ -140,10 +150,11 @@ fn bridge_cells(start_x: f32, width: i32, gap: (f32, f32)) -> Vec<(f32, i16, i16
     out
 }
 
-/// 单个 `Backdrop` 的有效颜色：全零视为"未设置"，取原版默认白
-/// （`112789` `backdrop.Color = Color.White` 起点，`112790-112796`
-/// 仅当 `HasAttr("color")` 才覆盖）；否则按原版做法用 `alpha`
-/// 缩放一次（`112798-112804` `backdrop.Color *= alpha`）。
+/// The effective color of a single `Backdrop`: all-zero is treated as "unset" and
+/// takes vanilla's default white (starting from `112789`
+/// `backdrop.Color = Color.White`; `112790-112796` only override it when
+/// `HasAttr("color")`); otherwise, as vanilla does, scale it once by `alpha`
+/// (`112798-112804` `backdrop.Color *= alpha`).
 fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
     let c = bd.effective_color();
     [
@@ -154,36 +165,41 @@ fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
     ]
 }
 
-/// 视差平铺几何：给定一个 `Backdrop`、相机位置与贴图尺寸，算出本帧要
-/// 画的每一片左上角（屏幕坐标）。纯函数，便于对照原版单测。
+/// Parallax tiling geometry: given a `Backdrop`, the camera position and the texture
+/// size, compute the top-left corner (screen coordinates) of every piece to draw this
+/// frame. A pure function, so it is easy to unit-test against vanilla.
 ///
-/// 逐步对照 `Parallax.Render`（`pureCeleste.cs:112163-112236`）：
-/// 1. `v = (Camera.Position + CameraOffset).Floor()`（`112165`）。引擎尚无
-///    `Backdrop.CameraOffset` 概念（`CameraOffset` 是 `Parallax` 独有字段、
-///    默认 `Vector2.Zero`，`112129-112130`），故直接取相机位置。
-/// 2. `p = (Position − v*Scroll).Floor()`（`112166`）。
-/// 3. 若 `LoopX`/`LoopY`：两段 `while` 把 `p.X`/`p.Y` 折回（`112185-112206`），
-///    顺序与原版一致（先 `<0` 加、后 `>0` 减）；`!Loop` 时不折。
-/// 4. 双重 `for` 铺到 `320×180`（`112220-112234`）——**条件在前**、外层 X
-///    内层 Y：起点越界（`p.X ≥ 320` 或 `p.Y ≥ 180`）时该轴一片都不画；
-///    `!LoopY` 内层画完一片就 `break`，`!LoopX` 外层画完一列就 `break`。
-///    每片 `Texture.Draw(pos, Vector2.Zero, color, 1, 0, flip)`（`112224`），
-///    原点 `Vector2.Zero`（裁剪子图左上角）、缩放 `1`。
+/// Step by step against `Parallax.Render` (`pureCeleste.cs:112163-112236`):
+/// 1. `v = (Camera.Position + CameraOffset).Floor()` (`112165`). The engine has no
+///    `Backdrop.CameraOffset` concept yet (`CameraOffset` is a field unique to
+///    `Parallax`, default `Vector2.Zero`, `112129-112130`), so it uses the camera
+///    position directly.
+/// 2. `p = (Position - v*Scroll).Floor()` (`112166`).
+/// 3. If `LoopX`/`LoopY`: two `while` loops fold `p.X`/`p.Y` back (`112185-112206`), in
+///    the same order as vanilla (first `<0` add, then `>0` subtract); with `!Loop`
+///    nothing is folded.
+/// 4. A double `for` tiles out to `320x180` (`112220-112234`) -- **condition first**,
+///    outer X and inner Y: when the start is off-screen (`p.X >= 320` or `p.Y >= 180`)
+///    that axis draws nothing; with `!LoopY` the inner loop `break`s after one piece,
+///    and with `!LoopX` the outer loop `break`s after one column. Each piece is
+///    `Texture.Draw(pos, Vector2.Zero, color, 1, 0, flip)` (`112224`), with origin
+///    `Vector2.Zero` (top-left of the cropped sub-image) and scale `1`.
 fn parallax_tiles(
     bd: &Backdrop,
     camera_pos: (f32, f32),
     tex: (f32, f32),
     screen: (f32, f32),
 ) -> Vec<(f32, f32)> {
-    // 贴图 0 尺寸会让两段 while 死循环——钳到 ≥1（原版 `Texture.Width`
-    // 恒 ≥1，引擎侧防御性钳制，不是行为差异）。
+    // A 0-size texture would make the two while loops spin forever -- clamp to >=1
+    // (vanilla `Texture.Width` is always >=1; this is defensive clamping on the engine
+    // side, not a behavior difference).
     let (tw, th) = (tex.0.max(1.0), tex.1.max(1.0));
-    // 1. v = (Camera + CameraOffset).Floor()（无 CameraOffset）。
+    // 1. v = (Camera + CameraOffset).Floor() (no CameraOffset).
     let (cam_x, cam_y) = (camera_pos.0.floor(), camera_pos.1.floor());
-    // 2. p = (Position − v*Scroll).Floor()。
+    // 2. p = (Position - v*Scroll).Floor().
     let mut px = (bd.x - cam_x * bd.scroll_x).floor();
     let mut py = (bd.y - cam_y * bd.scroll_y).floor();
-    // 3. while 折回（原版两段 while 的顺序：先 <0 加，再 >0 减）。
+    // 3. while folding (vanilla's two-while order: first <0 add, then >0 subtract).
     if bd.loop_x {
         while px < 0.0 {
             px += tw;
@@ -200,7 +216,7 @@ fn parallax_tiles(
             py -= th;
         }
     }
-    // 4. 双重 for（外 X 内 Y，条件在前）。
+    // 4. Double for (outer X, inner Y, condition first).
     let mut out = Vec::new();
     let mut x = px;
     while x < screen.0 {
@@ -220,29 +236,33 @@ fn parallax_tiles(
     out
 }
 
-/// 背景 / 前景视差贴图平铺（`Parallax.Render`，`pureCeleste.cs:112163-112236`）。
+/// Background / foreground parallax texture tiling (`Parallax.Render`,
+/// `pureCeleste.cs:112163-112236`).
 ///
-/// 几何走 [`parallax_tiles`]（纯函数、带对照单测）；这里只负责纹理查询、
-/// 调色与转 [`SpriteDraw`]。
+/// The geometry goes through [`parallax_tiles`] (a pure function with reference unit
+/// tests); this function only does texture lookup, tinting and conversion to
+/// [`SpriteDraw`].
 ///
-/// 引擎差异（记录在案，非行为偏差）：
-/// - 原点 `Vector2.Zero` 落到裁剪子图 = 左上角贴齐，故直接用 `sprite.w/h` 与
-///   `uv_for_sprite`，不走 [`sprites::origin_in_trim`]（那是给"有帧内原点"的
-///   sprite 用的）。
-/// - `blendmode="additive"` 暂不支持（wgpu 后端当前只有单一
-///   `PREMULTIPLIED_ALPHA_BLENDING` 管线，见 `gpu.rs:289-291`），统一按
-///   预乘 alpha 画，已知偏差；同理 `FlipY`（`SpriteDraw` 只有 `flip_x`）
-///   与 `WindMultiplier` 驱动的水平漂移（`112157`）暂不生效，0-Intro 未用。
-/// - `fadeIn`（`DoFadeIn`，`112153-112160`）与 `FadeX`/`FadeY`（`Fader`，
-///   `109343-109378`）尚未移植：0-Intro 的 `ParseBackdrop`（`112651`
-///   `DoFadeIn = bool.Parse(child.Attr("fadeIn", "false"))`）默认 `false`，
-///   故 `fadeIn` 恒为 `Visible ? 1 : 0`，进场景即 `1`（无过渡），当前
-///   `Service` 不追踪 `Visible`，这里恒定 `1`；`FadeX`/`FadeY` 仅在
-///   `<apply fade=...>` 时才有值，0-Intro 无此写法。
-/// - `Parallax.Alpha`（`112141`）字段 `ParseBackdrop` 从不写（`alpha` 属性
-///   只乘进 `backdrop.Color`，`112798-112804`），默认 `1` → `Render` 里
-///   `num = fadeIn*Alpha*FadeAlphaMultiplier = 1`、`color *= num` 不触发
-///   （`112167-112179`），所以直接用 `effective_color()` 是等价的。
+/// Engine differences (on record, not behavior deviations):
+/// - An origin of `Vector2.Zero` into the cropped sub-image means top-left alignment,
+///   so this uses `sprite.w/h` and `uv_for_sprite` directly and does not go through
+///   [`sprites::origin_in_trim`] (which is for sprites that have an in-frame origin).
+/// - `blendmode="additive"` is not supported yet (the wgpu backend currently has only
+///   a single `PREMULTIPLIED_ALPHA_BLENDING` pipeline, see `gpu.rs:289-291`), so
+///   everything draws premultiplied-alpha; a known deviation. Likewise `FlipY`
+///   (`SpriteDraw` only has `flip_x`) and the horizontal drift driven by
+///   `WindMultiplier` (`112157`) do not take effect yet; 0-Intro does not use them.
+/// - `fadeIn` (`DoFadeIn`, `112153-112160`) and `FadeX`/`FadeY` (`Fader`,
+///   `109343-109378`) are not ported yet: 0-Intro's `ParseBackdrop` (`112651`
+///   `DoFadeIn = bool.Parse(child.Attr("fadeIn", "false"))`) defaults to `false`, so
+///   `fadeIn` is always `Visible ? 1 : 0` and is `1` once in the scene (no transition);
+///   the current `Service` does not track `Visible`, so it stays `1` here; `FadeX`/
+///   `FadeY` only have a value with `<apply fade=...>`, which 0-Intro never uses.
+/// - The `Parallax.Alpha` (`112141`) field is never written by `ParseBackdrop` (the
+///   `alpha` attribute is only multiplied into `backdrop.Color`, `112798-112804`) and
+///   defaults to `1` -> in `Render`, `num = fadeIn*Alpha*FadeAlphaMultiplier = 1` and
+///   `color *= num` never triggers (`112167-112179`), so using `effective_color()`
+///   directly is equivalent.
 fn push_backdrops(
     out: &mut Vec<SpriteDraw>,
     backdrops: &[Backdrop],
@@ -254,13 +274,14 @@ fn push_backdrops(
 ) {
     let screen = (releste_render::BASE_WIDTH, releste_render::BASE_HEIGHT);
     for (i, bd) in backdrops.iter().enumerate() {
-        // 房间过滤的可见性由 [`Session::update_backdrop_visibility`] 按
-        // 原版 `Backdrop.Update` 的节奏刷新；这里只读。
+        // Room-filter visibility is refreshed by [`Session::update_backdrop_visibility`]
+        // at vanilla `Backdrop.Update`'s cadence; this just reads it.
         if visibility.get(i).copied() != Some(true) {
             continue;
         }
-        // 仅支持 `parallax`：其余 kind（snowBg/snowFg/mirrorFg/godrays…）
-        // 是独立 `Backdrop` 子类，各自有自己的 `Render`，尚未移植。
+        // Only `parallax` is supported: the other kinds (snowBg/snowFg/mirrorFg/
+        // godrays...) are separate `Backdrop` subclasses with their own `Render`, not
+        // ported yet.
         if !bd.kind.eq_ignore_ascii_case("parallax") {
             if session.warn_once(&format!("backdrop-kind:{}", bd.kind)) {
                 warn!(
@@ -288,12 +309,13 @@ fn push_backdrops(
         };
         let atlas_id = sprites::group_id(&session.atlas, group);
         let Some((tw, th)) = gpu.texture_size(atlas_id) else {
-            continue; // 纹理没上传（未转码的 .data），`load_atlas` 已告警
+            continue; // texture not uploaded (unconverted .data); `load_atlas` already warned
         };
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
         let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
         let tint = backdrop_tint(bd);
-        // 原版 `color.A <= 1` 早退（`112181-112184`）——等价于 alpha ≤ 1/255。
+        // Vanilla's early exit for `color.A <= 1` (`112181-112184`) -- equivalent to
+        // alpha <= 1/255.
         if tint[3] <= 1.0 / 255.0 {
             continue;
         }
@@ -309,46 +331,51 @@ fn push_backdrops(
     }
 }
 
-/// 前景瓦片 / 实体 / 背景瓦片的色调。
+/// Tint for foreground tiles / entities / background tiles.
 ///
-/// 原版所有 `TileGrid` 都用默认 `Color.White` + `Alpha = 1`
-/// （`pureCeleste.cs:11234`/`11242`，全原版无一处写它），所以这里只有白。
+/// Every vanilla `TileGrid` uses the default `Color.White` + `Alpha = 1`
+/// (`pureCeleste.cs:11234`/`11242`; nothing in vanilla writes it), so this is white.
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-/// 已加载的地图会话。
+/// A loaded map session.
 pub struct Session {
-    /// 地图文档（热重载会整体替换它）。
+    /// The map document (hot reload replaces it wholesale).
     pub doc: MapDocument,
-    /// 该地图使用的图集。
+    /// The atlas this map uses.
     pub atlas: SpriteAtlas,
-    /// 图集名（来自 `Tileset.atlas`）。
+    /// Atlas name (from `Tileset.atlas`).
     pub atlas_name: String,
-    /// tileset 定义（content-pipeline 从 `ForegroundTiles.xml` 转换）。
+    /// Tileset definitions (converted by content-pipeline from `ForegroundTiles.xml`).
     pub tilesets: releste_map::TilesetsDoc,
-    /// **背景** tileset 定义（content-pipeline 从 `BackgroundTiles.xml` 转换）。
+    /// **Background** tileset definitions (converted by content-pipeline from
+    /// `BackgroundTiles.xml`).
     ///
-    /// 房间的 `bg` 层必须查这张表而不是 [`Session::tilesets`]：同名 id 在
-    /// 两张表里是完全不同的贴图（`'3'` = snow / bgBrickRuined）。
+    /// A room's `bg` layer must query this table rather than [`Session::tilesets`]: the
+    /// same id is a completely different texture in the two tables (`'3'` = snow /
+    /// bgBrickRuined).
     pub bg_tilesets: releste_map::TilesetsDoc,
-    /// 玩家出生锚点（世界坐标）—— 原版语义：hitbox **底中心**（脚）。
-    /// service 用它减去 (W/2, H) 得到 hitbox 左上角，出处见
-    /// [`vanilla_start`] 与 `player::PLAYER_W_PX`。
+    /// Player spawn anchor (world coordinates) -- vanilla semantics: the hitbox
+    /// **bottom center** (feet). The service subtracts (W/2, H) to get the hitbox
+    /// top-left; for provenance see [`vanilla_start`] and `player::PLAYER_W_PX`.
     pub spawn: Vec2,
-    /// 出生点所在房间。
+    /// The room the spawn point is in.
     pub spawn_room: String,
-    /// 动画表（`Gameplay.sprites.toml`；缺失 = 空表，玩家回落静态帧）。
+    /// Animation table (`Gameplay.sprites.toml`; missing = empty table, the player
+    /// falls back to static frames).
     pub anims: crate::sprites::AnimationTable,
-    /// 每 backdrop 的可见性状态（原版 `Backdrop.Visible`，109366 起始
-    /// 为 `true`；`Backdrop.Update` 每帧按 `IsVisible` + 转场规则刷新，
-    /// `109468-109489`）。下标 = backgrounds + foregrounds 顺序拼接。
+    /// Visibility state per backdrop (vanilla `Backdrop.Visible`, `109366` starts as
+    /// `true`; `Backdrop.Update` refreshes it every frame from `IsVisible` plus the
+    /// transition rules, `109468-109489`). Index = backgrounds + foregrounds
+    /// concatenated in order.
     backdrop_visible: RefCell<Vec<bool>>,
-    /// 只告警一次的 key，避免每帧刷屏。
+    /// Keys that warn only once, to avoid spamming every frame.
     warned: RefCell<HashSet<String>>,
 }
 
-/// 刘海帧名：`bangs + 动画帧号 mod 3`（原版 `HairFrame` 读帧元数据，
-/// `pureCeleste.cs:111351-111356`；本图集未存逐帧元数据，用动画帧号
-/// 取模等价：idle 单帧 → bangs00，walk 循环 → 三帧交替）。
+/// Bangs frame name: `bangs + animation frame index mod 3` (vanilla `HairFrame` reads
+/// frame metadata, `pureCeleste.cs:111351-111356`; this atlas does not store per-frame
+/// metadata, so taking the animation frame index modulo 3 is equivalent: idle's single
+/// frame -> bangs00, the walk loop -> three alternating frames).
 fn bangs_frame(anim_frame: usize) -> &'static str {
     match anim_frame % 3 {
         0 => sprites::PLAYER_BANGS_SPRITE,
@@ -358,18 +385,21 @@ fn bangs_frame(anim_frame: usize) -> &'static str {
 }
 
 impl Session {
-    /// 每帧刷新 backdrop 可见性（原版 `Backdrop.Update`，109468-109489）。
+    /// Refresh backdrop visibility every frame (vanilla `Backdrop.Update`,
+    /// `109468-109489`).
     ///
-    /// 非转场：`Visible = IsVisible`（[`Session::backdrop_is_visible`]，
-    /// 房间过滤）。转场期间：`InstantIn` 立即点亮、`InstantOut` 立即
-    /// 熄灭，**其余保持上一帧的状态** —— 默认（InstantIn=true,
-    /// InstantOut=false）下，切进一个"该图不显示"的房间时图会保留到
-    /// 转场结束，这正是原版房间过滤图的淡入淡出语义。
+    /// Not transitioning: `Visible = IsVisible` ([`Session::backdrop_is_visible`], room
+    /// filtering). During a transition: `InstantIn` lights up immediately and
+    /// `InstantOut` goes dark immediately, while **everything else keeps the previous
+    /// frame's state** -- with the defaults (InstantIn=true, InstantOut=false), entering
+    /// a room where "this image is hidden" keeps the image until the transition ends,
+    /// which is exactly vanilla's fade semantics for room-filtered images.
     pub fn update_backdrop_visibility(&self, room: &str, transitioning: bool) {
         let total = self.doc.style.backgrounds.len() + self.doc.style.foregrounds.len();
         let mut vis = self.backdrop_visible.borrow_mut();
         if vis.len() != total {
-            // 热重载可能整体换掉 style：新增条目按原版初值 `true` 起。
+            // Hot reload may swap the style wholesale: new entries start at vanilla's
+            // initial `true`.
             vis.resize(total, true);
         }
         for (i, bd) in self
@@ -395,10 +425,10 @@ impl Session {
         }
     }
 
-    /// 原版 `Backdrop.IsVisible`（109438-109466）的房间过滤部分：
-    /// `ExcludeFrom` / `OnlyIn` 对当前房间名（`Session.Level`）做成员
-    /// 判定。flag / dreaming / 渐变带宽未移植（转换器对未捕获属性
-    /// 已告警）。
+    /// The room-filtering part of vanilla `Backdrop.IsVisible` (`109438-109466`):
+    /// `ExcludeFrom` / `OnlyIn` membership tests against the current room name
+    /// (`Session.Level`). flag / dreaming / fade bands are not ported (the converter
+    /// already warns about uncaptured properties).
     fn backdrop_is_visible(&self, bd: &Backdrop, room: &str) -> bool {
         if !bd.exclude_from.is_empty() && bd.exclude_from.iter().any(|n| n == room) {
             return false;
@@ -408,12 +438,13 @@ impl Session {
         }
         true
     }
-    /// 从 `paths` 解析出的地图路径加载。
+    /// Load from the map path resolved through `paths`.
     ///
-    /// `tileset` 已废弃（真 tileset 按 tile id 从 `ForegroundTiles.xml`
-    /// 转换的定义里来）；保留参数以兼容调用方，忽略它。
+    /// `tileset` is deprecated (real tilesets come from the definitions converted from
+    /// `ForegroundTiles.xml`, keyed by tile id); the parameter is kept for caller
+    /// compatibility and ignored.
     pub fn load(map: &str, tileset: Option<&str>, paths: &Paths) -> Result<Self> {
-        let _ = tileset; // 已废弃，见上
+        let _ = tileset; // deprecated, see above
         let map_path = paths.map(map);
         let doc = releste_map::load_map(&map_path)
             .with_context(|| format!("failed to load map {}", map_path.display()))?;
@@ -443,7 +474,9 @@ impl Session {
             )
         })?;
 
-        // 背景砖是第二张表；缺表只告警、不拦加载（背景整层不画比进不去游戏好）。
+        // Background bricks are a second table; a missing table only warns and does not
+        // block loading (not drawing the whole background layer beats not being able to
+        // enter the game).
         let bg_path = paths.bg_tilesets();
         let bg_tilesets = match releste_map::TilesetsDoc::from_file(&bg_path) {
             Ok(doc) => doc,
@@ -491,8 +524,9 @@ impl Session {
         })
     }
 
-    /// 测试的构造：跳过磁盘 I/O，直接用文档组装（§9"测试必须自己造
-    /// 数据"）。图集是空壳，单测不会走到纹理上传。
+    /// Test constructor: skips disk I/O and assembles directly from the document
+    /// (AGENTS.md 9, "tests must build their own data"). The atlas is an empty shell;
+    /// unit tests never reach texture upload.
     #[cfg(test)]
     pub(crate) fn from_doc(doc: MapDocument, atlas_name: &str) -> Self {
         let (spawn, spawn_room) = vanilla_start(&doc);
@@ -518,20 +552,22 @@ impl Session {
         }
     }
 
-    /// 世界坐标落在哪个房间（找不到就回落到出生房间）。
+    /// Which room a world coordinate falls in (falls back to the spawn room if none).
     ///
-    /// `pos` 是 hitbox **左上角**；这里取它的几何中心去查房间。
-    /// 中心而不是角点：角点会提前半个身位跨进相邻房间，让碰撞、
-    /// 标题栏房间名和重载检查都指向错误的房间。
+    /// `pos` is the hitbox **top-left**; this queries rooms with its geometric center.
+    /// Center rather than corner: a corner crosses into the adjacent room half a body
+    /// early, making collision, the title-bar room name and the reload check all point
+    /// at the wrong room.
     pub fn room_at(&self, pos: Vec2) -> &Room {
         room_containing(&self.doc.rooms, pos)
             .or_else(|| self.doc.rooms.iter().find(|r| r.name == self.spawn_room))
             .unwrap_or(&self.doc.rooms[0])
     }
 
-    /// 世界单元 `(cx, cy)` 是否是固体。
+    /// Whether world cell `(cx, cy)` is solid.
     ///
-    /// 房间格子是房间局部坐标，这里先换算回世界格子再查表。
+    /// Room cells are room-local coordinates, so convert back to world cells first,
+    /// then query the table.
     pub fn solid_cell(room: &Room, cx: i32, cy: i32) -> bool {
         let ox = room.bounds.x.round() as i32;
         let oy = room.bounds.y.round() as i32;
@@ -550,14 +586,16 @@ impl Session {
         room.tiles.get(tx, ty).unwrap_or(0) != 0
     }
 
-    /// 画**当前房间**的瓦片 + 实体（不含玩家，玩家每帧单独画）。
+    /// Draw the tiles + entities of the **current room** (excluding the player, who is
+    /// drawn separately each frame).
     ///
-    /// 原版一次只画一个房间：跨房间连续世界里把邻室也画出来，会在
-    /// 接缝上出现两边边墙贴在一起的伪影（悬空门柱、垂雪檐）。
-    /// 调用方负责在房间切换时换 `room_index` 重建。
+    /// Vanilla draws only one room at a time: in a continuous multi-room world, drawing
+    /// neighboring rooms too produces artifacts at the seams where the side walls of
+    /// both rooms touch (floating door frames, hanging snow eaves). The caller is
+    /// responsible for switching `room_index` and rebuilding when the room changes.
     ///
-    /// 需要 GPU 是因为 `.atlas` 里没有写纹理尺寸，归一化 UV 只能问
-    /// 已上传的纹理。
+    /// The GPU is needed because `.atlas` does not store texture dimensions, so
+    /// normalized UVs can only come from an uploaded texture.
     pub fn build_static(&mut self, gpu: &GpuRenderer, room_index: usize) -> Vec<SpriteDraw> {
         let mut out = Vec::new();
         let room = &self.doc.rooms[room_index];
@@ -573,9 +611,10 @@ impl Session {
                 gpu,
             },
         );
-        // 背景是**另一张**表（`BackgroundTiles.xml`），且原版不调色
-        // （`TileGrid.Color` 默认 `Color.White`、`Alpha = 1`，11234/11242，
-        // 全原版无一处写它）——之前那层蓝灰 tint 纯粹是自造的偏色。
+        // The background uses a **different** table (`BackgroundTiles.xml`) and vanilla
+        // does not tint it (`TileGrid.Color` defaults to `Color.White`, `Alpha = 1`,
+        // 11234/11242; nothing in vanilla writes it) -- the previous blue-gray tint was a
+        // home-made color cast.
         push_tiles(
             &mut out,
             room,
@@ -599,17 +638,19 @@ impl Session {
         out
     }
 
-    /// 本帧的视差背景/前景 draw（`Parallax.Render`，`pureCeleste.cs:112163-112236`）。
+    /// This frame's parallax background/foreground draws (`Parallax.Render`,
+    /// `pureCeleste.cs:112163-112236`).
     ///
-    /// **每帧都要重建**（不像瓦片/实体那样按房间缓存）：平铺起点依赖
-    /// 相机位置（`p = (Position − Camera.Position.Floor()*Scroll).Floor()`，
-    /// `112165-112166`），相机一动整张分布就变。数量很小（4 张背景图
-    /// × 若干平铺），重建成本可忽略。
+    /// **Rebuilt every frame** (unlike tiles/entities, which are cached per room): the
+    /// tiling origin depends on the camera position
+    /// (`p = (Position - Camera.Position.Floor()*Scroll).Floor()`, `112165-112166`), so
+    /// any camera movement changes the whole layout. The counts are tiny (4 background
+    /// images x a few tiles each), so the rebuild cost is negligible.
     ///
-    /// 层：背景在所有瓦片之后画（[`Layer::Background`] = -1000 <
-    /// [`Layer::BgTiles`] = -500），前景压在玩家与特效之上
-    /// （[`Layer::Foreground`] = 500 > [`Layer::Effects`] = 300），
-    /// 与原版 `Backdrop` 的前后层级一致。
+    /// Layers: the background draws after all tiles ([`Layer::Background`] = -1000 <
+    /// [`Layer::BgTiles`] = -500), and the foreground sits above the player and effects
+    /// ([`Layer::Foreground`] = 500 > [`Layer::Effects`] = 300), matching the front/back
+    /// layering of vanilla `Backdrop`.
     pub fn backdrop_draws(&self, gpu: &GpuRenderer, camera_pos: Vec2) -> Vec<SpriteDraw> {
         let vis = self.backdrop_visible.borrow();
         let mut out = Vec::new();
@@ -634,29 +675,35 @@ impl Session {
         out
     }
 
-    /// 地图样式的清屏色（`<Style color="#rrggbb">`，`pureCeleste.cs:112434`）。
+    /// The map style's clear color (`<Style color="#rrggbb">`, `pureCeleste.cs:112434`).
     pub fn clear_color(&self) -> [u8; 3] {
         self.doc.style.background_color
     }
 
-    /// 玩家本帧的 draw：头发（4 节链 + 刘海 + 黑描边）在身体后面。
+    /// This frame's player draws: hair (a 4-node chain + bangs + black outline) behind
+    /// the body.
     ///
-    /// 每一处都对照 `pureCeleste.cs`：
-    /// - 锚点：`Player.Position` = hitbox 底中心（118856），即 `anchor`；
-    /// - 发根：`Nodes\[0\] = Sprite.RenderPosition + (0,-9) + HairOffset*Facing`
-    ///   （111116）。idle 动画未定义 HairOffset → 取默认 (0,0)
-    ///   （111477 只有 yaml 提供时才赋值）；RenderPosition 即玩家位置；
-    /// - 后续节：`HairCount = 4`（111321）；`AfterUpdate`（111118-111135）
-    ///   的静态摆位 node\[i\] = node\[i-1\] + ((0-Facing)*step, +2)，step 在
-    ///   i==1 时为 2*StepInFacingPerSegment = 1，其余 0.5（StepPerSegment
-    ///   = (0,2)，111074-111076）；节点间 ≤3px 的约束不触发（|(-1,2)|≈2.24）；
-    /// - 绘制（Render 111155+）：`origin = (5,5)`；node\[0\] 用 bangs\[0\]，
-    ///   其余用 hair00；每片先画 4 个 ±1px 的黑描边（`Border = Black`，
-    ///   111159），再按 HairCount-1..0 逆序画本色（`Color = AC3232`）。
-    /// - 身体最后画（Layer::Player 高于 PlayerHair，层排序保证）。
+    /// Every part is checked against `pureCeleste.cs`:
+    /// - Anchor: `Player.Position` = hitbox bottom center (118856), i.e. `anchor`;
+    /// - Hair root: `Nodes\[0\] = Sprite.RenderPosition + (0,-9) + HairOffset*Facing`
+    ///   (111116). The idle animation does not define HairOffset -> the default (0,0) is
+    ///   used (111477 only assigns it when the yaml provides it); RenderPosition is the
+    ///   player position;
+    /// - Later nodes: `HairCount = 4` (111321); `AfterUpdate` (111118-111135)'s static
+    ///   placement node\[i\] = node\[i-1\] + ((0-Facing)*step, +2), where step is
+    ///   2*StepInFacingPerSegment = 1 for i==1 and 0.5 otherwise (StepPerSegment
+    ///   = (0,2), 111074-111076); the <=3px constraint between nodes does not trigger
+    ///   (|(-1,2)| ~ 2.24);
+    /// - Drawing (Render 111155+): `origin = (5,5)`; node\[0\] uses bangs\[0\], the
+    ///   rest use hair00; each piece first draws 4 black outline copies at +/-1px
+    ///   (`Border = Black`, 111159), then draws the base color in reverse order from
+    ///   HairCount-1..0 (`Color = AC3232`).
+    /// - The body draws last (Layer::Player is above PlayerHair, guaranteed by layer
+    ///   sort order).
     ///
-    /// 尚未移植：发丝的运动模拟（SimulateMotion/StepApproach，随动画
-    /// 系统一起）；身体四向描边（DrawPlayerSpriteOutline，idle 不开）。
+    /// Not ported yet: hair strand motion simulation (SimulateMotion/StepApproach,
+    /// along with the animation system); the four-direction body outline
+    /// (DrawPlayerSpriteOutline, off for idle).
     pub fn player_draws(
         &self,
         gpu: &GpuRenderer,
@@ -669,18 +716,19 @@ impl Session {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
 
-        // `AfterUpdate`（111114-111139）：节点 0 = RenderPosition + (0,-9)
-        // + HairOffset*(Facing,1)；其后每节沿 `StepPerSegment (0,2)` 链接。
+        // `AfterUpdate` (111114-111139): node 0 = RenderPosition + (0,-9)
+        // + HairOffset*(Facing,1); each later node links along `StepPerSegment (0,2)`.
         let mut nodes = Vec::with_capacity(sprites::HAIR_COUNT);
         let hair_offset = sprites::PLAYER_HAIR_OFFSET;
         nodes.push(anchor + Vec2::from_f32s(hair_offset.0 * facing, -9.0 + hair_offset.1));
         for i in 1..sprites::HAIR_COUNT {
-            // 第 1 节多探出 1px（StepInFacingPerSegment*2 只作用于第 1 节）。
+            // Node 1 sticks out 1px more (StepInFacingPerSegment*2 applies only to node 1).
             let step_x = (0.0 - facing) * if i == 1 { 1.0 } else { 0.5 };
             nodes.push(nodes[i - 1] + Vec2::from_f32s(step_x, 2.0));
         }
-        // Render 开头 `Nodes[0] = Nodes[0].Floor()`（111179）：整条头发
-        // 吸附到整数像素 —— 缺了它，发根随玩家亚像素位置抖动/偏移。
+        // `Render` starts with `Nodes[0] = Nodes[0].Floor()` (111179): the whole hair
+        // snaps to integer pixels -- without it the hair root jitters/drifts with the
+        // player's subpixel position.
         nodes[0] = nodes[0].floor();
 
         let pieces: [(&str, &Vec2); sprites::HAIR_COUNT] = [
@@ -693,8 +741,8 @@ impl Session {
         let outline_offsets = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
 
         let mut out = Vec::new();
-        // 先把每节的描边（4 个 ±1px）全画完，再从尾到头画本色
-        // （111179-111197）—— 两趟循环，不是逐节交替。
+        // First draw all outlines for every node (4 copies at +/-1px), then draw the base
+        // color from tail to head (111179-111197) -- two passes, not alternating per node.
         for (i, (name, node)) in pieces.iter().enumerate() {
             let scale = sprites::hair_scale(i, facing);
             let Some(base) = self.hair_piece(gpu, name, **node, scale, border) else {
@@ -709,7 +757,7 @@ impl Session {
         for (i, (name, node)) in pieces.iter().enumerate().rev() {
             let scale = sprites::hair_scale(i, facing);
             if let Some(mut d) = self.hair_piece(gpu, name, **node, scale, hair_color) {
-                d.layer = Layer::PlayerHair.value() + 1; // 本色压在描边之上
+                d.layer = Layer::PlayerHair.value() + 1; // base color on top of the outline
                 out.push(d);
             }
         }
@@ -719,13 +767,14 @@ impl Session {
         out
     }
 
-    /// 一片头发：左上角 = `node − 子图内原点 × scale`
-    /// （Monocle `MTexture.Draw(position, origin, color, scale)` →
-    /// `14534-14537` 把 `origin` 交给 SpriteBatch，缩放绕原点作用）。
+    /// One hair piece: top-left = `node - origin within the sub-image * scale`
+    /// (Monocle `MTexture.Draw(position, origin, color, scale)` -> `14534-14537` hands
+    /// `origin` to SpriteBatch; the scale acts around the origin).
     ///
-    /// 原点必须**按每张图各算一次**：`hair00` 在 `.meta` 里裁掉了
-    /// `(1,1)`、`bangs00` 裁掉了 `(1,0)`，两者共用帧原点 (5,5)
-    /// （`HAIR_FRAME_ORIGIN`），落到裁剪后的子图里就不一样了。
+    /// The origin must be computed **once per image**: `hair00` has `(1,1)` cropped away
+    /// in `.meta` and `bangs00` has `(1,0)` cropped away, and although both share the
+    /// frame origin (5,5) (`HAIR_FRAME_ORIGIN`), it lands differently inside the cropped
+    /// sub-image.
     fn hair_piece(
         &self,
         gpu: &GpuRenderer,
@@ -752,12 +801,14 @@ impl Session {
         )
     }
 
-    /// 身体：底中心锚在脚下（脚 = hitbox 底边 = 地面）。
+    /// Body: the bottom center is anchored at the feet (feet = hitbox bottom edge = the
+    /// ground).
     ///
-    /// 左上角不是 `anchor − 裁剪图的几何中心`：`Sprites.xml:5` 的
-    /// `<Origin x="16" y="32"/>` 才是原版 `Sprite.Position` 的语义，
-    /// 减掉 `.meta` 的裁剪位移后落到子图内（见 [`sprites::origin_in_trim`]）。
-    /// 原实现按 `w*0.5` 取，把身体往左挪了 1.5px。
+    /// The top-left is not `anchor - the cropped image's geometric center`:
+    /// `Sprites.xml:5`'s `<Origin x="16" y="32"/>` is the actual vanilla
+    /// `Sprite.Position` semantics; subtracting `.meta`'s crop offset lands inside the
+    /// sub-image (see [`sprites::origin_in_trim`]). The earlier implementation used
+    /// `w*0.5`, which shifted the body 1.5px to the left.
     fn body_draw(
         &self,
         gpu: &GpuRenderer,
@@ -786,21 +837,25 @@ impl Session {
         )
     }
 
-    /// 实体批次。锚点按**原版语义**：
-    /// - 默认（贴花类）：内容**中心**贴在实体位置（`MTexture.Draw(position)`）；
-    /// - `introCar`：车身 + 轮子两张图，**底中心**贴在位置
-    ///   （`pureCeleste.cs` IntroCar：`Origin = (W/2, H)`，车轮画在车身下）；
-    /// - `lamp`：取左半 16×80 子图，**底中心**贴在位置（`Lamp` 同上）。
+    /// The entity batch. Anchors follow **vanilla semantics**:
+    /// - Default (decal-like): the content **center** is placed at the entity position
+    ///   (`MTexture.Draw(position)`);
+    /// - `introCar`: two images, body and wheels, with the **bottom center** at the
+    ///   position (`pureCeleste.cs` IntroCar: `Origin = (W/2, H)`, the wheels drawn
+    ///   under the body);
+    /// - `lamp`: takes the left half 16x80 sub-image, with the **bottom center** at the
+    ///   position (`Lamp` likewise).
     ///
-    /// 告警去重走 `warn_once`（`RefCell`），这样整批循环只需要
-    /// 不可变借用 `self`，`&Room` 与 `&mut Vec` 都能并存。
+    /// Warning dedup goes through `warn_once` (`RefCell`), so the whole batch loop only
+    /// needs an immutable borrow of `self`, letting `&Room` and `&mut Vec` coexist.
     fn push_entities(&self, out: &mut Vec<SpriteDraw>, room: &Room, gpu: &GpuRenderer) {
         for e in &room.entities {
             if e.kind == "player" {
-                continue; // 玩家由仿真驱动，见 `Session::player_draws`
+                continue; // the player is driven by the simulation; see `Session::player_draws`
             }
             match e.kind.as_str() {
-                // 没有贴图的实体：外观由几何/autotiler 拼出，单独成图。
+                // Entities without a texture: their look is built from geometry/autotiler,
+                // drawn separately.
                 "introCrusher" => {
                     self.push_intro_crusher(out, room, e, gpu);
                     continue;
@@ -813,10 +868,11 @@ impl Session {
                     self.push_bridge(out, room, e, gpu);
                     continue;
                 }
-                // 原版 Hahaha 只画 Update 定时生成的 `Ha` 笑声气泡，而
-                // `has` 列表出生时是空的（`pureCeleste.cs:110944`、
-                // `111012-111035`）：场景 t=0 它什么都不画 —— 引擎无该
-                // 模拟，静态渲染同样不画（无"缺图"可言，不告警）。
+                // Vanilla Hahaha only draws the `Ha` laugh bubbles generated on a timer by
+                // Update, and the `has` list is empty at spawn (`pureCeleste.cs:110944`,
+                // `111012-111035`): at scene t=0 it draws nothing. The engine has no such
+                // simulation, so static rendering draws nothing either (there is no
+                // "missing sprite", so no warning).
                 "hahaha" => continue,
                 _ => {}
             }
@@ -834,16 +890,16 @@ impl Session {
             };
             let id = sprites::group_id(&self.atlas, group);
             let Some((tw, th)) = gpu.texture_size(id) else {
-                continue; // 纹理没上传（未转码的 .data），已经在 load_atlas 告警过
+                continue; // texture not uploaded (unconverted .data); load_atlas already warned
             };
             let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
             let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
-            // 实体位置 = 锚点（世界坐标）。
+            // Entity position = anchor (world coordinates).
             let anchor = Vec2::from_f32s(room.bounds.x + e.x, room.bounds.y + e.y);
             match e.kind.as_str() {
                 "introCar" => {
-                    // 原版是两张图：body（Depth 1）+ wheels（Depth 3），
-                    // 都是**底中心**锚在位置上。
+                    // Vanilla uses two images: body (Depth 1) + wheels (Depth 3), both with
+                    // the **bottom center** anchored at the position.
                     for (name, layer) in [
                         ("scenery\\car\\wheels", Layer::Entities.value()),
                         ("scenery\\car\\body", Layer::Entities.value() + 1),
@@ -870,7 +926,8 @@ impl Session {
                     }
                 }
                 "lamp" => {
-                    // 灯被打碎后画的是另一套碎玻璃子图（同一张图的右半）。
+                    // Once a lamp is broken it draws a different set of broken-glass
+                    // sub-images (the right half of the same image).
                     let broken = matches!(e.properties.get("broken"), Some(FieldValue::Bool(true)));
                     let lamp = sprites::lamp_sprite(sprite, broken);
                     let uv =
@@ -884,7 +941,7 @@ impl Session {
                     );
                 }
                 _ => {
-                    // 贴花类：内容中心贴位置。
+                    // Decal-like: the content center is placed at the position.
                     let top_left = anchor - Vec2::from_f32s(w * 0.5, h * 0.5);
                     out.push(
                         SpriteDraw::new(id, top_left, Vec2::from_f32s(w, h), uv)
@@ -896,15 +953,17 @@ impl Session {
         }
     }
 
-    /// `IntroCrusher`：原版**没有任何 crushblock/Kevin 贴图**，外观是
-    /// autotiler 生成的一整块盒子 —— `GFX.FGAutotiler.GenerateBox('3',
-    /// width/8, height/8)` 塞进实体自己的 TileGrid（`pureCeleste.cs:106325`；
-    /// GenerateBox 本身在 `87832`：整盒填 id，盒外按默认 `Behaviour`
-    /// 当空 —— `CheckTile` 的 `mapData == null` 分支返回 `EdgesExtend`
-    /// = false，`87985-87989`）。
+    /// `IntroCrusher`: vanilla has **no crushblock/Kevin texture at all**; its look is a
+    /// whole box generated by an autotiler -- `GFX.FGAutotiler.GenerateBox('3',
+    /// width/8, height/8)` stuffed into the entity's own TileGrid
+    /// (`pureCeleste.cs:106325`; GenerateBox itself is at `87832`: fill the whole box
+    /// with the id, treat outside the box as empty per the default `Behaviour` --
+    /// `CheckTile`'s `mapData == null` branch returns `EdgesExtend` = false,
+    /// `87985-87989`).
     ///
-    /// 实体位置 = 盒子左上角（`Solid` 的 `base(position, width, height)`）；
-    /// `Nodes[0]` 是落点，只参与落体动画，静态渲染画起始位。
+    /// Entity position = the box top-left (`Solid`'s `base(position, width, height)`);
+    /// `Nodes[0]` is the landing point and only participates in the falling animation,
+    /// so static rendering draws the start position.
     fn push_intro_crusher(
         &self,
         out: &mut Vec<SpriteDraw>,
@@ -912,17 +971,18 @@ impl Session {
         e: &EntityData,
         gpu: &GpuRenderer,
     ) {
-        // '3' 的格值 = 它在字母表里的下标（"0123…" → 3）。
+        // The cell value of '3' = its index in the alphabet ("0123..." -> 3).
         let value = releste_map::TILE_ALPHABET.find('3').unwrap_or(0) as u16;
         let (cols, rows) = (
             (e.width.unwrap_or(0).max(0) / sprites::TILE_PX) as u32,
             (e.height.unwrap_or(0).max(0) / sprites::TILE_PX) as u32,
         );
         if cols == 0 || rows == 0 {
-            return; // 0 格盒子：原版同样什么都不画
+            return; // 0-cell box: vanilla likewise draws nothing
         }
 
-        // 整盒填 '3'，越界当空（`Oob::Empty`）才会有边缘块。
+        // Fill the whole box with '3'; treating out-of-bounds as empty (`Oob::Empty`) is
+        // what produces edge blocks.
         let mut grid = releste_map::Tileset::new(room.tiles.atlas.clone(), cols, rows);
         for y in 0..rows {
             for x in 0..cols {
@@ -950,11 +1010,12 @@ impl Session {
         };
         let atlas_id = sprites::group_id(&self.atlas, group);
         let Some((tw, th)) = gpu.texture_size(atlas_id) else {
-            return; // 纹理没上传（未转码的 .data），load_atlas 已告警
+            return; // texture not uploaded (unconverted .data); load_atlas already warned
         };
         let tex = Vec2::from_f32s(tw as f32, th as f32);
 
-        // 位置 = 盒子左上角：房间坐标 → 世界坐标（与瓦片层同一换算）。
+        // Position = box top-left: room coordinates -> world coordinates (same conversion
+        // as the tile layer).
         let anchor = Vec2::from_f32s(room.bounds.x + e.x, room.bounds.y + e.y);
         for ty in 0..rows {
             for tx in 0..cols {
@@ -971,19 +1032,20 @@ impl Session {
         }
     }
 
-    /// `Wire`：原版没有专用贴图 —— `Render` 沿一条 `SimpleCurve`（二次
-    /// 贝塞尔）画 16 段 `Draw.Line`，每段是 1px 高、按角度旋转的横条
-    /// （`pureCeleste.cs:106699-106710`）。控制点 = 两端中点下垂 24px
-    /// （`106702`）；`GetPoint(t) = (1-t)²·Begin + 2(1-t)t·Control +
-    /// t²·End`（Everest `Patches/Monocle/SimpleCurve.cs:22-28`）。线色
-    /// `595866`（`106676`）；from/to = 实体与节点坐标 + 房间偏移
-    /// （`106698`）。
+    /// `Wire`: vanilla has no dedicated texture -- `Render` draws 16 `Draw.Line`
+    /// segments along a `SimpleCurve` (quadratic Bezier), each a 1px-tall horizontal bar
+    /// rotated by its angle (`pureCeleste.cs:106699-106710`). Control point = the
+    /// midpoint of the two ends sagged 24px (`106702`);
+    /// `GetPoint(t) = (1-t)^2*Begin + 2(1-t)t*Control + t^2*End` (Everest
+    /// `Patches/Monocle/SimpleCurve.cs:22-28`). Line color `595866` (`106676`); from/to
+    /// = entity and node coordinates + room offset (`106698`).
     ///
-    /// 静态偏差：原版控制点还叠风摆 `sin(sine + WindSineTimer·ω) · 8 ·
-    /// VisualWind`（`106701`）—— 相位来自 `new Random((int)min.X)` 的
-    /// 逐线随机流、幅度随 `WindSineTimer` 动画（`115689-115690`，t=0
-    /// 时 `VisualWind=0.5`）。引擎静态批次没有该时间与随机流，取摆动
-    /// 为 0（单线最大偏差 ±4px）。
+    /// Static deviation: vanilla also adds wind sway to the control point,
+    /// `sin(sine + WindSineTimer*omega) * 8 * VisualWind` (`106701`) -- the phase comes
+    /// from a per-line random stream seeded by `new Random((int)min.X)`, and the
+    /// amplitude animates with `WindSineTimer` (`115689-115690`; at t=0
+    /// `VisualWind=0.5`). The engine's static batch has no such time or random stream,
+    /// so sway is taken as 0 (max deviation of 4px per line).
     fn push_wire(&self, out: &mut Vec<SpriteDraw>, room: &Room, e: &EntityData, gpu: &GpuRenderer) {
         let Some((node_x, node_y)) = e.nodes.first().copied() else {
             if self.warn_once(&format!("wire-node:{}:{}", e.x, e.y)) {
@@ -994,8 +1056,8 @@ impl Session {
         let (fx, fy) = (room.bounds.x + e.x, room.bounds.y + e.y);
         let (tx, ty) = (room.bounds.x + node_x, room.bounds.y + node_y);
 
-        // 1px 白 texel：Monocle `Draw.Line` 采样的是纯白 Pixel.Texture，
-        // 图集里 `util/pixel` 是 3×3 的纯白 (255,255,255,255)。
+        // 1px white texel: Monocle `Draw.Line` samples a pure-white Pixel.Texture, and
+        // `util/pixel` in the atlas is a 3x3 pure white (255,255,255,255).
         let Some((group, sprite)) = self.atlas.sprite("util/pixel") else {
             if self.warn_once("wire-white-pixel") {
                 warn!("`util/pixel` not in atlas; skipping wires");
@@ -1004,11 +1066,11 @@ impl Session {
         };
         let atlas_id = sprites::group_id(&self.atlas, group);
         let Some((tw, th)) = gpu.texture_size(atlas_id) else {
-            return; // 纹理还没上传，load_atlas 已经告警过
+            return; // texture not uploaded yet; load_atlas already warned
         };
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
 
-        // Calc.HexToColor("595866")（106676）。
+        // Calc.HexToColor("595866") (106676).
         let color = [89.0 / 255.0, 88.0 / 255.0, 102.0 / 255.0, 1.0];
         let layer = if matches!(e.properties.get("above"), Some(FieldValue::Bool(true))) {
             LAYER_WIRE_ABOVE
@@ -1016,7 +1078,8 @@ impl Session {
             LAYER_WIRE
         };
 
-        // 16 段（106703-106709）：段 = 绕起点旋到终点的 1px 高横条。
+        // 16 segments (106703-106709): each is a 1px-tall bar rotated from its start to
+        // its end.
         for ((sx, sy), len, angle) in wire_segments((fx, fy), (tx, ty)) {
             out.push(
                 SpriteDraw::new(
@@ -1032,20 +1095,23 @@ impl Session {
         }
     }
 
-    /// `Bridge`：桥实体本身什么都不画 —— 它在 `Added` 里沿宽度逐格生成
-    /// `BridgeTile`（`pureCeleste.cs:107704-107731`），每格是
-    /// `scenery/bridge` 贴图的一个竖条（`107846-107878`）。
+    /// `Bridge`: the bridge entity itself draws nothing -- in `Added` it generates a
+    /// `BridgeTile` per cell along its width (`pureCeleste.cs:107704-107731`), each cell
+    /// being one vertical strip of the `scenery/bridge` texture (`107846-107878`).
     ///
-    /// - 缺口 = 两个节点的房间 x 加房间左缘（原版 `gapStartX +=
-    ///   level.Bounds.Left`，`107713-107714`；节点与实体同房间坐标系）。
-    /// - 版材循环 11 个尺寸（`107719-107729`）：索引 2..=7 原版取
-    ///   `Calc.Random.Next(6)` 的随机木纹段（`PushRandom(1)` 定种），
-    ///   引擎直接用序号 `num` —— 这 6 个候选全是 8px 宽，步进与原版逐
-    ///   格一致，只有 8px 段的花色成为固定序列（该随机流不复刻）。
-    /// - 16px 端头按 24+12+12+… 竖切，各条 Y 偏移 `num2 - 8`
-    ///   （`107854-107872`），余量裁到 52px 高。
-    /// - 原版 `Update` 在玩家过桥后播放坍塌（`107733+`）；静态渲染画
-    ///   完整的桥。
+    /// - Gap = the room x of the two nodes plus the room's left edge (vanilla
+    ///   `gapStartX += level.Bounds.Left`, `107713-107714`; nodes and entity share the
+    ///   room coordinate system).
+    /// - The planking cycles through 11 sizes (`107719-107729`): for index `2..=7`
+    ///   vanilla takes a random wood-grain strip via `Calc.Random.Next(6)` (seeded by
+    ///   `PushRandom(1)`), while the engine uses the index `num` directly -- those 6
+    ///   candidates are all 8px wide, so the stepping matches vanilla cell for cell and
+    ///   only the pattern of the 8px strips becomes a fixed sequence (that random stream
+    ///   is not reproduced).
+    /// - A 16px end cap is cut vertically into 24+12+12+..., each strip offset in Y by
+    ///   `num2 - 8` (`107854-107872`), with the remainder trimmed to 52px tall.
+    /// - Vanilla `Update` plays a collapse once the player has crossed the bridge
+    ///   (`107733+`); static rendering draws the complete bridge.
     fn push_bridge(
         &self,
         out: &mut Vec<SpriteDraw>,
@@ -1097,7 +1163,7 @@ impl Session {
             bridge_cells(room.bounds.x + e.x, width, (gap_start, gap_end))
         {
             if !visible {
-                continue; // 缺口：原版不 level.Add 这一格
+                continue; // gap: vanilla does not level.Add this cell
             }
             for (sx, sy, sw, sh, dy) in bridge_tile_strips(cell_x, cell_w, cell_h) {
                 push_strip(sx, sy, sw, sh, x, tile_y + dy);
@@ -1105,7 +1171,7 @@ impl Session {
         }
     }
 
-    /// 同一条告警只发一次，首次返回 `true`。
+    /// Emit any given warning only once; returns `true` the first time.
     fn warn_once(&self, key: &str) -> bool {
         let mut warned = self.warned.borrow_mut();
         if warned.contains(key) {
@@ -1116,29 +1182,32 @@ impl Session {
         }
     }
 
-    /// 报告用：房间数 / 实体数 / 出生点。
+    /// For reporting: room count / entity count / spawn point.
     pub fn summary(&self) -> (usize, usize, String) {
         let entities: usize = self.doc.rooms.iter().map(|r| r.entities.len()).sum();
         (self.doc.rooms.len(), entities, self.spawn_room.clone())
     }
 }
 
-/// 中心点落在哪个房间（不含任何回落）。
+/// Which room the center point falls in (no fallback at all).
 ///
-/// `pos` 是 hitbox 左上角，这里取几何中心判定。它只回答"房间身份"
-/// （标题栏、相机、热重载检查）；物理碰撞**不选房间** —— hitbox
-/// 触及的每个房间都会被查（见 `player::Player::hit_in`），骑缝时
-/// 两边的瓦片都算数，不会因为"选错房间"而卡住。
+/// `pos` is the hitbox top-left; this decides using the geometric center. It only
+/// answers "room identity" (title bar, camera, hot-reload checks); physical collision
+/// does **not** pick a room -- every room the hitbox touches is queried (see
+/// `player::Player::hit_in`), and on a seam the tiles on both sides count, so the
+/// player never gets stuck because the "wrong room" was chosen.
 pub(crate) fn room_containing(rooms: &[Room], pos: Vec2) -> Option<&Room> {
     let centre =
         pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H * 0.5);
     rooms.iter().find(|r| r.bounds.to_rect().contains(centre))
 }
 
-/// 离 `point` 最近的房间（点到矩形的欧氏距离，落在矩形内记 0）。
+/// The room nearest to `point` (Euclidean distance from a point to a rectangle, 0 when
+/// inside the rectangle).
 ///
-/// 世界级兜底用：中心掉出所有房间时把玩家夹回**最近的**房间，
-/// 而不是出生房间 —— 否则地图另一头的坠落会被瞬移回出生点。
+/// For the world-level fallback: when the center drops out of every room, clamp the
+/// player back into the **nearest** room rather than the spawn room -- otherwise a fall
+/// at the far end of the map would teleport back to the spawn point.
 pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
     let mut best = 0;
     let mut best_d: Option<i64> = None;
@@ -1163,13 +1232,13 @@ pub(crate) fn nearest_room(rooms: &[Room], point: Vec2) -> &Room {
     &rooms[best]
 }
 
-/// 画一层瓦片：每块瓦片按自己的 tile id 查 tileset 定义，
-/// 由 autotiler 的邻接匹配给出它在 tileset 纹理里的 `(col, row)`。
+/// Draw one tile layer: each tile looks up its tileset definition by its own tile id,
+/// and the autotiler's adjacency matching gives its `(col, row)` in the tileset texture.
 ///
-/// 一次房间可能混多种 tileset（如 `1` = dirt、`3` = snow），所以
-/// `(atlas_id, tex_size)` 是**每块瓦片**的，不是每层一份。
-/// `push_tiles` 的环境参数打包（clippy `too_many_arguments`：这五项总是
-/// 一起传，本来就该是一个上下文）。
+/// A room may mix several tilesets (e.g. `1` = dirt, `3` = snow), so `(atlas_id,
+/// tex_size)` is per **tile**, not one per layer. This bundles `push_tiles`'s ambient
+/// parameters (clippy `too_many_arguments`: these five are always passed together and
+/// really should be one context).
 struct TileDrawCtx<'a> {
     layer: Layer,
     tint: [f32; 4],
@@ -1184,14 +1253,15 @@ fn push_tiles(
     defs: &releste_map::TilesetsDoc,
     ctx: TileDrawCtx<'_>,
 ) {
-    // 一次性算好每块瓦片的 (col, row)（位置哈希选变体，确定性）。
+    // Compute every tile's (col, row) once up front (position hash picks the variant;
+    // deterministic).
     let coords = releste_map::autotiler::generate(tiles, defs);
 
     for ty in 0..tiles.height {
         for tx in 0..tiles.width {
             let value = tiles.get(tx, ty).unwrap_or(0);
             if value == 0 {
-                continue; // 0 = 空
+                continue; // 0 = empty
             }
             let id = releste_map::tile_char(value);
             let Some(def) = defs.def(id) else {
@@ -1215,7 +1285,7 @@ fn push_tiles(
             };
             let atlas_id = sprites::group_id(&ctx.session.atlas, group);
             let Some((tw, th)) = ctx.gpu.texture_size(atlas_id) else {
-                continue; // 纹理没上传（未转码的 .data），load_atlas 已告警
+                continue; // texture not uploaded (unconverted .data); load_atlas already warned
             };
             let (col, row) = coords[(ty as usize) * (tiles.width as usize) + (tx as usize)];
             let cell = sprites::tile_cell(sprite, col, row);
@@ -1234,19 +1304,21 @@ fn push_tiles(
     }
 }
 
-/// 原版的初始房间与出生点，三步都有出处：
+/// Vanilla's starting room and spawn point, each step with provenance:
 ///
-/// 1. **初始房间**：`pureCeleste.cs:112564` `MapData.StartLevel() =>
-///    GetAt(Vector2.Zero)` —— 包含**世界原点 (0,0)** 的第一个房间
-///    （`GetAt` 112569 按序做 Bounds 包含判定，无命中返回 null；
-///    这里回落到第一个房间并告警，属引擎健壮性差异）。
-/// 2. **出生点**：`115101` `Session.RespawnPoint = DefaultSpawnPoint`，
-///    `114080` `DefaultSpawnPoint => Spawns.ClosestTo((Bounds.Left, Bounds.Bottom))`
-///    （`101280` `GetSpawnPoint`）—— 离房间**左下角**最近的出生点。
-/// 3. **锚点语义**：`115105` `new Player(Session.RespawnPoint.Value, ...)`
-///    —— 出生点是 hitbox **底中心**（脚，见 `player::PLAYER_H_PX`）。
+/// 1. **Starting room**: `pureCeleste.cs:112564` `MapData.StartLevel() =>
+///    GetAt(Vector2.Zero)` -- the first room containing the **world origin (0,0)**
+///    (`GetAt`, 112569, tests Bounds containment in order and returns null when nothing
+///    matches; here it falls back to the first room and warns, an engine robustness
+///    difference).
+/// 2. **Spawn point**: `115101` `Session.RespawnPoint = DefaultSpawnPoint`, `114080`
+///    `DefaultSpawnPoint => Spawns.ClosestTo((Bounds.Left, Bounds.Bottom))` (`101280`
+///    `GetSpawnPoint`) -- the spawn point closest to the room's **bottom-left corner**.
+/// 3. **Anchor semantics**: `115105` `new Player(Session.RespawnPoint.Value, ...)` --
+///    the spawn point is the hitbox **bottom center** (feet, see
+///    `player::PLAYER_H_PX`).
 ///
-/// 返回 `(锚点, 房间名)`；锚点供 service 换算成 hitbox 左上角。
+/// Returns `(anchor, room name)`; the service converts the anchor to a hitbox top-left.
 fn vanilla_start(doc: &MapDocument) -> (Vec2, String) {
     let origin = Vec2::from_f32s(0.0, 0.0);
     let room = doc
@@ -1260,12 +1332,14 @@ fn vanilla_start(doc: &MapDocument) -> (Vec2, String) {
             doc.rooms.first()
         });
     let Some(room) = room else {
-        // `Session::load` 已保证 rooms 非空；到这里必然有回落，仅保险。
+        // `Session::load` already guarantees rooms is non-empty; we always fall back
+        // here, this is just insurance.
         return (Vec2::ZERO, String::new());
     };
 
-    // Spawns.ClosestTo((Bounds.Left, Bounds.Bottom))：出生点 = player 实体
-    // 中离房间左下角最近的那个（转换器把 .bin 的 Spawns 落成 player 实体）。
+    // Spawns.ClosestTo((Bounds.Left, Bounds.Bottom)): the spawn point is the player
+    // entity nearest the room's bottom-left corner (the converter lowers .bin Spawns to
+    // player entities).
     let corner = Vec2::from_f32s(room.bounds.x, room.bounds.y + room.bounds.h);
     let mut best: Option<(Vec2, i64)> = None;
     for e in &room.entities {
@@ -1314,9 +1388,10 @@ mod tests {
     use releste_render::atlas::{AtlasDescriptor, SpriteAtlas};
     use std::path::Path;
 
-    /// 复刻 0-Intro 的接缝几何：`lvl_-1`（x[-368,-48]）与 `lvl_0`
-    /// （x[-48,400]）贴边，y 都是 [0,184]。全部内存构造 —— nix/CI 的
-    /// 构建源只含 git 跟踪文件，`assets/` 不存在，测试不能依赖它。
+    /// Reproduces 0-Intro's seam geometry: `lvl_-1` (x[-368,-48]) and `lvl_0`
+    /// (x[-48,400]) are flush, both with y in [0,184]. Built entirely in memory --
+    /// nix/CI build sources contain only git-tracked files, `assets/` does not exist,
+    /// and tests must not depend on it.
     fn seam_session() -> Session {
         let room = |name: &str, x: f32, w: f32| Room {
             name: name.into(),
@@ -1361,16 +1436,18 @@ mod tests {
         }
     }
 
-    /// `room_at` 必须用 hitbox **中心**选房间，而不是角点。
+    /// `room_at` must pick the room by the hitbox **center**, not a corner.
     ///
-    /// 回归：两间贴边房间里，出生点的中心在左间，但旧实现拿
-    /// 角点/重复补偿后的点去查，会跨进右间 —— 标题栏房间名错、
-    /// 热重载的"玩家不在任何房间"告警误报。
+    /// Regression: with two flush rooms, the spawn center is in the left room, but the
+    /// old implementation queried with the corner / a duplicate-compensated point and
+    /// crossed into the right room -- the title-bar room name was wrong and the
+    /// hot-reload "player is not in any room" warning fired spuriously.
     #[test]
     fn room_at_uses_the_hitbox_centre() {
         let session = seam_session();
 
-        // 出生点：中心 (-52, 140) 在 lvl_-1；右下角点正好压在接缝上。
+        // Spawn point: its center (-52, 140) is in lvl_-1; the bottom-right corner sits
+        // exactly on the seam.
         let spawn = Vec2::from_f32s(-56.0, 136.0);
         assert_eq!(
             session.room_at(spawn).name,
@@ -1378,7 +1455,7 @@ mod tests {
             "the spawn centre is inside lvl_-1, not the room across the seam"
         );
 
-        // 中心真正进了 lvl_0（pos.x > -52）才切换房间。
+        // The room switches only once the center actually enters lvl_0 (pos.x > -52).
         let crossed = Vec2::from_f32s(-51.0, 136.0);
         assert_eq!(
             session.room_at(crossed).name,
@@ -1386,7 +1463,8 @@ mod tests {
             "once the centre crosses the seam the room switches"
         );
 
-        // 中心正好压在接缝上：文件序靠前的房间赢（lvl_-1 在前）。
+        // Center exactly on the seam: the room earlier in file order wins (lvl_-1 is
+        // first).
         let on_seam = Vec2::from_f32s(-52.0, 136.0);
         assert_eq!(
             session.room_at(on_seam).name,
@@ -1395,9 +1473,9 @@ mod tests {
         );
     }
 
-    /// 房间过滤 + 转场可见性语义（原版 `Backdrop.Update`，
-    /// `pureCeleste.cs:109468-109489`；`IsVisible` 的 `OnlyIn` /
-    /// `ExcludeFrom` 分支，109456-109465）。
+    /// Room filtering + transition visibility semantics (vanilla `Backdrop.Update`,
+    /// `pureCeleste.cs:109468-109489`; `IsVisible`'s `OnlyIn` / `ExcludeFrom` branches,
+    /// 109456-109465).
     #[test]
     fn backdrop_room_filter_and_transition_visibility() {
         let mut session = seam_session();
@@ -1407,24 +1485,26 @@ mod tests {
         only.only_in = vec!["lvl_0".into()];
         session.doc.style.backgrounds = vec![excluded, only];
 
-        // 非转场：直接跟 IsVisible。
+        // Not transitioning: follow IsVisible directly.
         session.update_backdrop_visibility("lvl_-1", false);
         let vis = session.backdrop_visible.borrow();
         assert!(vis[0], "excluded=lvl_0 must show in lvl_-1");
         assert!(!vis[1], "only_in=lvl_0 must hide in lvl_-1");
         drop(vis);
 
-        // 转场切进 lvl_0：InstantIn 默认 true → 命中的图立即可见；
-        // 未命中的图没有 InstantOut → **保留**上一帧的可见（原版
-        // Update 在转场期间只做这两个检查，其余不动，109470-109483）。
+        // Transition into lvl_0: InstantIn defaults to true -> matching images become
+        // visible immediately; non-matching images have no InstantOut -> they **keep**
+        // the previous frame's visibility (vanilla Update does only these two checks
+        // during a transition and leaves the rest untouched, 109470-109483).
         session.update_backdrop_visibility("lvl_0", true);
         let vis = session.backdrop_visible.borrow();
         assert!(vis[0], "without InstantOut the excluded backdrop lingers");
         assert!(vis[1], "only_in=lvl_0 must appear instantly (InstantIn)");
         drop(vis);
 
-        // 转场**切出**到过滤命中的房间时默认 InstantOut=false → 保留到
-        // 转场结束：from lvl_0 看 only 图，转入 lvl_-1 的转场期间仍可见。
+        // When transitioning **out** of a room where the filter matched, InstantOut
+        // defaults to false -> keep it until the transition ends: the only_in image seen
+        // from lvl_0 stays visible during the transition into lvl_-1.
         session.update_backdrop_visibility("lvl_0", false);
         session.update_backdrop_visibility("lvl_-1", true);
         let vis = session.backdrop_visible.borrow();
@@ -1438,7 +1518,7 @@ mod tests {
         assert!(!vis[1], "after the transition IsVisible wins again");
     }
 
-    /// 造一条 `parallax` backdrop。
+    /// Build a `parallax` backdrop.
     fn parallax_bd(x: f32, y: f32, scroll: (f32, f32), loops: (bool, bool)) -> Backdrop {
         let mut bd = Backdrop::new("parallax");
         bd.x = x;
@@ -1450,24 +1530,26 @@ mod tests {
         bd
     }
 
-    /// 0-Intro `bg0` 的真实参数（`x=-24 y=-64 scroll=(0.15,0.05) loopx`），
-    /// 纹理 320×137（`Gameplay.atlas` 的 `bgs\00\bg0`）：
-    /// 起点经 `Position − Floor(cam)*Scroll` 折算后必须覆盖整个 320 宽屏，
-    /// 且 `loopy=false` 时只有一行——与 `Parallax.Render` 112185-112234 一致。
+    /// 0-Intro `bg0`'s real parameters (`x=-24 y=-64 scroll=(0.15,0.05) loopx`), texture
+    /// 320x137 (`bgs\00\bg0` in `Gameplay.atlas`): after converting the origin through
+    /// `Position - Floor(cam)*Scroll` it must cover the whole 320-wide screen, and with
+    /// `loopy=false` there is only one row -- consistent with `Parallax.Render`
+    /// 112185-112234.
     #[test]
     fn parallax_loop_x_without_loop_y_tiles_one_row() {
         let bd = parallax_bd(-24.0, -64.0, (0.15, 0.05), (true, false));
         let tiles = parallax_tiles(&bd, (176.9, 92.2), (320.0, 137.0), (320.0, 180.0));
 
-        // Floor(cam) = (176, 92) → px = Floor(-24 - 26.4) = -51、
-        // py = Floor(-64 - 4.6) = -69；loopx 折回是原版的两段 while
-        // （先 <0 加、再 >0 减，112185-112195）→ -51 原样返回。
+        // Floor(cam) = (176, 92) -> px = Floor(-24 - 26.4) = -51 and
+        // py = Floor(-64 - 4.6) = -69; the loopx fold is vanilla's two while loops
+        // (first <0 add, then >0 subtract, 112185-112195) -> -51 is returned unchanged.
         assert_eq!(
             tiles,
             vec![(-51.0, -69.0), (269.0, -69.0)],
             "two columns of one row: -51..269 and 269..589 cover the 320px screen"
         );
-        // 覆盖性：每列 320 宽，首列尾 = -51+320 = 269 ≤ 320 屏右缘被盖住。
+        // Coverage: each column is 320 wide; the first column's end = -51+320 = 269 <=
+        // 320, so the screen's right edge is covered.
         for (x, y) in &tiles {
             assert!(*y < 180.0, "row must start on screen (y={y})");
             assert!(
@@ -1477,24 +1559,26 @@ mod tests {
         }
     }
 
-    /// 双轴 loop（`purplesunset` 参数形态：`loopx/loopy` 都开）必须铺满
-    /// 320×180，且起点折进 `[0, 宽)`/`[0, 高)`。
+    /// A double-axis loop (`purplesunset`'s parameter shape: both `loopx/loopy` on) must
+    /// cover 320x180, with the origin folded into `[0, width)` / `[0, height)`.
     #[test]
     fn parallax_double_loop_covers_the_whole_screen() {
         let bd = parallax_bd(0.0, 0.0, (0.5, 0.5), (true, true));
         let tiles = parallax_tiles(&bd, (320.0, 180.0), (160.0, 90.0), (320.0, 180.0));
 
-        // Floor(0 − 160*0.5) = -160 → 折回 0；y 同理 → 网格 (0,0)/(160,90) 起步。
+        // Floor(0 - 160*0.5) = -160 -> folds back to 0; likewise for y -> the grid
+        // starts at (0,0)/(160,90).
         assert_eq!(
             tiles,
             vec![(0.0, 0.0), (0.0, 90.0), (160.0, 0.0), (160.0, 90.0)]
         );
-        // 每片 160×90 → 2×2 正好盖满 320×180。
+        // Each piece is 160x90 -> 2x2 exactly covers 320x180.
         assert!(tiles.iter().all(|(x, y)| *x < 320.0 && *y < 180.0));
     }
 
-    /// `for` 条件在前（`112220`/`112222`）：起点越界时该轴一片都不画；
-    /// 不越界且双轴都不 loop 时恰好画一片。
+    /// The `for` condition comes first (`112220`/`112222`): when the origin is
+    /// off-screen that axis draws nothing; when it is on-screen and neither axis loops,
+    /// exactly one piece is drawn.
     #[test]
     fn parallax_start_off_screen_draws_nothing() {
         let off = parallax_bd(400.0, 10.0, (1.0, 1.0), (false, false));
@@ -1511,8 +1595,8 @@ mod tests {
         );
     }
 
-    /// 颜色：全零 = 原版默认白（`112789`/`effective_color`）；
-    /// `alpha` 属性折进 Color（`112798-112804` `Color *= alpha`）。
+    /// Color: all-zero = vanilla's default white (`112789`/`effective_color`); the
+    /// `alpha` attribute folds into Color (`112798-112804` `Color *= alpha`).
     #[test]
     fn backdrop_tint_matches_parse_semantics() {
         let mut bd = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
@@ -1522,17 +1606,18 @@ mod tests {
             "unset color falls back to white"
         );
 
-        bd.color = [140, 140, 140, 140]; // `alpha=0.55` × 白，0-Intro 的 bg0
+        bd.color = [140, 140, 140, 140]; // `alpha=0.55` x white, 0-Intro's bg0
         let tint = backdrop_tint(&bd);
         for c in tint {
             assert!((c - 140.0 / 255.0).abs() < 1e-6, "tint channel {c}");
         }
     }
 
-    /// 垂线：`Wire.Render` 逐段画，段首尾相连、总长 ≥ 两端直线距离；
-    /// 两端点必须落在曲线两端（`GetPoint(0)=Begin`、`GetPoint(1)=End`，
-    /// `SimpleCurve.cs:22-28`），且中点向下偏 12px（下垂 24 的贝塞尔在
-    /// t=0.5 处恰好一半：`((24+24+0)/4)`）。
+    /// Wire: `Wire.Render` draws segment by segment, the segments join end to end and
+    /// their total length is >= the straight-line distance between the ends; the two end
+    /// points must land on the curve's ends (`GetPoint(0)=Begin`, `GetPoint(1)=End`,
+    /// `SimpleCurve.cs:22-28`), and the midpoint sags 12px (a Bezier sagged 24 is exactly
+    /// half at t=0.5: `((24+24+0)/4)`).
     #[test]
     fn wire_segments_walk_the_bezier_end_to_end() {
         let from = (100.0f32, 50.0f32);
@@ -1547,7 +1632,8 @@ mod tests {
             "the first segment starts at Begin"
         );
 
-        // 逐段拼接：上一段起点 + 长度/角度 = 下一段起点。
+        // Segment stitching: previous segment's start + length/angle = next segment's
+        // start.
         let mut cursor = from;
         for (start, len, angle) in &segs {
             assert!(
@@ -1561,7 +1647,7 @@ mod tests {
             "the chain must land on End: {cursor:?}"
         );
 
-        // 下垂：曲线最低点（t=0.5）比两端低 12px。
+        // Sag: the curve's lowest point (t=0.5) is 12px below the ends.
         let mid = (from.0 + to.0) / 2.0;
         let sag = segs
             .iter()
@@ -1578,12 +1664,13 @@ mod tests {
         );
     }
 
-    /// 桥面逐格推进的步进必须和原版一致（`107719-107729`）：每格 8px 或
-    /// 16px，总和 = `width`；缺口内的格子被跳过，但游标照走。
+    /// The deck's cell stepping must match vanilla (`107719-107729`): each cell is 8px
+    /// or 16px and the total = `width`; cells inside the gap are skipped but the cursor
+    /// still advances.
     #[test]
     fn bridge_cells_step_like_vanilla_and_skip_the_gap() {
-        // 0-Intro `lvl_3` 的真实数据（`dump_rooms`）：局部队位 (64,128)、
-        // `width` 840、节点 (496,112) / (528,120) → 缺口 room x 496..528。
+        // 0-Intro `lvl_3`'s real data (`dump_rooms`): local position (64,128),
+        // `width` 840, nodes (496,112) / (528,120) -> gap at room x 496..528.
         let start = 64.0f32;
         let width = 840i32;
         let gap = (496.0, 528.0);
@@ -1594,13 +1681,15 @@ mod tests {
             assert!((cx - x).abs() < 1e-4, "cursor drift: {cx} vs {x}");
             x += *w as f32;
         }
-        // 游标走满整宽 —— 缺口只是不生成格子。
+        // The cursor traverses the whole width -- the gap only means no cells are
+        // generated.
         assert!(
             (x - (start + width as f32)).abs() <= 16.0,
             "cursor should reach the far end, got {x}"
         );
 
-        // 不可见的格子全部落在缺口里，且缺口两侧都有可见格子。
+        // All invisible cells fall in the gap, and there are visible cells on both sides
+        // of it.
         for (cx, _, w, _, visible) in &cells {
             if !*visible {
                 assert!(
@@ -1627,7 +1716,7 @@ mod tests {
             "the gap must skip at least one cell"
         );
 
-        // 图内 x 只能取 11 个尺寸表里的值。
+        // The image x may only take values from the 11-entry size table.
         for (_, cell_x, w, h, _) in &cells {
             assert!(
                 BRIDGE_TILE_SIZES
@@ -1638,8 +1727,8 @@ mod tests {
         }
     }
 
-    /// 16px 端头竖切 24 + 12 + 12 + …，其余整条；两者都抹平到 y = -8
-    /// （`BridgeTile`，`107854-107878`）。
+    /// A 16px end cap is cut vertically into 24 + 12 + 12 + ..., the rest is one strip;
+    /// both flatten to y = -8 (`BridgeTile`, `107854-107878`).
     #[test]
     fn bridge_tile_strips_split_wide_ends_only() {
         let wide = bridge_tile_strips(0, 16, 52);

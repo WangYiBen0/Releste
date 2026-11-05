@@ -1,9 +1,9 @@
 //! Scanning, loading, and frame-boundary unload.
 //!
-//! The scan is driven entirely by `plugin.toml` — nothing is `dlopen`ed until a
+//! The scan is driven entirely by `plugin.toml` -- nothing is `dlopen`ed until a
 //! plugin has been chosen for loading. One broken plugin must never hide the
 //! other N: every failure is a `[WARN]` plus a skipped entry, and the host
-//! keeps running (ROADMAP Appendix C rule 8, AGENTS.md §15.8/§15.9).
+//! keeps running (ROADMAP Appendix C rule 8, AGENTS.md 15.8/15.9).
 
 use std::collections::BTreeMap;
 use std::ffi::CStr;
@@ -102,7 +102,7 @@ impl Loaded {
 
 /// The host: a scanner, a loader, and a registry of live fibers.
 ///
-/// All mutation happens between frames — [`PluginHost::tick`] is the boundary
+/// All mutation happens between frames -- [`PluginHost::tick`] is the boundary
 /// at which loads and unloads are actually allowed to take effect.
 pub struct PluginHost {
     root: PathBuf,
@@ -357,7 +357,7 @@ impl PluginHost {
     /// Drain queued unloads. Call this at a frame boundary.
     ///
     /// The plugin's `unload()` runs first, then its disposers in LIFO order,
-    /// then its capabilities are revoked — so a dependent fiber observing the
+    /// then its capabilities are revoked -- so a dependent fiber observing the
     /// registry never sees a half-torn plugin.
     pub fn drain_unloads(&mut self) {
         let pending: Vec<String> = std::mem::take(&mut self.pending_unloads);

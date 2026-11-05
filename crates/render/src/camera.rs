@@ -72,14 +72,14 @@ impl Camera {
         half / self.zoom
     }
 
-    /// World coordinates → base screen coordinates.
+    /// World coordinates -> base screen coordinates.
     pub fn world_to_screen(&self, world: Vec2) -> Vec2 {
         // Center on the camera, apply zoom, then translate to a top-left origin.
         let rel = (world - self.position) * self.zoom;
         rel + Vec2::new(self.base_width(), self.base_height()) * Fx::from_ratio(1, 2)
     }
 
-    /// Base screen coordinates → world coordinates.
+    /// Base screen coordinates -> world coordinates.
     pub fn screen_to_world(&self, screen: Vec2) -> Vec2 {
         let half = Vec2::new(self.base_width(), self.base_height()) * Fx::from_ratio(1, 2);
         (screen - half) / self.zoom + self.position
@@ -91,7 +91,7 @@ impl Camera {
         Rect::new(self.position - half, self.position + half)
     }
 
-    /// Base coordinates → normalized device coordinates (NDC, `-1..1`) for a viewport.
+    /// Base coordinates -> normalized device coordinates (NDC, `-1..1`) for a viewport.
     ///
     /// `viewport` is `(width, height)` in pixels.
     pub fn base_to_ndc(&self, base: Vec2, viewport: (u32, u32)) -> (f32, f32) {
@@ -107,18 +107,18 @@ impl Camera {
         let px = offset_x + base.x.to_f32() * scale;
         let py = offset_y + base.y.to_f32() * scale;
 
-        // Screen space (y down) → NDC (y up)
+        // Screen space (y down) -> NDC (y up)
         let ndc_x = (px / vw) * 2.0 - 1.0;
         let ndc_y = 1.0 - (py / vh) * 2.0;
         (ndc_x, ndc_y)
     }
 
-    /// World coordinates → NDC (skips the intermediate base coordinates for direct vertex use).
+    /// World coordinates -> NDC (skips the intermediate base coordinates for direct vertex use).
     pub fn world_to_ndc(&self, world: Vec2, viewport: (u32, u32)) -> (f32, f32) {
         self.base_to_ndc(self.world_to_screen(world), viewport)
     }
 
-    /// Size scale from world units → NDC (used to compute a sprite's NDC width/height).
+    /// Size scale from world units -> NDC (used to compute a sprite's NDC width/height).
     pub fn world_size_to_ndc(&self, size: Vec2, viewport: (u32, u32)) -> (f32, f32) {
         let vw = viewport.0.max(1) as f32;
         let vh = viewport.1.max(1) as f32;
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn letterbox_preserves_aspect_on_wide_viewport() {
         let cam = Camera::at(Vec2::ZERO);
-        // Viewport wider than 16:9 → black bars on the sides, center stays centered
+        // Viewport wider than 16:9 -> black bars on the sides, center stays centered
         let (x, _y) = cam.world_to_ndc(Vec2::ZERO, (1000, 360));
         assert!(x.abs() < 1e-5);
     }

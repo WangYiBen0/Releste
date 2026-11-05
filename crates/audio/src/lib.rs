@@ -1,14 +1,15 @@
-//! `releste-audio`: FMOD 封装与音频混音。
+//! `releste-audio`: FMOD wrapper and audio mixing.
 //!
-//! # FMOD 动态库由用户提供（AGENTS.md §4.7）
-//! 不 vendor FMOD 二进制。`fmod` feature 关闭时，混音层仍可用
-//! （headless / 测试 / 无音频设备环境），并给出清晰错误。
+//! # The FMOD shared library is provided by the user (AGENTS.md 4.7)
+//! FMOD binaries are not vendored. With the `fmod` feature off, the mixing layer
+//! stays usable (headless / tests / environments without an audio device) and
+//! reports a clear error.
 //!
-//! # 分层
-//! - [`command`]：音频请求（播放 / 停止 / 音量）。
-//! - [`mixer`]：总线音量、同帧去重、优先级抢占（纯逻辑，有测试）。
-//! - `fmod_backend`：真实 FMOD 调用（`fmod` feature，默认关闭）。
-//! - [`AudioManager`]：Service 包装。
+//! # Layering
+//! - [`command`]: audio requests (play / stop / volume).
+//! - [`mixer`]: bus volumes, same-frame deduplication, priority preemption (pure logic, tested).
+//! - `fmod_backend`: real FMOD calls (the `fmod` feature, off by default).
+//! - [`AudioManager`]: the Service wrapper.
 
 #![deny(warnings)]
 
@@ -29,10 +30,10 @@ pub use fmod_studio::FmodStudio;
 pub use command::{AudioRequest, Bus, SoundHandle, SoundPriority};
 pub use mixer::{AudioBackend, Mixer, MixerStats, NullBackend};
 
-/// Audio 的 ServiceId。
+/// The ServiceId for audio.
 pub const SERVICE_ID: &str = "audio";
 
-/// FMOD 库缺失时的说明（AGENTS.md §4.7 指定的格式）。
+/// The message when the FMOD library is missing (the format specified by AGENTS.md 4.7).
 pub const FMOD_NOT_FOUND_MESSAGE: &str = "\
 error: FMOD library not found.
 Download from https://www.fmod.com/download
@@ -41,12 +42,12 @@ Place libfmod.so / fmod.dll / libfmod.dylib in:
   - Windows: alongside the .exe
   - macOS: /usr/local/lib/ or DYLD_LIBRARY_PATH";
 
-/// 音频错误。
+/// Audio error.
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
     #[error("{0}")]
     FmodNotFound(String),
-    /// 找到了库但无法使用（位数不匹配、无可识别符号等）。
+    /// The library was found but cannot be used (bitness mismatch, no recognizable symbols, and so on).
     #[error("{0}")]
     FmodUnusable(String),
     #[error("failed to initialise FMOD: {0}")]
@@ -59,45 +60,45 @@ pub enum AudioError {
     BackendUnavailable,
 }
 
-/// 音频服务。
+/// Audio service.
 ///
-/// 所有游戏侧的音频请求都经过 [`AudioManager::request`]，
-/// 由 [`Mixer`] 做去重 / 优先级处理后再交给后端。
+/// Every game-side audio request goes through [`AudioManager::request`], and the
+/// [`Mixer`] handles deduplication / priority before handing it to the backend.
 pub struct AudioManager {
     mixer: Mixer,
 }
 
 impl AudioManager {
-    /// 使用指定后端创建。
+    /// Creates with the given backend.
     pub fn new(backend: Box<dyn AudioBackend>) -> Self {
         AudioManager {
             mixer: Mixer::new(backend),
         }
     }
 
-    /// 无后端（静音）创建。
+    /// Creates without a backend (silent).
     ///
-    /// 用于 headless 测试与缺少 FMOD 的环境。
+    /// For headless tests and environments without FMOD.
     pub fn silent() -> Self {
         Self::new(Box::new(NullBackend::new()))
     }
 
-    /// 提交一条音频请求。
+    /// Submits one audio request.
     pub fn request(&mut self, req: AudioRequest) -> Result<SoundHandle, AudioError> {
         self.mixer.submit(req)
     }
 
-    /// 每帧推进（处理延迟释放、去重窗口重置）。
+    /// Advances one frame (handles deferred release and dedup-window reset).
     pub fn tick(&mut self) {
         self.mixer.tick();
     }
 
-    /// 混音统计。
+    /// Mixing statistics.
     pub fn stats(&self) -> &MixerStats {
         self.mixer.stats()
     }
 
-    /// 后端（可变）。
+    /// The backend (mutable).
     pub fn backend_mut(&mut self) -> &mut dyn AudioBackend {
         self.mixer.backend_mut()
     }

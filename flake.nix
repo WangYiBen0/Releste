@@ -1,5 +1,5 @@
 {
-  description = "Releste — a from-scratch rewrite of a 2D precision platformer engine";
+  description = "Releste - a from-scratch rewrite of a 2D precision platformer engine";
 
   # Inputs are pinned by flake.lock, which is committed. Do NOT put revisions
   # in these URLs: that duplicates what the lock already guarantees and turns

@@ -1,4 +1,4 @@
-//! egui 界面：把 [`Editor`] 模型渲染成编辑器 UI。
+//! egui interface: renders the [`Editor`] model as the editor UI.
 
 use egui::{Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2 as EguiVec2};
 
@@ -8,28 +8,28 @@ use releste_world::{FieldValue, Schema};
 use crate::model::{Editor, Selection};
 use crate::schema_panel::{SchemaPanel, WidgetKind};
 
-/// 一个 tile 在画布上的像素尺寸。
+/// Pixel size of one tile on the canvas.
 pub const TILE_PX: f32 = 16.0;
 
-/// UI 状态（不属于文档，因此不进撤销栈）。
+/// UI state (not part of the document, so it is not in the undo stack).
 pub struct EditorUi {
-    /// 当前画笔的 tile 值。
-    /// 画笔的 tile 值。
+    /// Current brush tile value.
+    /// The brush tile value.
     ///
-    /// `u16`：装饰层下标能到 352（整张 `tilesets/scenery` 的扁平下标），
-    /// `u8` 装不下。
+    /// `u16`: decoration-layer indices go up to 352 (the flat index across the
+    /// whole `tilesets/scenery`), which does not fit in `u8`.
     pub brush: u16,
-    /// 当前放置的实体种类。
+    /// Entity kind currently being placed.
     pub entity_kind: String,
-    /// 画布缩放。
+    /// Canvas zoom.
     pub zoom: f32,
-    /// 画布平移。
+    /// Canvas pan.
     pub pan: egui::Vec2,
-    /// 状态栏消息。
+    /// Status bar message.
     pub status: String,
-    /// 正在绘制的起点（用于矩形填充）。
+    /// Origin of the current paint stroke (used for rectangle fills).
     paint_origin: Option<(u32, u32)>,
-    /// 每个实体种类的表单（缓存，避免每帧重编译）。
+    /// Form per entity kind (cached to avoid recompiling every frame).
     panels: std::collections::HashMap<String, SchemaPanel>,
 }
 
@@ -40,7 +40,7 @@ impl Default for EditorUi {
             entity_kind: "player".into(),
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
-            status: "就绪".into(),
+            status: "Ready".into(),
             paint_origin: None,
             panels: std::collections::HashMap::new(),
         }
@@ -48,19 +48,19 @@ impl Default for EditorUi {
 }
 
 impl EditorUi {
-    /// 新建。
+    /// Creates a new one.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 注册某实体种类的 Schema（首次遇到时编译）。
+    /// Registers the Schema for an entity kind (compiled on first encounter).
     pub fn register_schema(&mut self, kind: &str, schema: &Schema) {
         self.panels
             .entry(kind.to_string())
             .or_insert_with(|| SchemaPanel::compile(kind, schema));
     }
 
-    /// 渲染整个界面。
+    /// Renders the whole interface.
     pub fn show(&mut self, ctx: &egui::Context, editor: &mut Editor) {
         self.menu_bar(ctx, editor);
         egui::SidePanel::left("rooms").show(ctx, |ui| self.room_panel(ui, editor));
@@ -72,74 +72,74 @@ impl EditorUi {
                 ui.label(&self.status);
                 ui.separator();
                 let dirty = if editor.is_dirty() {
-                    "未保存*"
+                    "Unsaved*"
                 } else {
-                    "已保存"
+                    "Saved"
                 };
                 ui.label(dirty);
                 ui.separator();
                 if let Some(p) = editor.path() {
                     ui.label(p.display().to_string());
                 } else {
-                    ui.label("(未命名)");
+                    ui.label("(untitled)");
                 }
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| self.canvas(ui, editor));
     }
 
-    /// 菜单栏。
+    /// Menu bar.
     fn menu_bar(&mut self, ctx: &egui::Context, editor: &mut Editor) {
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("文件", |ui| {
-                    if ui.button("新建").clicked() {
+                ui.menu_button("File", |ui| {
+                    if ui.button("New").clicked() {
                         *editor = Editor::new();
-                        self.status = "新建地图".into();
+                        self.status = "New map".into();
                         ui.close_menu();
                     }
-                    if ui.button("打开…").clicked() {
-                        self.status = "打开：请通过命令行传入路径".into();
+                    if ui.button("Open...").clicked() {
+                        self.status = "Open: pass a path on the command line".into();
                         ui.close_menu();
                     }
-                    if ui.button("保存").clicked() {
+                    if ui.button("Save").clicked() {
                         match editor.save() {
-                            Ok(()) => self.status = "已保存".into(),
-                            Err(e) => self.status = format!("保存失败：{e}"),
+                            Ok(()) => self.status = "Saved".into(),
+                            Err(e) => self.status = format!("Save failed: {e}"),
                         }
                         ui.close_menu();
                     }
-                    if ui.button("另存为…").clicked() {
-                        self.status = "另存为：请通过命令行传入路径".into();
+                    if ui.button("Save As...").clicked() {
+                        self.status = "Save As: pass a path on the command line".into();
                         ui.close_menu();
                     }
                 });
 
-                ui.menu_button("编辑", |ui| {
+                ui.menu_button("Edit", |ui| {
                     let can_undo = editor.undo_len() > 0;
                     let label = editor
                         .undo_label()
-                        .map(|l| format!("撤销 {l}"))
-                        .unwrap_or_else(|| "撤销".to_string());
+                        .map(|l| format!("Undo {l}"))
+                        .unwrap_or_else(|| "Undo".to_string());
                     if ui.add_enabled(can_undo, egui::Button::new(label)).clicked() {
                         if let Err(e) = editor.undo() {
-                            self.status = format!("撤销失败：{e}");
+                            self.status = format!("Undo failed: {e}");
                         }
                         ui.close_menu();
                     }
                     if ui
-                        .add_enabled(editor.redo_len() > 0, egui::Button::new("重做"))
+                        .add_enabled(editor.redo_len() > 0, egui::Button::new("Redo"))
                         .clicked()
                     {
                         if let Err(e) = editor.redo() {
-                            self.status = format!("重做失败：{e}");
+                            self.status = format!("Redo failed: {e}");
                         }
                         ui.close_menu();
                     }
                 });
 
-                ui.menu_button("房间", |ui| {
-                    if ui.button("新增房间").clicked() {
+                ui.menu_button("Room", |ui| {
+                    if ui.button("Add room").clicked() {
                         let name = format!("room_{}", editor.document().rooms.len());
                         let room = releste_map::Room {
                             name,
@@ -162,9 +162,9 @@ impl EditorUi {
                         match editor.add_room(room) {
                             Ok(i) => {
                                 let _ = editor.set_current_room(i);
-                                self.status = "已新增房间".into();
+                                self.status = "Room added".into();
                             }
-                            Err(e) => self.status = format!("新增失败：{e}"),
+                            Err(e) => self.status = format!("Add failed: {e}"),
                         }
                         ui.close_menu();
                     }
@@ -173,9 +173,9 @@ impl EditorUi {
         });
     }
 
-    /// 左侧：房间列表 + 画笔 / 实体调色板。
+    /// Left side: room list + brush / entity palette.
     fn room_panel(&mut self, ui: &mut egui::Ui, editor: &mut Editor) {
-        ui.heading("房间");
+        ui.heading("Rooms");
         let rooms: Vec<String> = editor
             .document()
             .rooms
@@ -195,37 +195,37 @@ impl EditorUi {
             });
 
         ui.separator();
-        ui.heading("Tile 画笔");
-        ui.add(egui::Slider::new(&mut self.brush, 0..=35).text("tile 值"));
-        ui.label("左键绘制 · 拖动填充矩形 · 右键擦除");
+        ui.heading("Tile brush");
+        ui.add(egui::Slider::new(&mut self.brush, 0..=35).text("tile value"));
+        ui.label("Left click paints - drag to fill a rectangle - right click erases");
 
         ui.separator();
-        ui.heading("实体");
+        ui.heading("Entities");
         ui.text_edit_singleline(&mut self.entity_kind);
-        if ui.button("在当前房间中心放置").clicked() {
+        if ui.button("Place at current room center").clicked() {
             let kind = self.entity_kind.clone();
             let (x, y) = editor
                 .room()
                 .map(|r| (r.bounds.x + r.bounds.w / 2.0, r.bounds.y + r.bounds.h / 2.0))
                 .unwrap_or((0.0, 0.0));
-            // 稳定 ID 由地图作者/管线决定；编辑器用位置 + 种类散列占位。
+            // Stable IDs are decided by the map author / pipeline; the editor uses a placeholder hash of position + kind.
             let id = EntityId::generate(0, &kind, 0, x as i32, y as i32);
             let entity = releste_world::EntityData::new(kind, id, x, y);
             match editor.add_entity(entity) {
                 Ok(id) => {
                     editor.select(Selection::Entity(id));
-                    self.status = "已放置实体".into();
+                    self.status = "Entity placed".into();
                 }
-                Err(e) => self.status = format!("放置失败：{e}"),
+                Err(e) => self.status = format!("Place failed: {e}"),
             }
         }
     }
 
-    /// 右侧：Schema 驱动的属性面板。
+    /// Right side: the Schema-driven property panel.
     fn inspector_panel(&mut self, ui: &mut egui::Ui, editor: &mut Editor) {
-        ui.heading("检视器");
+        ui.heading("Inspector");
         let Some(id) = editor.selection().entity() else {
-            ui.label("未选中实体");
+            ui.label("No entity selected");
             return;
         };
 
@@ -235,14 +235,14 @@ impl EditorUi {
                 .find(|e| e.id == id)
                 .map(|e| (e.kind.clone(), e.x, e.y, e.properties.clone()))
         }) else {
-            ui.label("选中的实体已不存在");
+            ui.label("The selected entity no longer exists");
             return;
         };
 
-        ui.label(format!("种类：{kind}"));
-        ui.label(format!("ID：{id}"));
+        ui.label(format!("Kind: {kind}"));
+        ui.label(format!("ID: {id}"));
 
-        // 位置：直接可编辑（每次改动进撤销栈）。
+        // Position: directly editable (each change goes on the undo stack).
         let mut nx = x;
         let mut ny = y;
         let changed = ui
@@ -259,14 +259,14 @@ impl EditorUi {
 
         ui.separator();
 
-        // 若已注册该种类的 Schema，生成表单；否则列出原始键值。
+        // If a Schema for this kind is registered, build a form; otherwise list the raw key-values.
         match self.panels.get_mut(&kind) {
             Some(panel) => {
                 for i in 0..panel.fields.len() {
                     let name = panel.fields[i].name.clone();
                     let widget = panel.fields[i].widget.clone();
 
-                    // 实体上的实际值优先（Schema 默认值只作回退）。
+                    // The entity's actual value wins (the Schema default is only a fallback).
                     if let Some(v) = props.get(&name) {
                         panel.fields[i].value = v.clone();
                     }
@@ -276,13 +276,13 @@ impl EditorUi {
                     if render_widget(ui, &name, &widget, &mut value) {
                         panel.fields[i].value = value.clone();
                         if let Err(e) = editor.set_entity_prop(id, &name, value) {
-                            self.status = format!("写入失败：{e}");
+                            self.status = format!("Write failed: {e}");
                         }
                     }
                 }
             }
             None => {
-                ui.label("（该种类未注册 Schema，显示原始属性）");
+                ui.label("(no Schema registered for this kind; showing raw properties)");
                 egui::Grid::new("raw_props").show(ui, |ui| {
                     for (k, v) in &props {
                         ui.label(k);
@@ -294,9 +294,9 @@ impl EditorUi {
         }
     }
 
-    /// 中间：tile 画布 + 实体标记。
+    /// Center: the tile canvas + entity markers.
     fn canvas(&mut self, ui: &mut egui::Ui, editor: &mut Editor) {
-        // 先快照渲染所需数据，之后才能可变借用 `editor`。
+        // Snapshot the data needed for rendering first, so `editor` can be mutably borrowed afterwards.
         let Some((tiles_w, tiles_h, filled, entities, selected_id)) = editor.room().map(|room| {
             let w = room.tiles.width.max(1) as usize;
             let h = room.tiles.height.max(1) as usize;
@@ -316,7 +316,7 @@ impl EditorUi {
                 .collect();
             (w, h, filled, entities, editor.selection().entity())
         }) else {
-            ui.centered_and_justified(|ui| ui.label("没有房间：请先新建一个"));
+            ui.centered_and_justified(|ui| ui.label("No room: create one first"));
             return;
         };
 
@@ -328,7 +328,7 @@ impl EditorUi {
             ui.allocate_painter(size.max(EguiVec2::splat(64.0)), Sense::click_and_drag());
         let origin = response.rect.min + self.pan;
 
-        // 背景
+        // Background
         painter.rect_filled(response.rect, 0.0, Color32::from_gray(24));
 
         // tiles
@@ -336,7 +336,7 @@ impl EditorUi {
             let x = idx % tiles_w;
             let y = idx / tiles_w;
             let rect = tile_rect(origin, x, y, self.zoom);
-            // 用 tile 值派生一个可区分的颜色（真实渲染由 releste-render 负责）。
+            // Derive a distinguishable color from the tile value (real rendering is releste-render's job).
             let hue = (*value as f32) / 36.0;
             painter.rect_filled(
                 rect,
@@ -349,7 +349,7 @@ impl EditorUi {
             );
         }
 
-        // 网格线
+        // Grid lines
         for x in 0..=tiles_w {
             let px = origin.x + x as f32 * TILE_PX * self.zoom;
             painter.line_segment(
@@ -365,7 +365,7 @@ impl EditorUi {
             );
         }
 
-        // 实体标记
+        // Entity markers
         for (id, ex, ey, ew, eh) in &entities {
             let rect = entity_rect(origin, *ex, *ey, *ew, *eh, self.zoom);
             let selected = selected_id == Some(*id);
@@ -384,7 +384,7 @@ impl EditorUi {
             );
         }
 
-        // 交互：绘制 / 擦除
+        // Interaction: paint / erase
         if let Some(pos) = response.interact_pointer_pos() {
             if let Some((tx, ty)) = screen_to_tile(origin, pos, self.zoom) {
                 let erase = ui.input(|i| i.pointer.secondary_down());
@@ -409,7 +409,7 @@ impl EditorUi {
             self.paint_origin = None;
         }
 
-        // 选中实体（tile 坐标 1:1 对应世界坐标）
+        // Select an entity (tile coordinates map 1:1 to world coordinates)
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 if let Some((tx, ty)) = screen_to_tile(origin, pos, self.zoom) {
@@ -426,14 +426,14 @@ impl EditorUi {
     }
 }
 
-/// tile 在屏幕上的矩形。
+/// A tile's rectangle on screen.
 fn tile_rect(origin: Pos2, x: usize, y: usize, zoom: f32) -> EguiRect {
     let s = TILE_PX * zoom;
     let min = Pos2::new(origin.x + x as f32 * s, origin.y + y as f32 * s);
     EguiRect::from_min_size(min, EguiVec2::splat(s))
 }
 
-/// 实体在屏幕上的矩形（至少 1 格可见）。
+/// An entity's rectangle on screen (at least 1 cell visible).
 fn entity_rect(origin: Pos2, x: f32, y: f32, width: i32, height: i32, zoom: f32) -> EguiRect {
     let s = TILE_PX * zoom;
     let w = (width as f32).max(1.0);
@@ -444,7 +444,7 @@ fn entity_rect(origin: Pos2, x: f32, y: f32, width: i32, height: i32, zoom: f32)
     )
 }
 
-/// 屏幕坐标 → tile 坐标。
+/// Screen coordinates -> tile coordinates.
 fn screen_to_tile(origin: Pos2, pos: Pos2, zoom: f32) -> Option<(u32, u32)> {
     let s = TILE_PX * zoom;
     if s <= 0.0 {
@@ -458,7 +458,7 @@ fn screen_to_tile(origin: Pos2, pos: Pos2, zoom: f32) -> Option<(u32, u32)> {
     Some((dx as u32, dy as u32))
 }
 
-/// 渲染单个控件。返回值是否发生变化。
+/// Renders a single widget. Returns whether the value changed.
 fn render_widget(
     ui: &mut egui::Ui,
     name: &str,
@@ -470,7 +470,7 @@ fn render_widget(
             if let FieldValue::Int(v) = value {
                 ui.add(egui::DragValue::new(v).range(*min..=*max)).changed()
             } else {
-                ui.label("（类型不匹配：期望 Int）");
+                ui.label("(type mismatch: expected Int)");
                 false
             }
         }
@@ -479,7 +479,7 @@ fn render_widget(
                 ui.add(egui::DragValue::new(v).range(*min..=*max).speed(*speed))
                     .changed()
             } else {
-                ui.label("（类型不匹配：期望 Float）");
+                ui.label("(type mismatch: expected Float)");
                 false
             }
         }
@@ -487,7 +487,7 @@ fn render_widget(
             if let FieldValue::String(v) = value {
                 ui.text_edit_singleline(v).changed()
             } else {
-                ui.label("（类型不匹配：期望 String）");
+                ui.label("(type mismatch: expected String)");
                 false
             }
         }
@@ -495,7 +495,7 @@ fn render_widget(
             if let FieldValue::Bool(v) = value {
                 ui.checkbox(v, "").changed()
             } else {
-                ui.label("（类型不匹配：期望 Bool）");
+                ui.label("(type mismatch: expected Bool)");
                 false
             }
         }
@@ -520,7 +520,7 @@ fn render_widget(
                 *idx = current;
                 changed
             } else {
-                ui.label("（类型不匹配：期望 Enum）");
+                ui.label("(type mismatch: expected Enum)");
                 false
             }
         }
@@ -533,7 +533,7 @@ fn render_widget(
                 }
                 changed
             } else {
-                ui.label("（类型不匹配：期望 Color）");
+                ui.label("(type mismatch: expected Color)");
                 false
             }
         }
@@ -541,7 +541,7 @@ fn render_widget(
             if let FieldValue::EntityRef(v) = value {
                 ui.add(egui::DragValue::new(v).speed(1.0)).changed()
             } else {
-                ui.label("（类型不匹配：期望 EntityRef）");
+                ui.label("(type mismatch: expected EntityRef)");
                 false
             }
         }
@@ -554,7 +554,7 @@ fn render_widget(
                 })
                 .inner
             } else {
-                ui.label("（类型不匹配：期望 Vec2）");
+                ui.label("(type mismatch: expected Vec2)");
                 false
             }
         }

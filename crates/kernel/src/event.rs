@@ -1,30 +1,32 @@
-//! 事件总线。
+//! Event bus.
 //!
-//! 类型化广播：每种事件类型 `T` 有一个 sender。订阅者获得 `Receiver<T>`。
-//! 若同类型有多个订阅者，需由上游 service 转发。
+//! Typed broadcast: each event type `T` has one sender. Subscribers receive a
+//! `Receiver<T>`. If there are multiple subscribers for the same type, the
+//! upstream service must forward to them.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
 use flume::Sender;
 
-/// 事件订阅错误。
+/// Event subscription error.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubscribeError {
-    /// 该事件类型已经有订阅者。
+    /// The event type already has a subscriber.
     ///
-    /// 事件总线是**单订阅者**模型；需要多播请在上层转发。
+    /// The event bus uses a **single-subscriber** model; forward at a higher
+    /// layer if multicast is needed.
     #[error("event type `{type_name}` already has a subscriber")]
     AlreadySubscribed {
-        /// 发生冲突的事件类型名。
+        /// Name of the conflicting event type.
         type_name: &'static str,
     },
 }
 
-/// 事件总线 — 类型化事件广播。
+/// Event bus -- typed event broadcast.
 ///
-/// 每种事件类型只有 **一个** 订阅者。若需多播，
-/// 由服务内部转发。
+/// Each event type has exactly **one** subscriber. If multicast is needed,
+/// the service forwards internally.
 pub struct EventBus {
     channels: HashMap<TypeId, Box<dyn AnyChannel>>,
 }
@@ -44,17 +46,17 @@ impl<T: Any + Send> AnyChannel for TypedChannel<T> {
 }
 
 impl EventBus {
-    /// 空总线。
+    /// Empty bus.
     pub fn new() -> Self {
         EventBus {
             channels: HashMap::new(),
         }
     }
 
-    /// 注册事件类型 `T` 并返回 Receiver。
+    /// Register event type `T` and return a Receiver.
     ///
-    /// 每种类型只能注册一次；重复注册返回
-    /// [`SubscribeError::AlreadySubscribed`]。
+    /// Each type can only be registered once; a duplicate registration returns
+    /// [`SubscribeError::AlreadySubscribed`].
     pub fn with_subscriber<T: Any + Send>(&mut self) -> Result<flume::Receiver<T>, SubscribeError> {
         let type_id = TypeId::of::<T>();
         if self.channels.contains_key(&type_id) {
@@ -68,7 +70,8 @@ impl EventBus {
         Ok(rx)
     }
 
-    /// 发送事件。若无该类型的订阅者，事件被丢弃。
+    /// Send an event. If there is no subscriber for that type, the event is
+    /// dropped.
     pub fn send<T: Any + Send>(&self, event: T) {
         let type_id = TypeId::of::<T>();
         if let Some(ch) = self.channels.get(&type_id) {
@@ -80,7 +83,7 @@ impl EventBus {
         }
     }
 
-    /// 移除某类型的订阅者。
+    /// Remove the subscriber for a type.
     pub fn remove<T: Any + Send>(&mut self) {
         self.channels.remove(&TypeId::of::<T>());
     }
