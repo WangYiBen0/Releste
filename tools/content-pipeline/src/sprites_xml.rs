@@ -33,6 +33,12 @@ pub struct AnimDef {
     /// this + zero-padded index (the `Path + path` concatenation in `GetFrames`,
     /// pureCeleste.cs:10454-10462). Absent = "".
     pub path: String,
+    /// Per-frame hair metadata, one raw spec per frame, from the `<Metadata>` table:
+    /// `<Frames path="runFast" hair="1,-2|1,-1|..."/>` (pureCeleste.cs:111452-111480).
+    /// A spec is `"dx,dy"`, `"dx,dy:hairFrame"`, or `"x"`/empty = no hair on that frame.
+    /// `None` = the animation has no entry (every frame then behaves as "no hair",
+    /// matching `PlayerSprite.HasHair`'s fallback at 111363-111371).
+    pub hair: Option<Vec<String>>,
 }
 
 /// The animation set of one sprite.
@@ -107,6 +113,11 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
             .and_then(|d| d.parse().ok())
             .unwrap_or(0.0);
         let mut anims = Vec::new();
+        // `FrameMetadata` (the `<Metadata><Frames path=... hair=...>` table) is keyed by the
+        // animation **path**, and the runtime looks it up by the frame's texture path
+        // (`FrameMetadata[Texture.AtlasPath]`, 111331-111336). It may appear before or after
+        // the animations, so collect it first and attach it after the child scan.
+        let mut metadata: HashMap<String, Vec<String>> = HashMap::new();
         let mut after_element = end;
         if !self_closing {
             // Child scan until this element's closing tag.
@@ -123,6 +134,19 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
                 }
                 let (cname, cattrs, cself, cend) = read_tag(xml, j)?;
                 j = cend;
+                // Hair metadata rows carry no `id`: `<Frames path="idle" hair="0,-2|..."/>`.
+                if cname.eq_ignore_ascii_case("Frames") {
+                    if let (Some(path), Some(hair)) = (cattrs.get("path"), cattrs.get("hair")) {
+                        metadata.insert(
+                            path.clone(),
+                            hair.split('|')
+                                .map(|part| part.trim().to_string())
+                                .collect(),
+                        );
+                    }
+                    let _ = cself;
+                    continue;
+                }
                 let id = match cattrs.get("id") {
                     Some(id) => id.clone(),
                     None => continue,
@@ -147,10 +171,15 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
                     frames,
                     goto,
                     path: anim_path,
+                    hair: None,
                 });
                 let _ = cself;
             }
             after_element = j + close.len();
+        }
+        // Attach the metadata rows to the animations that share their path.
+        for anim in anims.iter_mut() {
+            anim.hair = metadata.get(&anim.path).cloned();
         }
         // Skip the whole element (including its closing tag) so children are not mistaken for top-level definitions.
         i = after_element;
@@ -266,6 +295,55 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `<Metadata><Frames path=... hair=...>` rows (111452-111480) must reach the
+    /// animation that shares their `path`, in file order, unchanged.
+    #[test]
+    fn parses_per_frame_hair_metadata() {
+        let xml = r#"<?xml version="1.0"?>
+<Sprites>
+  <player path="characters/player/" start="idle">
+    <Anim id="idle" path="idle" delay="0.1" goto="idle"/>
+    <Anim id="runFast" path="runFast" delay="0.05"/>
+    <Metadata>
+      <Frames path="idle" hair="0,-2|0,-2|0,-1"/>
+      <Frames path="runFast" hair="1,-2|1,-1:2|x|"/>
+    </Metadata>
+  </player>
+</Sprites>"#;
+        let sprites = parse_sprites(xml).expect("parse");
+        let player = sprites.iter().find(|s| s.name == "player").expect("player");
+        let idle = player.anims.iter().find(|a| a.id == "idle").expect("idle");
+        assert_eq!(
+            idle.hair.as_deref(),
+            Some(&["0,-2".to_string(), "0,-2".into(), "0,-1".into()][..])
+        );
+        let run = player
+            .anims
+            .iter()
+            .find(|a| a.id == "runFast")
+            .expect("runFast");
+        assert_eq!(
+            run.hair.as_deref(),
+            Some(&["1,-2".to_string(), "1,-1:2".into(), "x".into(), "".into()][..]),
+            "every frame keeps its own spec, including the no-hair marker"
+        );
+    }
+
+    /// An animation whose path has no metadata row keeps `None` (vanilla then treats every
+    /// frame as `HasHair = false`, 111363-111371).
+    #[test]
+    fn animations_without_metadata_have_no_hair_rows() {
+        let xml = r#"<?xml version="1.0"?>
+<Sprites>
+  <player path="characters/player/" start="fallPose">
+    <Anim id="fallPose" path="fallPose" delay="0.1"/>
+  </player>
+</Sprites>"#;
+        let sprites = parse_sprites(xml).expect("parse");
+        let anim = &sprites[0].anims[0];
+        assert!(anim.hair.is_none());
+    }
 
     /// Anim/Loop/default delay/CSV ranges must all be parsed out.
     #[test]

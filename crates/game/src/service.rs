@@ -302,14 +302,14 @@ impl GameService {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
         let pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
         self.session.player_draws(
-            gpu,
+            &|id| gpu.texture_size(id),
             pos,
             self.player.facing < 0,
             self.player.hair_color(),
             self.player
                 .anim_frame_texture(&self.session.anims)
                 .as_deref(),
-            self.player.anim_frame,
+            self.player.anim_frame_hair(&self.session.anims),
         )
     }
 

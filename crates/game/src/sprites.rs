@@ -121,7 +121,48 @@ pub fn hair_scale(index: usize, facing: f32) -> (f32, f32) {
 /// (`pureCeleste.cs:111116`) the x component is still 0.
 ///
 /// Our idle stops on frame 0, so take `(0,-2)`.
-pub const PLAYER_HAIR_OFFSET: (f32, f32) = (0.0, -2.0);
+/// Per-frame hair metadata (vanilla `PlayerAnimMetadata`, pureCeleste.cs:111495-111504),
+/// parsed from the `<Metadata><Frames path=... hair=...>` table (111452-111480).
+///
+/// Defaults match the vanilla fields' zero values: `has_hair = false` (a frame with no
+/// metadata entry draws no hair at all, 111363-111371 + 111157), offset `(0, 0)`
+/// (111497) and bangs frame `0` (111499, 111351-111361).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HairFrame {
+    /// Vanilla `HasHair`: the spec was neither missing nor `x`/empty (111468-111476).
+    pub has_hair: bool,
+    /// Vanilla `HairOffset`: applied as `offset * (Facing, 1)` (111116).
+    pub offset: (i32, i32),
+    /// Vanilla `Frame`: which `bangs` texture to draw (111351-111361).
+    pub frame: usize,
+}
+
+/// Parse one `hair="..."` entry: `"dx,dy"`, `"dx,dy:hairFrame"`, or `"x"`/empty = no hair.
+///
+/// Whitespace inside the numbers is tolerated (the real file has `"1, 1"` in
+/// `runStumble`); anything unparsable falls back to the "no hair" default, which is also
+/// what an absent metadata entry means.
+pub fn parse_hair_spec(spec: &str) -> HairFrame {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.eq_ignore_ascii_case("x") {
+        return HairFrame::default();
+    }
+    let (coords, frame) = match spec.split_once(':') {
+        Some((c, f)) => (c.trim(), f.trim().parse::<usize>().unwrap_or(0)),
+        None => (spec, 0),
+    };
+    let Some((x, y)) = coords.split_once(',') else {
+        return HairFrame::default();
+    };
+    match (x.trim().parse::<i32>(), y.trim().parse::<i32>()) {
+        (Ok(x), Ok(y)) => HairFrame {
+            has_hair: true,
+            offset: (x, y),
+            frame,
+        },
+        _ => HairFrame::default(),
+    }
+}
 
 /// Lamp: vanilla takes the left/right half 16x80 subimage based on `broken`
 /// (`pureCeleste.cs:106451` `GetSubtexture(broken ? 16 : 0, 0, 16, 80)`),
@@ -233,6 +274,16 @@ pub struct AnimDef {
     /// `Goto = new Chooser<string>(id, 1f)`, 10338-10345);
     /// `<Anim goto="...">` = the target; `None` = stop on the last frame (10296-10305).
     pub goto: Option<String>,
+    /// Per-frame hair metadata, parallel to [`AnimDef::frames`]; shorter/empty means the
+    /// remaining frames have no hair (vanilla's missing-metadata default).
+    pub hair: Vec<HairFrame>,
+}
+
+impl AnimDef {
+    /// The hair metadata for one frame; out of range = no hair (vanilla's default).
+    pub fn hair_at(&self, frame: usize) -> HairFrame {
+        self.hair.get(frame).copied().unwrap_or_default()
+    }
 }
 
 /// The animation set of one sprite (`player` / `badeline`...).
@@ -267,6 +318,9 @@ impl AnimationTable {
             goto: Option<String>,
             #[serde(default)]
             path: String,
+            /// Raw `hair` rows (see `parse_hair_spec`).
+            #[serde(default)]
+            hair: Option<Vec<String>>,
         }
         #[derive(serde::Deserialize)]
         struct SpriteToml {
@@ -322,6 +376,12 @@ impl AnimationTable {
                         frames,
                         delay: a.delay,
                         goto: a.goto,
+                        hair: a
+                            .hair
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|spec| parse_hair_spec(spec))
+                            .collect(),
                     },
                 );
             }

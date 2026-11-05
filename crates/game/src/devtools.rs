@@ -326,6 +326,7 @@ pub fn run_script(
     session: Session,
     paths: &Paths,
     map_name: &str,
+    filmstrip: Option<crate::filmstrip::FilmstripOptions>,
 ) -> Result<ScenarioOutcome> {
     if let Some(expected) = &script.scenario.map {
         anyhow::ensure!(
@@ -336,6 +337,11 @@ pub fn run_script(
 
     let mut trace = match &script.scenario.trace {
         Some(path) => Some(TraceWriter::create(path, map_name, paths.root())?),
+        None => None,
+    };
+    // `--filmstrip`: compose PNG frames with the same draw calls the GPU would get.
+    let mut recorder = match filmstrip {
+        Some(opts) => Some(crate::filmstrip::Recorder::new(opts, &session)?),
         None => None,
     };
 
@@ -364,6 +370,9 @@ pub fn run_script(
         if let Some(trace) = trace.as_mut() {
             trace.write(&snap)?;
         }
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(&svc.session, &svc.player);
+        }
         for expect in script.expect.iter().filter(|e| e.tick == tick) {
             check(&snap, base, expect, &mut outcome);
         }
@@ -372,6 +381,14 @@ pub fn run_script(
 
     if let Some(trace) = trace {
         trace.finish()?;
+    }
+    if let Some(recorder) = recorder {
+        let frames = recorder.len();
+        let path = recorder.finish()?;
+        println!(
+            "ok: {frames} filmstrip frame(s) written to {}",
+            path.display()
+        );
     }
     kernel.shutdown();
     Ok(outcome)

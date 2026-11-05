@@ -9,6 +9,7 @@
 
 mod app;
 mod devtools;
+mod filmstrip;
 mod logging;
 mod paths;
 mod player;
@@ -94,6 +95,25 @@ struct Args {
     /// `tick=... field: expected ... got ...` and exit 1. See `tests/scenarios/`.
     #[arg(long, value_name = "PATH")]
     script: Option<PathBuf>,
+
+    /// Compose a PNG strip of the player without a GPU (needs `--script`).
+    ///
+    /// Frames come from the engine's own draw list, so this shows exactly what the
+    /// renderer would draw: handy on headless machines for animation/hair checks.
+    #[arg(long, value_name = "PATH")]
+    filmstrip: Option<PathBuf>,
+
+    /// How many frames `--filmstrip` composes (default 8).
+    #[arg(long, value_name = "N")]
+    filmstrip_frames: Option<usize>,
+
+    /// Compose a `--filmstrip` frame every N ticks (default 6).
+    #[arg(long, value_name = "N")]
+    filmstrip_every: Option<u64>,
+
+    /// Integer upscale for `--filmstrip` (default 1; 4+ makes 1px offsets visible).
+    #[arg(long, value_name = "N")]
+    filmstrip_zoom: Option<u32>,
 
     /// Dump the map as the runtime parsed it (JSON) and exit.
     ///
@@ -230,7 +250,15 @@ fn run(args: &Args) -> anyhow::Result<()> {
         if let Some(note) = &script.scenario.note {
             tracing::info!(note = %note, "scenario");
         }
-        let outcome = devtools::run_script(&script, session, &paths, &args.map)?;
+        let filmstrip = args.filmstrip.as_ref().map(|out| {
+            filmstrip::FilmstripOptions::build(
+                out.clone(),
+                args.filmstrip_frames,
+                args.filmstrip_every,
+                args.filmstrip_zoom,
+            )
+        });
+        let outcome = devtools::run_script(&script, session, &paths, &args.map, filmstrip)?;
         for failure in &outcome.failures {
             println!("FAIL {failure}");
         }
