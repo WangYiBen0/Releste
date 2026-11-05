@@ -359,11 +359,11 @@ pub struct Player {
     pub anim_frame: usize,
     anim_timer: f32,
     anim_playing: bool,
-    /// Previous animation id (vanilla `Sprite.LastAnimationID`,
-    /// pureCeleste.cs:10181). `PlayerSprite.Running` (111374-111388) and
-    /// `UpdateSprite`'s run guard (120461) both read it -- "is it running" is **not**
-    /// the same as "does the current animation have a goto" (`idle`/`edge`/`walk` all
-    /// carry `<Loop>`).
+    /// The id most recently passed to `play` (vanilla `Sprite.LastAnimationID`,
+    /// pureCeleste.cs:10181, written at 10491-10492). `PlayerSprite.Running`
+    /// (111375-111388) and `UpdateSprite`'s run guard (120447) both read it -- "is it
+    /// running" is **not** the same as "does the current animation have a goto"
+    /// (`idle`/`edge`/`walk` all carry `<Loop>`).
     last_anim_id: String,
     /// Fast jump/fall flag (`fastJump`, 120437/120469).
     fast_jump: bool,
@@ -1133,8 +1133,8 @@ impl Player {
 
     /// Vanilla `Sprite.Play(id, restart = false)` (pureCeleste.cs:10483-10503): the same
     /// id is a no-op (pureCeleste.cs:10485 `(CurrentAnimationID != id) | restart`); on a
-    /// switch, `LastAnimationID` records the **old** id (pureCeleste.cs:10491-10492
-    /// `LastAnimationID = lastAnimationID`), `Animating = Delay > 0f`
+    /// switch, `LastAnimationID` records the **new** id (pureCeleste.cs:10491-10492;
+    /// `(CurrentAnimationID = id)` evaluates to `id`), `Animating = Delay > 0f`
     /// (pureCeleste.cs:10494 `Animating = currentAnimation.Delay > 0f`), and the timer
     /// and frame reset to zero. A missing table / unknown id is still a no-op (rendering
     /// falls back to static frames).
@@ -1152,7 +1152,14 @@ impl Player {
         let Some(anim) = def.anims.get(&id.to_ascii_lowercase()) else {
             return;
         };
-        self.last_anim_id = std::mem::take(&mut self.anim_id); // pureCeleste.cs:10491-10492
+        // `string lastAnimationID = (CurrentAnimationID = id); LastAnimationID =
+        // lastAnimationID;` (10491-10492): a C# assignment expression evaluates to the
+        // **new** id, so `LastAnimationID` ends up holding the animation just played, not
+        // the previous one. `Running` (111375-111388) reads it as "the most recently
+        // played animation is a run*". Recording the old id instead leaves `Running` true
+        // after a stop -> idle, so the `!Sprite.Running` guard (120447) never fires again
+        // and the character slides at full speed holding the idle pose.
+        self.last_anim_id = id.to_string(); // pureCeleste.cs:10491-10492
         self.anim_id = id.to_string();
         self.anim_frame = 0;
         self.anim_timer = 0.0;
@@ -1219,6 +1226,23 @@ impl Player {
         let def = table.sprites.get("player")?;
         let anim = def.anims.get(&self.anim_id.to_ascii_lowercase())?;
         anim.frames.get(self.anim_frame).cloned()
+    }
+
+    /// Per-frame hair metadata for the current animation frame (vanilla
+    /// `PlayerSprite.HasHair` / `HairOffset` / `HairFrame`, pureCeleste.cs:111351-111371),
+    /// which `PlayerHair.Render` reads. A missing animation or frame yields the vanilla
+    /// defaults (no hair) rather than a guessed offset.
+    pub fn anim_frame_hair(
+        &self,
+        table: &crate::sprites::AnimationTable,
+    ) -> crate::sprites::HairFrame {
+        let Some(def) = table.sprites.get("player") else {
+            return crate::sprites::HairFrame::default();
+        };
+        let Some(anim) = def.anims.get(&self.anim_id.to_ascii_lowercase()) else {
+            return crate::sprites::HairFrame::default();
+        };
+        anim.hair_at(self.anim_frame)
     }
 
     /// Vanilla `PlayerSprite.Running` (pureCeleste.cs:111375-111388): the **previous**
@@ -2889,6 +2913,7 @@ mod tests {
                 frames: frames.iter().map(|f| (*f).to_string()).collect(),
                 delay,
                 goto: goto.map(|g| g.to_string()),
+                hair: Vec::new(),
             }
         }
 
@@ -2938,11 +2963,12 @@ mod tests {
     /// Walk right two steps then left two steps: it must actually play a run animation
     /// (frames advancing), not slide while holding the idle pose.
     ///
-    /// Regression point: `PlayerSprite.Running` (pureCeleste.cs:111374-111388) reads the
-    /// **previous** animation (`LastAnimationID`). It was once written as "the current
-    /// animation has a goto", and since `idle` carries `<Loop>` (goto=idle) ->
-    /// `!Sprite.Running` was always false -> the `runSlow`/`runFast` at 120461-120470 could
-    /// never play and the character merely appeared to slide.
+    /// Regression point: `PlayerSprite.Running` (pureCeleste.cs:111375-111388) reads
+    /// `LastAnimationID`. It was once written as "the current animation has a goto", and
+    /// since `idle` carries `<Loop>` (goto=idle) -> `!Sprite.Running` was always false ->
+    /// the `runSlow`/`runFast` at 120447-120455 could never play and the character merely
+    /// appeared to slide. Storing the **old** id in `Play` caused the same symptom after a
+    /// stop; see `walking_again_after_stopping_animates`.
     #[test]
     fn walking_left_and_right_animates_instead_of_sliding() {
         use std::collections::BTreeSet;
@@ -3015,44 +3041,94 @@ mod tests {
         assert!(p.pos.x < x1, "walking left must actually move left");
     }
 
-    /// The full semantics of `PlayerSprite.Running` (pureCeleste.cs:111374-111388): the
-    /// "previous animation" starts with `run`, or is exactly `flip`.
+    /// Stop, then walk again: every moving tick must play a run animation.
+    ///
+    /// Regression: `Play` used to store the **old** id in `LastAnimationID`, so after
+    /// "run -> stop (Play idle)" the value stayed `runFast`; `Running` therefore stayed
+    /// true, the `!Sprite.Running` guard at 120447 never fired again and the character
+    /// slid at full run speed holding the idle pose.
     #[test]
-    fn running_tracks_the_previous_animation_like_vanilla() {
+    fn walking_again_after_stopping_animates() {
+        let room = wide_room();
+        let table = anim_table();
+        let right = Input {
+            right: true,
+            ..Input::default()
+        };
+        let idle = Input::default();
+        let mut p = settled(&room, 40.0);
+
+        // Walk, then come to a full stop (which plays idle).
+        for _ in 0..40 {
+            p.step(&right, std::slice::from_ref(&room));
+            p.update_visuals(&table, &right, std::slice::from_ref(&room));
+        }
+        for _ in 0..60 {
+            p.step(&idle, std::slice::from_ref(&room));
+            p.update_visuals(&table, &idle, std::slice::from_ref(&room));
+        }
+        assert_eq!(p.vel.x, Fx::zero(), "fixture: must have stopped");
+        assert_eq!(p.anim_id, "idle");
+
+        // Walk again: from the first moving tick on, a run animation must play.
+        for tick in 0..40 {
+            p.step(&right, std::slice::from_ref(&room));
+            p.update_visuals(&table, &right, std::slice::from_ref(&room));
+            assert!(
+                matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
+                "tick {tick} of the second walk plays {:?} instead of a run animation \
+                 (LastAnimationID = {:?})",
+                p.anim_id,
+                p.last_anim_id
+            );
+        }
+    }
+
+    /// `LastAnimationID` holds the animation **just played** (pureCeleste.cs:10491-10492:
+    /// `(CurrentAnimationID = id)` evaluates to `id`), and `Running` (111375-111388) reads
+    /// it as "the most recently played animation starts with `run`, or is `flip`".
+    ///
+    /// That is what re-arms the `!Sprite.Running` guard at 120447 after a stop:
+    /// `Play("idle")` leaves `LastAnimationID = "idle"`, so the next run animation plays.
+    /// Recording the *old* id here was the "walks in the idle pose" regression.
+    #[test]
+    fn last_anim_id_records_the_animation_just_played() {
         let table = anim_table();
         let room = floor_room();
         let mut p = Player::new(Vec2::from_f32s(8.0, 13.0));
 
-        // The start animation is played (idle): Play records the old id as an empty string
-        // -> not running.
+        // Standing still: the start animation (idle) is played and it is not a run.
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.anim_id, "idle");
-        assert!(!p.running());
-
-        // idle -> runSlow: Play writes the **old** id (idle) into LastAnimationID, so at
-        // this instant it "is not running yet" -- precisely what lets a run animation
-        // start from idle (10487-10489 + 120461).
-        p.play(&table, "runSlow");
         assert_eq!(p.last_anim_id, "idle");
         assert!(!p.running());
+
+        // idle -> runSlow: LastAnimationID is the animation just played, so this counts as
+        // running (the guard therefore does not restart it every tick).
+        p.play(&table, "runSlow");
+        assert_eq!(p.last_anim_id, "runSlow");
+        assert!(p.running());
 
         // flip special case: `if (LastAnimationID == "flip") return true` (111381-111384).
         p.play(&table, "flip");
         assert!(p.running());
-        // flip -> runFast: the old id is still flip -> running.
         p.play(&table, "runFast");
         assert!(p.running());
 
-        // runFast -> idle: the old id is run* -> still "running" at this instant.
+        // runFast -> idle: the last played animation is now idle -> not running, so the
+        // next movement tick may (re)play a run animation. Before the fix this stayed
+        // "runFast" and the guard blocked the run branch forever.
         p.play(&table, "idle");
-        assert!(p.running());
-        // idle -> runSlow: the old id becomes idle -> the run animation can play again.
-        p.play(&table, "runSlow");
+        assert_eq!(p.last_anim_id, "idle");
         assert!(!p.running());
+
+        // ... so walking again animates.
+        p.play(&table, "runSlow");
+        assert!(p.running());
     }
 
-    /// The goto branch (pureCeleste.cs:10260-10282) writes the **new** id into
-    /// `LastAnimationID`, unlike Play's "record the old id" rule.
+    /// The goto branch (pureCeleste.cs:10260-10282) writes the new id into
+    /// `LastAnimationID` -- the same "the animation just played" rule as `Play`.
     #[test]
     fn animation_goto_writes_the_target_into_last_anim_id() {
         let table = anim_table();
@@ -3068,7 +3144,7 @@ mod tests {
         );
         assert_eq!(
             p.last_anim_id, "runFast",
-            "the goto branch writes the new id (pureCeleste.cs:10267)"
+            "the goto branch records the target it switched to (pureCeleste.cs:10267)"
         );
         assert!(p.running());
     }
