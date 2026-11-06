@@ -94,12 +94,15 @@ pub const HAIR_COUNT: usize = 4;
 /// So "origin within the subimage" = `frame_origin + offset` = `frame_origin - trim_pos`,
 /// where `sprite.origin()` stores exactly `trim_pos` (the converter took the negation of offset).
 ///
-/// The `1` is the atlas `--padding 1`: trimming leaves a ring of transparency around the result, shifting the content down-right by
-/// 1px, and the origin must shift with it (see the matching comment for lamp in `sprites.rs`).
+/// This used to add 1, justified as compensating an atlas `--padding 1` transparency ring that
+/// would shift the content down-right. That premise does not hold for the generated atlas: the
+/// opaque bounding box of `idle00`, `runFast00`, `hair00` and `bangs00` fills their rects edge to
+/// edge (`Gameplay.atlas` rects are tight, no ring), so the `+1` moved the body and the hair 1px
+/// up-left -- Madeline's feet sat 1px above `Player.Position` and the whole sprite floated.
 pub fn origin_in_trim(sprite: &Sprite, frame_origin: (f32, f32)) -> (f32, f32) {
     (
-        frame_origin.0 - sprite.origin().0 + 1.0,
-        frame_origin.1 - sprite.origin().1 + 1.0,
+        frame_origin.0 - sprite.origin().0,
+        frame_origin.1 - sprite.origin().1,
     )
 }
 
