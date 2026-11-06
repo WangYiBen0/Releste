@@ -115,6 +115,14 @@ struct Args {
     #[arg(long, value_name = "N")]
     filmstrip_zoom: Option<u32>,
 
+    /// Run this many ticks before the first `--filmstrip` sample (default 0).
+    #[arg(long, value_name = "N")]
+    filmstrip_start: Option<u64>,
+
+    /// `--filmstrip` canvas size, `WxH` (default 160x120; centre = hitbox centre).
+    #[arg(long, value_name = "WxH")]
+    filmstrip_size: Option<String>,
+
     /// Dump the map as the runtime parsed it (JSON) and exit.
     ///
     /// Complements `releste-map --example dump_rooms` (raw file view):
@@ -256,6 +264,8 @@ fn run(args: &Args) -> anyhow::Result<()> {
                 args.filmstrip_frames,
                 args.filmstrip_every,
                 args.filmstrip_zoom,
+                args.filmstrip_start,
+                args.filmstrip_size.as_deref().and_then(parse_size),
             )
         });
         let outcome = devtools::run_script(&script, session, &paths, &args.map, filmstrip)?;
@@ -387,4 +397,10 @@ fn install_panic_hook() {
         logging::print_fatal("releste", &message);
         previous(info);
     }));
+}
+
+/// `WxH` (or `W,H`) for `--filmstrip-size`.
+fn parse_size(text: &str) -> Option<(u32, u32)> {
+    let (w, h) = text.split_once(['x', 'X', ','])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }

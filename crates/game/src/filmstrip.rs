@@ -71,10 +71,26 @@ pub fn compose(
             continue;
         }
 
-        let dst_w = draw.size.x.to_f32().round().max(1.0) as i64;
-        let dst_h = draw.size.y.to_f32().round().max(1.0) as i64;
-        let dst_x = (draw.position.x.to_f32() - origin.0).round() as i64;
-        let dst_y = (draw.position.y.to_f32() - origin.1).round() as i64;
+        // A **negative** size is XNA's negative-scale mirroring: the geometry and the UVs
+        // both reverse (which is how `PlayerHair` mirrors the bangs, `GetHairScale` returns
+        // `Facing` for node 0). Normalise it into (min corner, positive size, flip) so the
+        // CPU result matches `SpriteBatch::vertices` instead of collapsing to one pixel.
+        let (sx, sy) = (draw.size.x.to_f32(), draw.size.y.to_f32());
+        let dst_w = sx.abs().round().max(1.0) as i64;
+        let dst_h = sy.abs().round().max(1.0) as i64;
+        let left = if sx < 0.0 {
+            draw.position.x.to_f32() + sx
+        } else {
+            draw.position.x.to_f32()
+        };
+        let top = if sy < 0.0 {
+            draw.position.y.to_f32() + sy
+        } else {
+            draw.position.y.to_f32()
+        };
+        let dst_x = (left - origin.0).round() as i64;
+        let dst_y = (top - origin.1).round() as i64;
+        let flip = draw.flip_x ^ (sx < 0.0);
         let color = draw.color;
 
         for dy in 0..dst_h {
@@ -92,15 +108,15 @@ pub fn compose(
                 if tx < 0 || tx >= w as i64 {
                     continue;
                 }
-                let sx = if draw.flip_x {
+                let sample_x = if flip {
                     src_x + src_w - 1 - (dx * src_w) / dst_w
                 } else {
                     src_x + (dx * src_w) / dst_w
                 };
-                if sx < 0 || sx >= pw as i64 {
+                if sample_x < 0 || sample_x >= pw as i64 {
                     continue;
                 }
-                let texel = page.get_pixel(sx as u32, sy as u32).0;
+                let texel = page.get_pixel(sample_x as u32, sy as u32).0;
                 let alpha = (f32::from(texel[3]) / 255.0 * color[3]).clamp(0.0, 1.0);
                 if alpha <= 0.0 {
                     continue;
@@ -192,6 +208,9 @@ pub struct FilmstripOptions {
     /// Integer upscale applied before writing (nearest neighbour), so a 1px offset is
     /// visible in the PNG (default 1).
     pub zoom: u32,
+    /// Ticks to run before the first sample, so a specific moment can be inspected
+    /// (default 0).
+    pub start: u64,
 }
 
 impl FilmstripOptions {
@@ -201,13 +220,17 @@ impl FilmstripOptions {
         frames: Option<usize>,
         every: Option<u64>,
         zoom: Option<u32>,
+        start: Option<u64>,
+        size: Option<(u32, u32)>,
     ) -> Self {
+        let (w, h) = size.unwrap_or((160, 120));
         FilmstripOptions {
             path: path.into(),
             frames: frames.unwrap_or(8),
             every: every.unwrap_or(6),
-            size: (160, 120),
-            zoom: zoom.unwrap_or(1).clamp(1, 16),
+            size: (w.clamp(16, 4096), h.clamp(16, 4096)),
+            zoom: zoom.unwrap_or(1).clamp(1, 32),
+            start: start.unwrap_or(0),
         }
     }
 }
@@ -220,6 +243,8 @@ pub struct Recorder {
     /// Ticks until the next sample (a countdown, so `--filmstrip-every 0` cannot divide by
     /// zero and clippy does not have to be told about `%`).
     due_in: u64,
+    /// Ticks elapsed so far (`--filmstrip-start` skips the first N).
+    tick: u64,
 }
 
 impl Recorder {
@@ -232,11 +257,17 @@ impl Recorder {
             textures,
             frames: Vec::new(),
             due_in: 0,
+            tick: 0,
         })
     }
 
     /// Sample this tick if it is due (uses the live player state, `alpha = 1`).
     pub fn record(&mut self, session: &crate::session::Session, player: &crate::player::Player) {
+        let elapsed = self.tick;
+        self.tick += 1;
+        if elapsed < self.opts.start {
+            return;
+        }
         let due = self.due_in == 0 && self.frames.len() < self.opts.frames;
         if self.due_in == 0 {
             // The next sample is `every` ticks after this one.
@@ -257,15 +288,20 @@ impl Recorder {
             body.as_deref(),
             hair,
         );
-        // Centre the canvas on the hitbox centre so every frame is comparable.
-        let anchor = player.pos
+        // Centre the canvas on the hitbox centre so every frame is comparable, but keep
+        // the two anchors distinct: `Player.Position` is the hitbox bottom centre (the feet,
+        // 118856) and that is what `hair_nodes` and `body_draw` take, while the hitbox
+        // centre is only a visual reference.
+        let feet = player.pos
+            + releste_math::Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
+        let centre = player.pos
             + releste_math::Vec2::from_f32s(
                 crate::player::PLAYER_W * 0.5,
                 crate::player::PLAYER_H * 0.5,
             );
         let origin = (
-            anchor.x.to_f32() - self.opts.size.0 as f32 / 2.0,
-            anchor.y.to_f32() - self.opts.size.1 as f32 / 2.0,
+            centre.x.to_f32() - self.opts.size.0 as f32 / 2.0,
+            centre.y.to_f32() - self.opts.size.1 as f32 / 2.0,
         );
         let mut frame = compose(
             &self.textures,
@@ -275,19 +311,18 @@ impl Recorder {
             self.opts.size.1,
         );
         let (cw, ch) = (self.opts.size.0 as i64, self.opts.size.1 as i64);
-        // Cyan plus: the hitbox centre. Magenta dot: the hair root
-        // (`anchor + HairOffset*(Facing,1) + (0,-9)`, vanilla 111116-111117), floored as
+        // Cyan plus: the hitbox centre (canvas centre). Green plus: the feet anchor
+        // (`Player.Position`); the body's bottom row must sit on it. Magenta plus: the hair
+        // root (`feet + HairOffset*(Facing,1) + (0,-9)`, vanilla 111116-111117), floored as
         // `PlayerHair.Render` does (111179). A hair bug moves their relation.
         marker(&mut frame, cw / 2, ch / 2, Rgba([80, 220, 255, 255]));
-        // Green line at the feet anchor (`Player.Position` = hitbox bottom centre): the
-        // body's last row must sit **on** it, which is what makes a 1px origin error visible.
         let (ax, ay) = (
-            (anchor.x.to_f32() - origin.0).round() as i64,
-            (anchor.y.to_f32() - origin.1).round() as i64,
+            (feet.x.to_f32() - origin.0).round() as i64,
+            (feet.y.to_f32() - origin.1).round() as i64,
         );
         marker(&mut frame, ax, ay, Rgba([80, 255, 120, 255]));
         let facing = if player.facing < 0 { -1.0 } else { 1.0 };
-        let root = crate::session::hair_nodes(anchor, facing, hair)[0];
+        let root = crate::session::hair_nodes(feet, facing, hair)[0];
         let (rx, ry) = (
             (root.x.to_f32() - origin.0).round() as i64,
             (root.y.to_f32() - origin.1).round() as i64,
