@@ -1,0 +1,180 @@
+# Releste editor catalog - en_US (source of truth).
+#
+# This file is RUNTIME DATA, not source code. The editor reads it from disk at
+# startup and when the language is switched. It is never compiled in.
+#
+# Rules for this file:
+#   - Keys are stable dot-separated identifiers, lowercase; see docs/i18n.md 5.
+#   - Placeholders use {name} and are substituted at render time; see
+#     docs/i18n.md 4.1.
+#   - Never reorder or rename a key without updating every other catalog and
+#     the call sites in the same change.
+#   - Add new keys HERE first, then translate them in each other catalog.
+#
+# To add a language, read CONTRIBUTING-i18n.md.
+
+[editor]
+
+# -- Application chrome -------------------------------------------------
+"app.window_title" = "Releste Editor"
+
+# -- CLI (--about / --help / --check) -----------------------------------
+"app.check.summary" = "ok: {area} ({rooms} rooms, {entities} entities, {sync_rules} sync rules)"
+"app.error.open_failed" = "failed to open {path}: {error}"
+"app.error.run_failed" = "editor failed: {error}"
+
+# -- Menu bar -----------------------------------------------------------
+"menu.file" = "File"
+"menu.file.new" = "New"
+"menu.file.open" = "Open..."
+"menu.file.save" = "Save"
+"menu.file.save_as" = "Save As..."
+"menu.edit" = "Edit"
+"menu.edit.undo" = "Undo"
+"menu.edit.undo_with" = "Undo {label}"
+"menu.edit.redo" = "Redo"
+"menu.room" = "Room"
+"menu.room.add" = "Add room"
+"menu.language" = "Language"
+
+# -- Status bar ---------------------------------------------------------
+"status.ready" = "Ready"
+"status.saved" = "Saved"
+"status.unsaved" = "Unsaved*"
+"status.untitled" = "(untitled)"
+"status.new_map" = "New map"
+"status.save_failed" = "Save failed: {error}"
+"status.undo_failed" = "Undo failed: {error}"
+"status.redo_failed" = "Redo failed: {error}"
+"status.room_added" = "Room {name} added"
+"status.room_add_failed" = "Add failed: {error}"
+"status.entity_placed" = "Entity placed"
+"status.place_failed" = "Place failed: {error}"
+"status.write_failed" = "Write failed: {error}"
+
+# -- Left panel: rooms, brush, entity palette ---------------------------
+"panel.rooms" = "Rooms"
+"panel.tool_tiles" = "Tiles"
+"panel.tool_entities" = "Entities"
+"panel.tile_brush" = "Tile brush"
+"panel.no_tile_art" = "No tile art (run the content pipeline)"
+"panel.brush_hint" = "Left click paints - drag fills a rectangle - right click erases (or pick the eraser above)"
+"panel.tool_eraser" = "Eraser"
+"panel.entities" = "Entities"
+"panel.entity_no_kinds" = "(no entity schemas registered)"
+"panel.entity_armed" = "Placing: {kind} - right-click cancels"
+"panel.entity_place_hint" = "Click the canvas to place the armed kind"
+"panel.place_entity" = "Place at current room center"
+
+# -- Right panel: the schema-driven inspector ---------------------------
+"panel.inspector" = "Inspector"
+"inspector.no_selection" = "No entity selected"
+"inspector.entity_gone" = "The selected entity no longer exists"
+"inspector.kind" = "Kind: {kind}"
+"inspector.id" = "ID: {id}"
+"inspector.axis_x" = "x "
+"inspector.axis_y" = "y "
+"inspector.no_schema" = "(no Schema registered for this kind; showing raw properties)"
+
+# -- Canvas -------------------------------------------------------------
+"canvas.no_room" = "No room: create one first"
+
+# -- Reusable widgets ---------------------------------------------------
+"widget.combo_empty" = "?"
+"widget.type_mismatch.int" = "(type mismatch: expected Int)"
+"widget.type_mismatch.float" = "(type mismatch: expected Float)"
+"widget.type_mismatch.string" = "(type mismatch: expected String)"
+"widget.type_mismatch.bool" = "(type mismatch: expected Bool)"
+"widget.type_mismatch.enum" = "(type mismatch: expected Enum)"
+"widget.type_mismatch.color" = "(type mismatch: expected Color)"
+"widget.type_mismatch.entity_ref" = "(type mismatch: expected EntityRef)"
+"widget.type_mismatch.vec2" = "(type mismatch: expected Vec2)"
+
+# -- File dialog --------------------------------------------------------
+"dialog.up" = "Up"
+"dialog.filename" = "File name"
+"dialog.open" = "Open"
+"dialog.save" = "Save"
+"dialog.cancel" = "Cancel"
+"dialog.ok" = "OK"
+"dialog.unsaved_title" = "Unsaved Changes"
+"dialog.unsaved_text" = "The map has unsaved changes. Discard them and close?"
+"dialog.discard" = "Don't Save"
+
+# -- Room actions -------------------------------------------------------
+"panel.room_rename" = "Rename room"
+"panel.room_delete" = "Delete room"
+"panel.room_bounds" = "Room bounds"
+"status.room_removed" = "Room deleted"
+"status.room_remove_failed" = "Delete failed: {error}"
+"status.room_renamed" = "Room renamed to {name}"
+"status.room_rename_failed" = "Rename failed: {error}"
+
+# -- Inspector actions --------------------------------------------------
+"inspector.delete_entity" = "Delete entity"
+"status.entity_removed" = "Entity deleted"
+"status.remove_failed" = "Delete failed: {error}"
+
+# -- Canvas view --------------------------------------------------------
+"status.reset_view" = "Reset view"
+
+
+# -- File operation results ---------------------------------------------
+"status.opened" = "Opened {path}"
+"status.open_failed" = "Open failed: {error}"
+"status.saved_as" = "Saved to {path}"
+
+# -- View / font / test -------------------------------------------------
+"menu.view" = "View"
+"menu.view.reset" = "Reset View"
+"menu.view.font_scale" = "UI Scale"
+"menu.view.test_map" = "Test Map in Game"
+"status.test_launching" = "Launching game: {path}"
+"status.test_failed" = "Failed to launch game: {error}"
+"status.test_no_path" = "Save the map first to test it in game"
+"status.test_unsaved" = "Saved map before testing: {path}"
+"panel.entity_list" = "Entities in room"
+"panel.entity_select_hint" = "Click an entity to select it, drag to move it"
+
+"menu.settings" = "Font Settings"
+"settings.title" = "Font Settings"
+"settings.font" = "Fallback font"
+"settings.face" = "Face index"
+"settings.auto" = "Auto-detect"
+"settings.scale" = "UI scale"
+"settings.reset" = "Reset"
+"settings.hint" = "Changes apply immediately and are saved to {path}"
+"settings.no_fonts" = "No CJK fonts found on this system"
+"status.settings_save_failed" = "Failed to save settings: {error}"
+
+# Tool tabs and tile selection.
+"panel.tool_select" = "Select"
+"panel.select_tool" = "Tile selection"
+"panel.room_drag_hint" = "Alt+drag the canvas to move a room; Alt+drag its border to resize."
+"panel.select_hint" = "Drag to select a tile rectangle; copy, cut, paste and delete act on it, and dragging the selection moves it."
+
+# Edit-menu clipboard actions.
+"menu.edit.copy" = "Copy"
+"menu.edit.cut" = "Cut"
+"menu.edit.paste" = "Paste"
+"menu.edit.delete" = "Delete"
+
+# Lua script console.
+"menu.script" = "Script..."
+"script.title" = "Script console"
+"script.run" = "Run"
+"script.hint" = "Ctrl+Enter runs. editor.set_tile(x, y, v) / get_tile / fill / room_width / room_height / room_count / current_room / set_current_room / room_names / echo(...)"
+
+# Clipboard and script statuses.
+"status.copied" = "Tiles copied"
+"status.cut" = "Tiles cut"
+"status.pasted" = "Tiles pasted"
+"status.deleted" = "Tiles deleted"
+"status.nothing_selected" = "Nothing selected"
+"status.nothing_copied" = "Clipboard is empty"
+"status.nothing_pasted" = "Nothing to paste here"
+"status.script_ran" = "Script finished"
+"status.moved" = "Tiles moved"
+"status.room_moved" = "Room moved"
+"status.room_resized" = "Room resized"
+"status.script_failed" = "Script error: {error}"

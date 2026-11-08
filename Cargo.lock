@@ -2649,6 +2649,7 @@ dependencies = [
  "bincode",
  "clap",
  "image",
+ "releste-kernel",
  "releste-map",
  "releste-math",
  "releste-world",
@@ -2669,9 +2670,12 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "image",
+ "mlua",
  "releste-kernel",
  "releste-map",
  "releste-math",
+ "releste-render",
  "releste-world",
  "serde",
  "thiserror 2.0.21",
@@ -2730,6 +2734,7 @@ dependencies = [
  "slotmap",
  "thiserror 2.0.21",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

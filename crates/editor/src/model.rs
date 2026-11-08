@@ -58,6 +58,31 @@ impl Selection {
     }
 }
 
+/// A rectangular copy of tile cells for paste.
+///
+/// Cell values are engine tile ids; 0 means empty. The grid is row-major
+/// and room-relative, so pasting works across rooms of any size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileClipboard {
+    /// Width in cells.
+    pub width: u32,
+    /// Height in cells.
+    pub height: u32,
+    /// Row-major cell values.
+    pub cells: Vec<u16>,
+}
+
+impl TileClipboard {
+    /// The value at (x, y) relative to the clipboard origin, or 0 when out
+    /// of range.
+    pub fn get(&self, x: u32, y: u32) -> u16 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        self.cells[(y as usize) * (self.width as usize) + (x as usize)]
+    }
+}
+
 /// Document snapshot (the undo unit).
 #[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
@@ -76,6 +101,10 @@ pub struct Editor {
     redo: Vec<Snapshot>,
     undo_depth: usize,
     current_room: usize,
+    /// In-flight stroke: the pre-stroke document, committed on end_stroke.
+    stroke: Option<Snapshot>,
+    /// Whether the open stroke actually changed something.
+    stroke_touched: bool,
 }
 
 impl Default for Editor {
@@ -101,6 +130,8 @@ impl Editor {
             redo: Vec::new(),
             undo_depth: DEFAULT_UNDO_DEPTH,
             current_room: 0,
+            stroke: None,
+            stroke_touched: false,
         }
     }
 
@@ -116,6 +147,8 @@ impl Editor {
             redo: Vec::new(),
             undo_depth: DEFAULT_UNDO_DEPTH,
             current_room: 0,
+            stroke: None,
+            stroke_touched: false,
         })
     }
 
@@ -221,8 +254,21 @@ impl Editor {
     // ---------- Undo / redo ----------
 
     /// Records one undoable operation.
+    ///
+    /// Inside an open stroke (see [`Editor::begin_stroke`]) the snapshot is
+    /// deferred: the whole stroke collapses into the single snapshot taken
+    /// when the stroke began, so dragging a brush across twenty cells is one
+    /// undo step, not twenty.
     fn record(&mut self, label: impl Into<String>) {
         let label = label.into();
+        if self.stroke.is_some() {
+            // The pre-stroke snapshot already holds the document; per-op
+            // labels are discarded in favour of the stroke label.
+            self.stroke_touched = true;
+            self.redo.clear();
+            self.dirty = true;
+            return;
+        }
         self.undo.push(Snapshot {
             document: self.document.clone(),
             label,
@@ -235,8 +281,38 @@ impl Editor {
         self.dirty = true;
     }
 
+    /// Begins a multi-operation stroke that undoes as one step.
+    ///
+    /// Call this when a pointer gesture starts (or a script run begins) and
+    /// [`Editor::end_stroke`] when it finishes. Opening a stroke while
+    /// another is open commits the previous one first. A stroke that never
+    /// changed anything pushes no undo entry.
+    pub fn begin_stroke(&mut self, label: impl Into<String>) {
+        self.end_stroke();
+        self.stroke = Some(Snapshot {
+            document: self.document.clone(),
+            label: label.into(),
+        });
+        self.stroke_touched = false;
+    }
+
+    /// Commits the open stroke as one undo entry (if it changed anything).
+    pub fn end_stroke(&mut self) {
+        if let Some(pre) = self.stroke.take() {
+            if self.stroke_touched {
+                self.undo.push(pre);
+                if self.undo.len() > self.undo_depth {
+                    self.undo.remove(0);
+                }
+            }
+        }
+        self.stroke_touched = false;
+    }
+
     /// Undoes one step.
     pub fn undo(&mut self) -> Result<&str, EditorError> {
+        // Undoing mid-stroke commits the stroke first, then undoes it.
+        self.end_stroke();
         let snapshot = self.undo.pop().ok_or(EditorError::NothingToUndo)?;
         let current = Snapshot {
             document: std::mem::replace(&mut self.document, snapshot.document),
@@ -250,6 +326,8 @@ impl Editor {
 
     /// Redoes one step.
     pub fn redo(&mut self) -> Result<&str, EditorError> {
+        // Redoing mid-stroke commits the stroke first.
+        self.end_stroke();
         let snapshot = self.redo.pop().ok_or(EditorError::NothingToRedo)?;
         let current = Snapshot {
             document: std::mem::replace(&mut self.document, snapshot.document),
@@ -327,11 +405,37 @@ impl Editor {
             .name
             .clone();
         self.record(format!("Resize room {name} bounds"));
-        self.document.rooms[index].bounds = bounds;
+        {
+            let room = &mut self.document.rooms[index];
+            room.bounds = bounds;
+            // Tile grids must always match the room size (one 8 px cell per
+            // tile). A stale grid drew a smaller grid inside the enlarged
+            // room and saved an invalid map.
+            let gw = ((bounds.w / 8.0).round() as u32).max(1);
+            let gh = ((bounds.h / 8.0).round() as u32).max(1);
+            room.tiles = Self::resized_tileset(&room.tiles, gw, gh);
+            room.bg = Self::resized_tileset(&room.bg, gw, gh);
+            room.bg_scenery = Self::resized_tileset(&room.bg_scenery, gw, gh);
+            room.fg_scenery = Self::resized_tileset(&room.fg_scenery, gw, gh);
+        }
         Ok(())
     }
 
     // ---------- Tile operations ----------
+
+    /// Copies a tile grid into a new grid of the given size, preserving the
+    /// overlapping region and zero-filling the rest.
+    fn resized_tileset(ts: &Tileset, width: u32, height: u32) -> Tileset {
+        let mut next = Tileset::new(ts.atlas.clone(), width, height);
+        for y in 0..ts.height.min(height) {
+            for x in 0..ts.width.min(width) {
+                if let Some(v) = ts.get(x, y) {
+                    next.set(x, y, v);
+                }
+            }
+        }
+        next
+    }
 
     /// Ensures the current room's tile grid size (grows it when too small, preserving existing content).
     pub fn ensure_tile_grid(&mut self, width: u32, height: u32) -> Result<(), EditorError> {
@@ -437,6 +541,117 @@ impl Editor {
         Ok(changed)
     }
 
+    // ---------- Tile clipboard ----------
+
+    /// Copies an inclusive tile rectangle from one room into a clipboard.
+    ///
+    /// Returns `None` when the room does not exist; cells outside the room
+    /// grid come back as 0 (empty), so partial overlaps are safe.
+    pub fn copy_tiles(
+        &self,
+        room: usize,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> Option<TileClipboard> {
+        let tiles = &self.document.rooms.get(room)?.tiles;
+        let (lx, hx) = (x0.min(x1), x0.max(x1));
+        let (ly, hy) = (y0.min(y1), y0.max(y1));
+        let width = hx.saturating_sub(lx) + 1;
+        let height = hy.saturating_sub(ly) + 1;
+        let mut cells = Vec::with_capacity((width as usize) * (height as usize));
+        for y in ly..=hy {
+            for x in lx..=hx {
+                cells.push(tiles.get(x, y).unwrap_or(0));
+            }
+        }
+        Some(TileClipboard {
+            width,
+            height,
+            cells,
+        })
+    }
+
+    /// Cuts an inclusive tile rectangle: copies it and clears the source.
+    ///
+    /// The undo entry is only recorded when something actually changed;
+    /// the clipboard is still returned for an all-empty region.
+    pub fn cut_tiles(
+        &mut self,
+        room: usize,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+    ) -> Option<TileClipboard> {
+        let clip = self.copy_tiles(room, x0, y0, x1, y1)?;
+        if self.delete_tiles(room, x0, y0, x1, y1) == 0 {
+            return Some(clip);
+        }
+        Some(clip)
+    }
+
+    /// Clears an inclusive tile rectangle. Returns the number of cells
+    /// actually changed; 0 records no undo entry.
+    pub fn delete_tiles(&mut self, room: usize, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
+        let Some(r) = self.document.rooms.get(room) else {
+            return 0;
+        };
+        let (lx, hx) = (x0.min(x1), x0.max(x1));
+        let (ly, hy) = (y0.min(y1), y0.max(y1));
+        let changed = (ly..=hy)
+            .flat_map(|y| (lx..=hx).map(move |x| (x, y)))
+            .filter(|(x, y)| r.tiles.get(*x, *y).is_some_and(|v| v != 0))
+            .count();
+        if changed == 0 {
+            return 0;
+        }
+
+        self.record(format!("Delete tiles ({lx},{ly})-({hx},{hy})"));
+        let r = &mut self.document.rooms[room];
+        for y in ly..=hy {
+            for x in lx..=hx {
+                r.tiles.set(x, y, 0);
+            }
+        }
+        changed
+    }
+
+    /// Pastes clipboard cells with the clipboard origin at (x, y).
+    ///
+    /// Cells that fall outside the room grid are skipped, so a clipboard
+    /// can hang over an edge. Returns the number of cells actually
+    /// changed; 0 records no undo entry.
+    pub fn paste_tiles(&mut self, room: usize, x: u32, y: u32, clip: &TileClipboard) -> usize {
+        let Some(r) = self.document.rooms.get(room) else {
+            return 0;
+        };
+        let changed = (0..clip.height)
+            .flat_map(|dy| (0..clip.width).map(move |dx| (dx, dy)))
+            .filter(|(dx, dy)| {
+                let cell = clip.get(*dx, *dy);
+                let (gx, gy) = (x.saturating_add(*dx), y.saturating_add(*dy));
+                // Any in-bounds cell whose value differs counts as a change,
+                // including empty clipboard cells clearing existing tiles.
+                r.tiles.get(gx, gy).is_some_and(|v| v != cell)
+            })
+            .count();
+        if changed == 0 {
+            return 0;
+        }
+
+        self.record(format!("Paste {}x{} tiles", clip.width, clip.height));
+        let r = &mut self.document.rooms[room];
+        for dy in 0..clip.height {
+            for dx in 0..clip.width {
+                let (gx, gy) = (x.saturating_add(dx), y.saturating_add(dy));
+                r.tiles.set(gx, gy, clip.get(dx, dy));
+            }
+        }
+        changed
+    }
+
     // ---------- Entity operations ----------
 
     /// Adds an entity.
@@ -501,6 +716,36 @@ impl Editor {
             .expect("checked above");
         entity.x = new_x;
         entity.y = new_y;
+        Ok(())
+    }
+
+    /// Moves an entity without recording an undo step.
+    ///
+    /// This is the interactive continuation of [`Editor::move_entity`]: the
+    /// first frame of a drag gesture records via `move_entity`, and every
+    /// following frame calls this so the whole gesture stays one undo entry.
+    pub fn set_entity_position(&mut self, id: EntityId, x: f32, y: f32) -> Result<(), EditorError> {
+        let idx = self.current_room;
+        let room = self
+            .document
+            .rooms
+            .get(idx)
+            .ok_or(EditorError::NoRoom(idx))?;
+        let entity = room
+            .entities
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or(EditorError::NoEntity(id))?;
+        if (entity.x - x).abs() < f32::EPSILON && (entity.y - y).abs() < f32::EPSILON {
+            return Ok(());
+        }
+        let entity = self.document.rooms[idx]
+            .entities
+            .iter_mut()
+            .find(|e| e.id == id)
+            .expect("checked above");
+        entity.x = x;
+        entity.y = y;
         Ok(())
     }
 
@@ -739,6 +984,32 @@ mod tests {
     }
 
     #[test]
+    fn dragging_position_does_not_record_undo() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        let id = e.add_entity(entity("spinner", 10.0, 20.0)).unwrap();
+        let before = e.undo_len();
+        e.set_entity_position(id, 88.0, 96.0).unwrap();
+        assert_eq!(e.undo_len(), before);
+        let got = &e.room().unwrap().entities[0];
+        assert_eq!(got.x, 88.0);
+        assert_eq!(got.y, 96.0);
+    }
+
+    #[test]
+    fn drag_then_undo_restores_the_pre_move_position() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        let id = e.add_entity(entity("spinner", 10.0, 20.0)).unwrap();
+        e.move_entity(id, Vec2::from_f32s(30.0, 40.0)).unwrap();
+        e.set_entity_position(id, 50.0, 60.0).unwrap();
+        e.undo().unwrap();
+        let got = &e.room().unwrap().entities[0];
+        assert_eq!(got.x, 10.0);
+        assert_eq!(got.y, 20.0);
+    }
+
+    #[test]
     fn removing_unknown_entity_errors() {
         let mut e = Editor::new();
         e.add_room(room("a")).unwrap();
@@ -824,5 +1095,165 @@ mod tests {
         let mut e = Editor::new();
         e.add_room(room("a")).unwrap();
         assert!(matches!(e.set_current_room(5), Err(EditorError::NoRoom(5))));
+    }
+
+    #[test]
+    fn resizing_room_bounds_resyncs_the_tile_grids() {
+        let mut e = Editor::new();
+        let mut room = room("r");
+        room.bounds = RectDef {
+            x: 0.0,
+            y: 0.0,
+            w: 16.0,
+            h: 16.0,
+        };
+        room.tiles = Tileset::new("Gameplay", 2, 2);
+        room.tiles.set(1, 1, 7);
+        e.add_room(room).unwrap();
+
+        e.set_room_bounds(
+            0,
+            RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: 32.0,
+                h: 24.0,
+            },
+        )
+        .expect("resize grows");
+        let r = e.room().expect("room");
+        assert_eq!((r.tiles.width, r.tiles.height), (4, 3));
+        assert_eq!(r.tiles.get(1, 1), Some(7));
+        assert_eq!((r.bg.width, r.bg.height), (4, 3));
+
+        e.set_room_bounds(
+            0,
+            RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: 8.0,
+                h: 8.0,
+            },
+        )
+        .expect("resize shrinks");
+        let r = e.room().expect("room");
+        assert_eq!((r.tiles.width, r.tiles.height), (1, 1));
+    }
+
+    #[test]
+    fn a_paint_stroke_is_one_undo_step() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        e.begin_stroke("Paint tiles");
+        e.paint_tile(0, 0, 5).unwrap();
+        e.paint_tile(1, 0, 5).unwrap();
+        e.paint_tile(2, 0, 5).unwrap();
+        e.end_stroke();
+        // add_room + the merged stroke.
+        assert_eq!(e.undo_len(), 2);
+        assert_eq!(e.undo_label(), Some("Paint tiles"));
+        e.undo().unwrap();
+        let r = e.room().expect("room");
+        assert_eq!(r.tiles.get(0, 0), Some(0));
+        assert_eq!(r.tiles.get(2, 0), Some(0));
+    }
+
+    #[test]
+    fn a_drag_fill_stroke_is_one_undo_step() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        e.begin_stroke("Paint tiles");
+        e.fill_tiles(0, 0, 3, 2, 9).unwrap();
+        e.paint_tile(5, 5, 9).unwrap();
+        e.end_stroke();
+        // add_room + the merged stroke.
+        assert_eq!(e.undo_len(), 2);
+        e.undo().unwrap();
+        e.redo().unwrap();
+        assert_eq!(e.room().expect("room").tiles.get(5, 5), Some(9));
+    }
+
+    #[test]
+    fn an_unchanged_stroke_pushes_no_undo_entry() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        e.begin_stroke("Paint tiles");
+        // Painting the same value everywhere changes nothing.
+        e.paint_tile(0, 0, 0).unwrap();
+        e.fill_tiles(0, 0, 3, 3, 0).unwrap();
+        e.end_stroke();
+        // Only add_room; the no-op stroke pushed nothing.
+        assert_eq!(e.undo_len(), 1);
+    }
+
+    #[test]
+    fn undo_during_a_stroke_commits_the_stroke_first() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        e.begin_stroke("Paint tiles");
+        e.paint_tile(1, 1, 3).unwrap();
+        // Undo while the stroke is still open: the stroke is committed and
+        // then immediately undone, so the tile is empty again.
+        e.undo().unwrap();
+        assert_eq!(e.room().expect("room").tiles.get(1, 1), Some(0));
+        // Only add_room remains.
+        assert_eq!(e.undo_len(), 1);
+    }
+
+    #[test]
+    fn copy_cut_delete_paste_roundtrip() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        e.fill_tiles(1, 1, 2, 2, 7).unwrap();
+
+        let clip = e.copy_tiles(0, 1, 1, 2, 2).expect("clip");
+        assert_eq!((clip.width, clip.height), (2, 2));
+        assert_eq!(clip.get(0, 0), 7);
+        assert_eq!(clip.get(1, 1), 7);
+        assert_eq!(clip.get(5, 5), 0);
+
+        let cut = e.cut_tiles(0, 1, 1, 2, 2).expect("clip");
+        assert_eq!(cut, clip);
+        let r = e.room().expect("room");
+        assert_eq!(r.tiles.get(1, 1), Some(0));
+        assert_eq!(e.undo_len(), 3); // add_room + fill + cut
+
+        e.undo().unwrap(); // undo cut
+        assert_eq!(e.room().expect("room").tiles.get(2, 2), Some(7));
+
+        // Paste shifted to (3, 3).
+        let pasted = e.paste_tiles(0, 3, 3, &clip);
+        assert_eq!(pasted, 4);
+        let r = e.room().expect("room");
+        assert_eq!(r.tiles.get(3, 3), Some(7));
+        assert_eq!(r.tiles.get(4, 4), Some(7));
+    }
+
+    #[test]
+    fn paste_over_the_edge_skips_outside_cells() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap(); // 8x8 grid
+        let clip = TileClipboard {
+            width: 2,
+            height: 1,
+            cells: vec![3, 4],
+        };
+        // Origin (7, 7): the second cell hangs past the edge.
+        let changed = e.paste_tiles(0, 7, 7, &clip);
+        assert_eq!(changed, 1);
+        let r = e.room().expect("room");
+        assert_eq!(r.tiles.get(7, 7), Some(3));
+    }
+
+    #[test]
+    fn delete_of_an_empty_region_records_nothing() {
+        let mut e = Editor::new();
+        e.add_room(room("a")).unwrap();
+        assert_eq!(e.delete_tiles(0, 0, 0, 3, 3), 0);
+        assert_eq!(e.undo_len(), 1); // only add_room
+        e.begin_stroke("Delete tiles");
+        assert_eq!(e.delete_tiles(0, 0, 0, 3, 3), 0);
+        e.end_stroke();
+        assert_eq!(e.undo_len(), 1);
     }
 }

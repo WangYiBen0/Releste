@@ -1,0 +1,179 @@
+# Releste 编辑器语言包 - zh_CN（简体中文，UTF-8）。
+#
+# 本文件是运行时数据，不是源代码。编辑器在启动和切换语言时从磁盘读取，
+# 永远不会被编译进二进制文件。
+#
+# 翻译约定：
+#   - 术语表见 CONTRIBUTING-i18n.md，请勿自行改动已定术语。
+#   - {name} 是占位符，渲染时替换；不要翻译花括号里的名字，只翻译它周围。
+#   - 键名必须与 locales/en_US/editor.toml 完全一致，不要增删。
+#   - 本文件天然包含非 ASCII 字节，这是允许的：仓库的 ASCII 检查会跳过
+#     路径中包含 locale 的文件（见 docs/i18n.md 第 7 节）。
+#
+# 译文评审须由母语者完成。
+
+[editor]
+
+# -- 应用外观 -----------------------------------------------------------
+"app.window_title" = "Releste 编辑器"
+
+# -- 命令行（--about / --help / --check） -------------------------------
+"app.check.summary" = "ok：{area}（{rooms} 个房间，{entities} 个实体，{sync_rules} 条同步规则）"
+"app.error.open_failed" = "打开 {path} 失败：{error}"
+"app.error.run_failed" = "编辑器出错：{error}"
+
+# -- 菜单栏 -------------------------------------------------------------
+"menu.file" = "文件"
+"menu.file.new" = "新建"
+"menu.file.open" = "打开…"
+"menu.file.save" = "保存"
+"menu.file.save_as" = "另存为…"
+"menu.edit" = "编辑"
+"menu.edit.undo" = "撤销"
+"menu.edit.undo_with" = "撤销：{label}"
+"menu.edit.redo" = "重做"
+"menu.room" = "房间"
+"menu.room.add" = "新建房间"
+"menu.language" = "语言"
+
+# -- 状态栏 -------------------------------------------------------------
+"status.ready" = "就绪"
+"status.saved" = "已保存"
+"status.unsaved" = "未保存*"
+"status.untitled" = "（未命名）"
+"status.new_map" = "新建地图"
+"status.save_failed" = "保存失败：{error}"
+"status.undo_failed" = "撤销失败：{error}"
+"status.redo_failed" = "重做失败：{error}"
+"status.room_added" = "已添加房间 {name}"
+"status.room_add_failed" = "添加失败：{error}"
+"status.entity_placed" = "已放置实体"
+"status.place_failed" = "放置失败：{error}"
+"status.write_failed" = "写入失败：{error}"
+
+# -- 左侧面板：房间、画笔、实体 -----------------------------------------
+"panel.rooms" = "房间"
+"panel.tool_tiles" = "图块"
+"panel.tool_entities" = "实体"
+"panel.tile_brush" = "图块画笔"
+"panel.no_tile_art" = "无图块素材（请先运行内容管线）"
+"panel.brush_hint" = "左键绘制，拖动填充矩形，右键擦除；也可选用上方的橡皮擦"
+"panel.tool_eraser" = "橡皮擦"
+"panel.entities" = "实体"
+"panel.entity_no_kinds" = "（尚未注册实体 schema）"
+"panel.entity_armed" = "放置中：{kind}，右键取消"
+"panel.entity_place_hint" = "点击画布放置当前选中的实体类型"
+"panel.place_entity" = "放在当前房间中心"
+
+# -- 右侧面板：由 Schema 生成的检查器 -----------------------------------
+"panel.inspector" = "检查器"
+"inspector.no_selection" = "未选中实体"
+"inspector.entity_gone" = "选中的实体已不存在"
+"inspector.kind" = "类型：{kind}"
+"inspector.id" = "ID：{id}"
+"inspector.axis_x" = "x "
+"inspector.axis_y" = "y "
+"inspector.no_schema" = "（该类型未注册 Schema，显示原始属性）"
+
+# -- 画布 ---------------------------------------------------------------
+"canvas.no_room" = "没有房间：请先创建一个"
+
+# -- 通用控件 -----------------------------------------------------------
+"widget.combo_empty" = "?"
+"widget.type_mismatch.int" = "（类型不匹配：应为 Int）"
+"widget.type_mismatch.float" = "（类型不匹配：应为 Float）"
+"widget.type_mismatch.string" = "（类型不匹配：应为 String）"
+"widget.type_mismatch.bool" = "（类型不匹配：应为 Bool）"
+"widget.type_mismatch.enum" = "（类型不匹配：应为 Enum）"
+"widget.type_mismatch.color" = "（类型不匹配：应为 Color）"
+"widget.type_mismatch.entity_ref" = "（类型不匹配：应为 EntityRef）"
+"widget.type_mismatch.vec2" = "（类型不匹配：应为 Vec2）"
+
+# -- 文件对话框 ---------------------------------------------------------
+"dialog.up" = "上级目录"
+"dialog.filename" = "文件名"
+"dialog.open" = "打开"
+"dialog.save" = "保存"
+"dialog.cancel" = "取消"
+"dialog.ok" = "确定"
+"dialog.unsaved_title" = "未保存的更改"
+"dialog.unsaved_text" = "地图有未保存的更改。要放弃并关闭吗？"
+"dialog.discard" = "不保存"
+
+# -- 房间操作 -----------------------------------------------------------
+"panel.room_rename" = "重命名房间"
+"panel.room_delete" = "删除房间"
+"panel.room_bounds" = "房间边界"
+"status.room_removed" = "已删除房间"
+"status.room_remove_failed" = "删除失败：{error}"
+"status.room_renamed" = "房间已重命名为 {name}"
+"status.room_rename_failed" = "重命名失败：{error}"
+
+# -- 检查器操作 ---------------------------------------------------------
+"inspector.delete_entity" = "删除实体"
+"status.entity_removed" = "已删除实体"
+"status.remove_failed" = "删除失败：{error}"
+
+# -- 画布视图 -----------------------------------------------------------
+"status.reset_view" = "重置视图"
+
+
+# -- 文件操作结果 -------------------------------------------------------
+"status.opened" = "已打开 {path}"
+"status.open_failed" = "打开失败：{error}"
+"status.saved_as" = "已保存到 {path}"
+
+# -- View / font / test -------------------------------------------------
+"menu.view" = "视图"
+"menu.view.reset" = "重置视图"
+"menu.view.font_scale" = "界面缩放"
+"menu.view.test_map" = "在游戏中测试地图"
+"status.test_launching" = "正在启动游戏：{path}"
+"status.test_failed" = "启动游戏失败：{error}"
+"status.test_no_path" = "请先保存地图，再在游戏中测试"
+"status.test_unsaved" = "测试前已保存地图：{path}"
+"panel.entity_list" = "房间内实体"
+"panel.entity_select_hint" = "点击实体选中，拖动即可移动"
+
+"menu.settings" = "字体设置"
+"settings.title" = "字体设置"
+"settings.font" = "后备字体"
+"settings.face" = "字面索引"
+"settings.auto" = "自动检测"
+"settings.scale" = "界面缩放"
+"settings.reset" = "重置"
+"settings.hint" = "修改立即生效，并保存到 {path}"
+"settings.no_fonts" = "未在系统中找到 CJK 字体"
+"status.settings_save_failed" = "设置保存失败：{error}"
+
+# Tool tabs and tile selection.
+"panel.tool_select" = "选择"
+"panel.select_tool" = "图块选择"
+"panel.room_drag_hint" = "Alt+拖动画布移动房间；Alt+拖动边框调整大小。"
+"panel.select_hint" = "拖拽选择一片图块矩形，复制、剪切、粘贴、删除都作用于它；拖动选区即可移动它。"
+
+# Edit-menu clipboard actions.
+"menu.edit.copy" = "复制"
+"menu.edit.cut" = "剪切"
+"menu.edit.paste" = "粘贴"
+"menu.edit.delete" = "删除"
+
+# Lua script console.
+"menu.script" = "脚本..."
+"script.title" = "脚本控制台"
+"script.run" = "运行"
+"script.hint" = "Ctrl+Enter 运行。editor.set_tile(x, y, v) / get_tile / fill / room_width / room_height / room_count / current_room / set_current_room / room_names / echo(...)"
+
+# Clipboard and script statuses.
+"status.copied" = "已复制图块"
+"status.cut" = "已剪切图块"
+"status.pasted" = "已粘贴图块"
+"status.deleted" = "已删除图块"
+"status.nothing_selected" = "未选中任何内容"
+"status.nothing_copied" = "剪贴板为空"
+"status.nothing_pasted" = "此处没有可粘贴的内容"
+"status.script_ran" = "脚本执行完毕"
+"status.moved" = "已移动图块"
+"status.room_moved" = "房间已移动"
+"status.room_resized" = "房间已调整大小"
+"status.script_failed" = "脚本错误：{error}"
