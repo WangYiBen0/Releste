@@ -848,10 +848,20 @@ impl Session {
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
         let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
         let origin = sprites::origin_in_trim(sprite, sprites::PLAYER_BODY_FRAME_ORIGIN);
+        // Vanilla mirrors the player with a **negative `Scale.X`**, not with
+        // `SpriteEffects.FlipHorizontally`: `Player.Render` multiplies the scale by `Facing`
+        // around `base.Render()` and undoes it afterwards (119641/119657). FNA mirrors a
+        // negative-scaled quad **about the origin** (`GenerateVertexInfo`:
+        // `cornerX = -originX * destinationW`), so the destination rect itself moves.
+        // Swapping only the UVs would leave the quad where the unflipped sprite was, which is
+        // the same thing only when the effective origin sits at the quad's centre -- not the
+        // case for a trimmed frame (`runFast00`: origin.x 9 of width 14), so the two facings
+        // were not mirror images and the flipped sprite looked shifted.
+        let offset_x = if flip_x { w - origin.0 } else { origin.0 };
         Some(
             SpriteDraw::new(
                 id,
-                anchor - Vec2::from_f32s(origin.0, origin.1),
+                anchor - Vec2::from_f32s(offset_x, origin.1),
                 Vec2::from_f32s(w, h),
                 uv,
             )
@@ -1820,5 +1830,102 @@ mod tests {
         assert_eq!(sprites::HairFrame::default().offset, (0, 0));
         let nodes = hair_nodes(Vec2::from_f32s(10.0, 20.0), 1.0, hair);
         assert_eq!(nodes[0], Vec2::from_f32s(10.0, 11.0), "anchor + (0, -9)");
+    }
+
+    /// Left and right facing must be mirror images about `Player.Position`.
+    ///
+    /// Vanilla flips by negating `Sprite.Scale.X` (119641/119657) and FNA mirrors a
+    /// negative-scaled quad about its origin; flipping only the UVs (which is what
+    /// `SpriteEffects.FlipHorizontally` does) leaves the quad in place and breaks the
+    /// mirror for every frame whose trimmed content is not centred on the origin.
+    /// A session whose atlas carries player-like frames with **off-centre** trims -- the
+    /// case that makes UV-only flipping asymmetric. Built in memory: the nix/CI sources are
+    /// git-tracked only, so `assets/` does not exist there.
+    fn sprite_session() -> Session {
+        use releste_render::atlas::{Sprite, TextureGroup, TextureKind};
+        let sprite = |name: &str, w: i16, h: i16, ox: i16, oy: i16| Sprite {
+            name: name.into(),
+            x: 0,
+            y: 0,
+            w,
+            h,
+            origin_x: ox,
+            origin_y: oy,
+            frame_w: 32,
+            frame_h: 32,
+            source: None,
+        };
+        // Trim values copied from the real `Gameplay.atlas` entries (name, w, h, origin_x,
+        // origin_y): none of them is centred on the 32x32 frame origin (16, 32).
+        let sprites = vec![
+            sprite("characters\\player\\idle00", 13, 12, 8, 20),
+            sprite("characters\\player\\runFast00", 14, 12, 7, 20),
+            sprite("characters\\player\\runFast05", 14, 11, 9, 21),
+            sprite("characters\\player\\flip00", 14, 11, 11, 21),
+            sprite("characters\\player\\jumpSlow00", 13, 16, 9, 16),
+        ];
+        let mut session = seam_session();
+        session.atlas = SpriteAtlas::new(
+            AtlasDescriptor {
+                name: "Test".into(),
+                version: 0,
+                links: Vec::new(),
+                textures: vec![TextureGroup {
+                    name: "Test0".into(),
+                    kind: TextureKind::Png,
+                    source: "atlas/Test/Test0.png".into(),
+                    width: Some(64),
+                    height: Some(64),
+                    sprites,
+                }],
+            },
+            Path::new("/nonexistent"),
+        );
+        session
+    }
+
+    /// Left and right facing must be mirror images about `Player.Position`.
+    ///
+    /// Vanilla flips the player by negating `Sprite.Scale.X` (`Player.Render` multiplies the
+    /// scale by `Facing` around `base.Render()`, pureCeleste.cs:119641/119657) and FNA
+    /// mirrors a negative-scaled quad **about the origin**; swapping only the UVs (which is
+    /// what `SpriteEffects.FlipHorizontally` does) leaves the quad in place, so every frame
+    /// whose trimmed content is not centred on the origin came out asymmetric.
+    #[test]
+    fn flipped_body_is_the_mirror_of_the_unflipped_body() {
+        let session = sprite_session();
+        let anchor = Vec2::from_f32s(100.0, 200.0);
+        let size = |_id: u32| Some((64u32, 64u32));
+
+        for name in [
+            "characters\\player\\idle00",
+            "characters\\player\\runFast00",
+            "characters\\player\\runFast05",
+            "characters\\player\\flip00",
+            "characters\\player\\jumpSlow00",
+        ] {
+            let right = session
+                .body_draw(&size, anchor, false, Some(name))
+                .unwrap_or_else(|| panic!("{name} missing from the fixture atlas"));
+            let left = session
+                .body_draw(&size, anchor, true, Some(name))
+                .expect("the same sprite must resolve when flipped");
+
+            // Reflecting the unflipped quad about the anchor gives the flipped quad.
+            let mirrored_x =
+                2.0 * anchor.x.to_f32() - right.position.x.to_f32() - right.size.x.to_f32();
+            assert!(
+                (left.position.x.to_f32() - mirrored_x).abs() < 0.001,
+                "{name}: flipped body at x={} is not the mirror of x={} (mirror would be {mirrored_x})",
+                left.position.x.to_f32(),
+                right.position.x.to_f32()
+            );
+            assert_eq!(left.position.y, right.position.y, "{name}: y must not move");
+            assert_eq!(left.size, right.size, "{name}: size must not change");
+            assert!(
+                left.flip_x,
+                "{name}: the flipped body must still swap its UVs"
+            );
+        }
     }
 }
