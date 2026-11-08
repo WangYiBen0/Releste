@@ -11,6 +11,8 @@ path = "src/main.rs"
 releste-math = { path = "../../crates/math" }
 releste-world = { path = "../../crates/world" }
 releste-map = { path = "../../crates/map" }
+# Shared Appendix A log format (ROADMAP 1.1: kernel/src/log.rs is the home).
+releste-kernel = { path = "../../crates/kernel" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

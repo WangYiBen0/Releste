@@ -39,11 +39,8 @@ struct Args {
 }
 
 fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    // Same Appendix A format as the game and the editor.
+    releste_kernel::log::init(false);
 
     let args = Args::parse();
 

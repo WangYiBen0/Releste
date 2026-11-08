@@ -10,7 +10,7 @@
 mod app;
 mod devtools;
 mod filmstrip;
-mod logging;
+use releste_kernel::log as logging;
 mod paths;
 mod player;
 mod service;
@@ -24,7 +24,6 @@ use std::time::Instant;
 
 use clap::{ArgAction, Parser};
 use releste_kernel::Kernel;
-use tracing_subscriber::EnvFilter;
 
 use crate::app::GameApp;
 use crate::paths::Paths;
@@ -181,15 +180,9 @@ impl Args {
 fn main() -> ExitCode {
     let args = Args::parse();
 
-    let filter = args.filter();
-    let ansi = logging::ansi_enabled(args.no_color);
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_new(&filter).unwrap_or_else(|e| {
-            eprintln!("warning: bad --log/RUST_LOG value ({e}); falling back to `info`");
-            EnvFilter::new("info")
-        }))
-        .event_format(logging::AppendixA::new(ansi));
-    subscriber.init();
+    // The log format is shared by every binary (releste-kernel::log), so the
+    // editor, the server and the pipeline look exactly like the game.
+    logging::init_with(args.no_color, Some(args.filter().as_str()));
 
     install_panic_hook();
 
