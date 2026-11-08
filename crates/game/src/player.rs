@@ -907,18 +907,11 @@ impl Player {
                 if aim.x != Fx::zero() {
                     self.facing = aim.x.signum(); // 122779-122782
                 }
-                // 122796-122802: a grounded downward dash -> duck slide (horizontal speed
-                // x1.2).
-                if self.on_ground
-                    && self.dash_dir.x != Fx::zero()
-                    && self.dash_dir.y > Fx::zero()
-                    && self.vel.y > Fx::zero()
-                {
-                    self.dash_dir = Vec2::new(Fx::from_int(self.dash_dir.x.signum()), Fx::zero());
-                    self.vel.y = Fx::zero();
-                    self.vel.x *= Fx::from_ratio(6, 5);
-                    self.ducking = true;
-                }
+                // The grounded down-diagonal dash converts to a duck slide on the same
+                // tick, but through the collision handler: `Speed = aim * 240` is applied
+                // here, `MoveV` then hits the floor and `OnCollideV`
+                // (121577-121582) performs the conversion. It is implemented once, in
+                // `slide_y`, so the airborne landing path gets it too.
                 self.dash_phase = 1;
             } else {
                 self.dash_phase += 1;
@@ -1674,6 +1667,24 @@ impl Player {
                 self.pos.y = edge_y(ny, step, self.box_dims().2);
                 if step > Fx::zero() {
                     self.on_ground = true;
+                    // Vanilla `OnCollideV` (121577-121582): a **down-diagonal dash that
+                    // lands** becomes a horizontal one -- `DashDir.Y = 0`, `Speed.Y = 0`,
+                    // `Speed.X *= 1.2`, `Ducking = true`. This is what makes the hyper
+                    // reachable from the air as well as from the ground: the dash-state
+                    // jump branch only SuperJumps for `|DashDir.Y| < 0.1`
+                    // (122632-122641), and a down-diagonal dash never satisfies that
+                    // until it lands. Regressing this made the hyper unmatchable
+                    // (a plain `Jump()` at 169.7 + 40 instead of 325 hspeed).
+                    if self.dash_dir.x != Fx::zero()
+                        && self.dash_dir.y > Fx::zero()
+                        && self.vel.y > Fx::zero()
+                    {
+                        self.dash_dir =
+                            Vec2::new(Fx::from_int(self.dash_dir.x.signum()), Fx::zero());
+                        self.vel.y = Fx::zero();
+                        self.vel.x *= Fx::from_ratio(6, 5);
+                        self.ducking = true;
+                    }
                 }
                 self.vel.y = Fx::zero();
                 return;
@@ -2554,12 +2565,120 @@ mod tests {
             ..Input::default()
         };
         p.step(&jump, std::slice::from_ref(&room));
+        println!(
+            "DEBUG after jump: state={} on_ground={} ducking={} dash_dir=({},{}) jump_buffer={} vel=({},{})",
+            p.state, p.on_ground, p.ducking, p.dash_dir.x.to_f32(), p.dash_dir.y.to_f32(),
+            p.jump_buffer, p.vel.x.to_f32(), p.vel.y.to_f32()
+        );
         assert_eq!(p.state, 0, "SuperJump returns to Normal");
         assert_eq!(
             p.vel.x, SUPER_JUMP_X,
             "SuperJump: Speed.X = 260 * Facing (120748)"
         );
         assert_eq!(p.vel.y, JUMP_SPEED, "SuperJump: Speed.Y = -105 (120749)");
+    }
+
+    /// Vanilla `OnCollideV` (121577-121582): a **down-diagonal dash that lands** becomes a
+    /// horizontal duck slide -- `DashDir.Y = 0`, `Speed.Y = 0`, `Speed.X *= 1.2`,
+    /// `Ducking = true`.
+    ///
+    /// Regression: the conversion used to live in the dash's first tick only, guarded by
+    /// `on_ground`, so it never ran for a dash that started in the air and landed later --
+    /// the air half of the hyper was impossible.
+    #[test]
+    fn landing_a_down_diagonal_dash_converts_it_to_a_duck_slide() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let dash = Input {
+            right: true,
+            down: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room)); // enter State 2, Speed = aim * 240
+        p.step(&dash, std::slice::from_ref(&room)); // MoveV hits the floor -> OnCollideV
+        assert_eq!(
+            p.dash_dir.y,
+            Fx::zero(),
+            "DashDir.Y must be zeroed on landing (121579)"
+        );
+        assert_eq!(
+            p.dash_dir.x,
+            Fx::one(),
+            "DashDir.X collapses to the sign (121578)"
+        );
+        assert_eq!(p.vel.y, Fx::zero(), "Speed.Y = 0 (121580)");
+        assert!(
+            p.ducking,
+            "Ducking = true: the landed diagonal dash is a duck slide (121582)"
+        );
+        // Down-right dash is 240/sqrt(2) = 2.828 px/tick, x1.2 = 3.394 px/tick.
+        let vx_ps = p.vel.x.to_f32() * 60.0;
+        assert!(
+            (vx_ps - 203.6).abs() < 0.5,
+            "Speed.X must be x1.2 of the diagonal dash (121581), got {vx_ps} px/s"
+        );
+    }
+
+    /// The full **air hyper**: jump, dash down-diagonal in the air, land, then jump inside
+    /// the dash window.
+    ///
+    /// The landed dash is horizontal and ducking, so `DashUpdate`'s jump branch
+    /// (122632-122641, `|DashDir.Y| < 0.1`) reaches `SuperJump` and its ducked branch
+    /// (120753-120760) doubles down on the launch: `Speed.X = 260 * 1.25 = 325` px/s and
+    /// `Speed.Y = -105 * 0.5 = -52.5` px/s.
+    #[test]
+    fn air_hyper_reaches_the_ducked_super_jump() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        p.step(&jump, std::slice::from_ref(&room)); // leave the ground
+        p.step(&jump, std::slice::from_ref(&room));
+        // Dash down-right while airborne.
+        let dash = Input {
+            right: true,
+            down: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room));
+        assert_eq!(p.state, 2, "the dash starts in the air");
+        assert!(!p.on_ground, "fixture: still airborne");
+        // Fall until the dash lands (the conversion happens in the collision handler).
+        let hold = Input {
+            right: true,
+            down: true,
+            ..Input::default()
+        };
+        // `on_ground` is the 1px probe vanilla uses too (119828), so it can read true one
+        // tick before the movement actually collides; the conversion runs in the collision
+        // handler (`OnCollideV` needs `Speed.Y > 0`), so wait for it to have happened.
+        let mut ticks = 0;
+        while (p.dash_dir.y != Fx::zero() || !p.on_ground) && ticks < 60 {
+            p.step(&hold, std::slice::from_ref(&room));
+            ticks += 1;
+        }
+        assert!(p.on_ground, "fixture: the diagonal dash must land");
+        assert_eq!(p.dash_dir.y, Fx::zero(), "the landed dash is horizontal");
+        assert!(p.ducking, "landing a diagonal dash duck-slides (121582)");
+        assert_eq!(p.state, 2, "still inside the dash window");
+        // Jump inside the window: the ducked SuperJump (325 / -52.5).
+        p.step(&jump, std::slice::from_ref(&room));
+        assert_eq!(p.state, 0, "SuperJump returns to Normal");
+        let vx_ps = p.vel.x.to_f32() * 60.0;
+        let vy_ps = p.vel.y.to_f32() * 60.0;
+        assert!(
+            (vx_ps - 325.0).abs() < 1.0,
+            "hyper horizontal speed: 260 * 1.25 = 325 px/s (120748 + 120756), got {vx_ps}"
+        );
+        assert!(
+            (vy_ps + 52.5).abs() < 1.0,
+            "hyper vertical speed: -105 * 0.5 = -52.5 px/s (120749 + 120757), got {vy_ps}"
+        );
+        assert!(!p.ducking, "the ducked branch clears Ducking (120755)");
     }
 
     /// A room with a non-(0,0) origin: hitting a wall / landing / hitting the ceiling must

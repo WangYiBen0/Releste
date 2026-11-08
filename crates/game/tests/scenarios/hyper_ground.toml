@@ -1,0 +1,44 @@
+# Ground hyper: a down-diagonal dash started on the floor converts to a duck slide in
+# `OnCollideV` (DashDir.Y = 0, Speed.X *= 1.2, Ducking = true, pureCeleste.cs:121577-121582),
+# so the dash-state jump branch (|DashDir.Y| < 0.1, 122632-122641) reaches `SuperJump`
+# (120738-120777) and its ducked branch (120753-120760) applies:
+#
+#   Speed.X = 260 * 1.25 = 325 px/s   (120748 + 120756) -> 5.4167 px/tick
+#   Speed.Y = -105 * 0.5 = -52.5 px/s (120749 + 120757) -> -0.875 px/tick
+#
+# Run: cargo run --bin releste -- --root assets --script crates/game/tests/scenarios/hyper_ground.toml
+[scenario]
+ticks = 40
+map = "0-Intro.map"
+note = "grounded down-right dash, jump inside the dash window"
+
+[[input]]
+from = 4
+to = 30
+right = true
+
+[[input]]
+from = 4
+to = 30
+down = true
+
+[[input]]
+from = 6
+to = 6
+dash = true
+
+[[input]]
+from = 12
+to = 14
+jump = true
+
+[[expect]]
+tick = 10
+state = 2
+vx = 3.394             # 240/sqrt(2) x1.2 = the duck slide
+
+[[expect]]
+tick = 12
+state = 0              # SuperJump returns to Normal
+vx = 5.4167            # 325 px/s
+vy = -0.875            # -52.5 px/s

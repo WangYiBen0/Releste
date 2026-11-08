@@ -1,0 +1,57 @@
+# Air hyper: jump, dash down-diagonal while airborne, land during the dash and jump inside
+# the window. The landing goes through the same `OnCollideV` conversion (121577-121582),
+# which is what makes the dash horizontal and ducking in time for the dash-state jump
+# branch (122632-122641) -> `SuperJump` (120738-120777) -> ducked branch (120753-120760):
+#
+#   Speed.X = 260 * 1.25 = 325 px/s   -> 5.4167 px/tick
+#   Speed.Y = -105 * 0.5 = -52.5 px/s -> -0.875 px/tick
+#
+# Regression: the conversion used to run only on the dash's first tick while grounded, so
+# this variant produced a plain `Jump()` (169.7 + 40 = 209.7 px/s) instead of a hyper.
+#
+# Run: cargo run --bin releste -- --root assets --script crates/game/tests/scenarios/hyper_air.toml
+[scenario]
+ticks = 50
+map = "0-Intro.map"
+note = "jump, air dash down-right, land, then jump: air hyper"
+
+[[input]]
+from = 4
+to = 40
+right = true
+
+[[input]]
+from = 4
+to = 8
+jump = true
+
+[[input]]
+from = 14
+to = 16
+down = true
+
+[[input]]
+from = 15
+to = 15
+dash = true
+
+[[input]]
+from = 18
+to = 34
+down = true
+
+[[input]]
+from = 24
+to = 26
+jump = true
+
+[[expect]]
+tick = 23
+on_ground = true
+vx = 3.394             # the landed dash: 240/sqrt(2) x1.2
+
+[[expect]]
+tick = 24
+state = 0
+vx = 5.4167            # 325 px/s hyper
+vy = -0.875            # -52.5 px/s
