@@ -136,6 +136,19 @@ const DASH_COOLDOWN_TICKS: u16 = 12;
 const DASH_REFILL_COOLDOWN_TICKS: u16 = 6;
 /// Dash attack window 0.3s = 18 ticks (`dashAttackTimer = 0.3f`, 122554).
 const DASH_ATTACK_TICKS: u16 = 18;
+/// Upward corner correction reach in pixels (vanilla `UpwardCornerCorrection = 4`,
+/// pureCeleste.cs:118422; the constant is inlined at its use site, 121625-121646).
+const UPWARD_CORNER_CORRECTION: i32 = 4;
+/// Upward corner correction reach while dash-attacking with no horizontal speed
+/// (vanilla `DashingUpwardCornerCorrection = 5`, pureCeleste.cs:118424; selected at
+/// 121627).
+const DASHING_UPWARD_CORNER_CORRECTION: i32 = 5;
+/// Dash corner correction reach in pixels (vanilla `DashCornerCorrection = 4`,
+/// pureCeleste.cs:118476; the loop bound at 121440 is the literal 4).
+const DASH_CORNER_CORRECTION: i32 = 4;
+/// The `0.01f` speed comparisons vanilla uses to pick a corner-correction direction
+/// (pureCeleste.cs:121544, 121630-121646).
+const SPEED_EPS: Fx = Fx::from_ratio(1, 100);
 /// Wall jump horizontal speed 130 px/s (13/6 px/tick, `WallJump`: `Speed.X = 130f*dir`,
 /// pureCeleste.cs:120836).
 const WALLJUMP_X: Fx = Fx::from_ratio(13, 6);
@@ -335,6 +348,10 @@ pub struct Player {
     dash_refill_cooldown: u16,
     /// Dash attack window (vanilla `dashAttackTimer`, 0.3s, 122554).
     dash_attack: u16,
+    /// Vanilla `dashStartedOnGround` (118794): `onGround` captured at `DashBegin`
+    /// (122537). The air-dash landing correction only runs when it is **false**
+    /// (121542), so a dash that started on the ground keeps ordinary landing rules.
+    dash_started_on_ground: bool,
     /// Target speed for varJump clamping (vanilla `varJumpSpeed` field: `Jump()` sets
     /// -105 (120698), `WallJump` -105 (120837), `BeforeUpTransition` -105 (120588),
     /// `Rebound` -120; the clamp is `min(Speed.Y, varJumpSpeed)`, 122134).
@@ -424,6 +441,7 @@ impl Player {
             dash_cooldown: 0,
             dash_refill_cooldown: 0,
             dash_attack: 0,
+            dash_started_on_ground: false,
             var_jump_speed: JUMP_SPEED,
             force_move_x: 0,
             force_move_x_ticks: 0,
@@ -642,16 +660,23 @@ impl Player {
         false
     }
 
-    /// Vanilla `CanUnDuck` (119281-119291): switching back to the normal hitbox must be
-    /// collision-free.
+    /// Vanilla `CanUnDuck` (119281-119295): standing up must be collision-free for the
+    /// **normal** hitbox -- the getter swaps `Collider = normalHitbox` around the check,
+    /// which is exactly what stops Madeline from standing under a 1-tile gap.
     fn can_unduck(&self, rooms: &[Room]) -> bool {
-        !self.ducking || !self.hits(rooms, self.pos.x, self.pos.y)
+        !self.ducking || !self.hits_normal(rooms, self.pos.x, self.pos.y)
     }
 
-    /// Vanilla `CanUnDuckAt(position)`: the normal hitbox shifted to x is
-    /// collision-free.
+    /// Vanilla `CanUnDuckAt(position)` (121168-121175): [`Player::can_unduck`] evaluated
+    /// at another x (used while walking under a low ceiling, 121884-121889).
     fn can_unduck_at(&self, rooms: &[Room], x: Fx) -> bool {
-        !self.hits(rooms, x, self.pos.y)
+        !self.ducking || !self.hits_normal(rooms, x, self.pos.y)
+    }
+
+    /// Vanilla `DuckFreeAt(position)` (121177-121187): the **ducking** hitbox fits at
+    /// that position -- the probe the dash-into-wall crouch uses (121438).
+    fn duck_free_at(&self, rooms: &[Room], x: Fx) -> bool {
+        !self.hits_duck(rooms, x, self.pos.y)
     }
 
     /// Vanilla `SlipCheck(addY)` (122395-122407): no solid 4px below the facing-side
@@ -794,6 +819,8 @@ impl Player {
         self.dash_cooldown = DASH_COOLDOWN_TICKS;
         self.dash_refill_cooldown = DASH_REFILL_COOLDOWN_TICKS;
         self.dash_attack = DASH_ATTACK_TICKS;
+        // DashBegin (122537): the flag drives the air-dash landing correction.
+        self.dash_started_on_ground = self.on_ground;
         self.before_dash_speed = self.vel;
         self.vel = Vec2::ZERO;
         self.dash_dir = Vec2::ZERO;
@@ -1605,7 +1632,22 @@ impl Player {
     /// hitbox's top-left y; while ducking the probe box is moved down 5px (bottom edge
     /// aligned).
     fn hit_in<'r>(&self, rooms: &'r [Room], x: Fx, y: Fx) -> Option<&'r Room> {
-        let (w, h, y_off) = self.box_dims();
+        self.hit_in_box(rooms, x, y, self.box_dims())
+    }
+
+    /// Whether an explicit hitbox intersects a solid: `w` x `h` pixels with its top-left
+    /// corner at `(x, y + y_off)`.
+    ///
+    /// Vanilla probes a second box by swapping `Collider` around a `CollideCheck<Solid>()`
+    /// (`CanUnDuck` 119281-119295 uses `normalHitbox`, `DuckFreeAt` 121177-121187 uses
+    /// `duckHitbox`); this is the same query without mutating the player.
+    fn hit_in_box<'r>(
+        &self,
+        rooms: &'r [Room],
+        x: Fx,
+        y: Fx,
+        (w, h, y_off): (i32, i32, i32),
+    ) -> Option<&'r Room> {
         let y = y + Fx::from_int(y_off);
         let right = x + Fx::from_int(w) - Fx::from_bits(1);
         let bottom = y + Fx::from_int(h) - Fx::from_bits(1);
@@ -1640,13 +1682,163 @@ impl Player {
         self.hit_in(rooms, x, y).is_some()
     }
 
+    /// Whether an explicit hitbox intersects a solid (the boolean view of
+    /// [`Player::hit_in_box`]).
+    fn hits_box(&self, rooms: &[Room], x: Fx, y: Fx, dims: (i32, i32, i32)) -> bool {
+        self.hit_in_box(rooms, x, y, dims).is_some()
+    }
+
+    /// Whether the **normal** (standing) hitbox intersects a solid at `(x, y)`,
+    /// whatever the current pose is (vanilla's `Collider = normalHitbox` probe).
+    fn hits_normal(&self, rooms: &[Room], x: Fx, y: Fx) -> bool {
+        self.hits_box(rooms, x, y, (PLAYER_W_PX, PLAYER_H_PX, 0))
+    }
+
+    /// Whether the **ducking** hitbox intersects a solid at `(x, y)` (vanilla's
+    /// `Collider = duckHitbox` probe).
+    fn hits_duck(&self, rooms: &[Room], x: Fx, y: Fx) -> bool {
+        self.hits_box(rooms, x, y, (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF))
+    }
+
+    /// Vanilla `OnGround(position)` (116961-116969) evaluated at another x: is there a
+    /// solid 1px below that point? Vanilla also accepts a `JumpThru` there
+    /// (`CollideCheckOutside<JumpThru>`, 116950-116959); this engine has no JumpThru yet.
+    fn grounded_at(&self, rooms: &[Room], x: Fx) -> bool {
+        self.hits(rooms, x, self.pos.y + Fx::one())
+    }
+
+    /// Vanilla `DashCorrectCheck(add)` (122449-122462): shift the player by `add`, swap to
+    /// the **hurtbox** and ask every `LedgeBlocker` whether it blocks the dash. Nothing in
+    /// this engine registers a `LedgeBlocker`, so the query is always false -- the same
+    /// answer vanilla gives when no blocker is in range.
+    fn dash_correct_check(&self, _rooms: &[Room], _add: Vec2) -> bool {
+        false
+    }
+
+    /// Vanilla `OnCollideH`'s dash corner correction (121439-121456).
+    ///
+    /// Only for a horizontal dash (`Speed.Y == 0 && Speed.X != 0`). It walks the reach
+    /// 1..=4 (`DashCornerCorrection`, 118476) crossing both vertical directions, and
+    /// accepts the first cell that is free, has solid **below** it (so it is a real
+    /// corner, not open air) and is not blocked by a `LedgeBlocker`; the player then moves
+    /// vertically onto that cell and one pixel horizontally into it. The early `return`
+    /// skips `Speed.X = 0`, so the dash slides around the corner instead of stopping.
+    fn corner_correct_dash_h(&mut self, rooms: &[Room]) -> bool {
+        if self.vel.y != Fx::zero() || self.vel.x == Fx::zero() {
+            return false;
+        }
+        let sign = self.vel.x.signum();
+        for i in 1..=DASH_CORNER_CORRECTION {
+            for num in [1, -1] {
+                let add = Vec2::new(Fx::from_int(sign), Fx::from_int(i * num));
+                let at = self.pos + add;
+                if !self.hits(rooms, at.x, at.y)
+                    && self.hits(rooms, at.x, self.pos.y + Fx::from_int((i - 1) * num))
+                    && !self.dash_correct_check(rooms, add)
+                {
+                    self.pos = at;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Vanilla `OnCollideV`'s upward corner correction (121625-121646).
+    ///
+    /// When the head clips a ceiling corner, shift up to 4px sideways towards the free
+    /// side (5 while dash-attacking with no horizontal speed,
+    /// `DashingUpwardCornerCorrection` 118424) and 1px up. The early `return` in vanilla
+    /// skips the `Speed.Y = 0` tail, so the jump keeps its upward speed after squeezing
+    /// past the corner; without a correction the caller zeroes it and cuts a nearly
+    /// finished `varJump` (121662-121665).
+    fn corner_correct_up(&mut self, rooms: &[Room]) -> bool {
+        let mut reach = UPWARD_CORNER_CORRECTION;
+        if self.dash_attack > 0 && self.vel.x.abs() < SPEED_EPS {
+            reach = DASHING_UPWARD_CORNER_CORRECTION;
+        }
+        let up = self.pos.y - Fx::one();
+        // 121630-121641: `Speed.X <= 0.01f` tries the left side.
+        if self.vel.x <= SPEED_EPS {
+            for j in 1..=reach {
+                let at = Vec2::new(self.pos.x - Fx::from_int(j), up);
+                if !self.hits(rooms, at.x, at.y) {
+                    self.pos = at;
+                    return true;
+                }
+            }
+        }
+        // 121643-121655: `Speed.X >= -0.01f` tries the right side.
+        if self.vel.x >= -SPEED_EPS {
+            for j in 1..=reach {
+                let at = Vec2::new(self.pos.x + Fx::from_int(j), up);
+                if !self.hits(rooms, at.x, at.y) {
+                    self.pos = at;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Vanilla `OnCollideV`'s air-dash landing correction (121536-121556).
+    ///
+    /// A dash that **started in the air** (`dashStartedOnGround`, 122537) whose hitbox
+    /// clips the side of a platform while moving down slides horizontally off it (1..=4px,
+    /// towards the dash direction) and 1px further down instead of landing; the early
+    /// `return` keeps `Speed.Y`, so the dash falls past the corner. A ground-started dash
+    /// is excluded, which is what keeps ordinary dash landings crisp.
+    fn corner_correct_landing(&mut self, rooms: &[Room]) -> bool {
+        if self.state != 2 || self.dash_started_on_ground {
+            return false;
+        }
+        // 121544-121556: `Speed.X <= 0.01f` -> offsets -1..=-4.
+        if self.vel.x <= SPEED_EPS {
+            for num in 1..=DASH_CORNER_CORRECTION {
+                let x = self.pos.x - Fx::from_int(num);
+                if !self.grounded_at(rooms, x) {
+                    self.pos = Vec2::new(x, self.pos.y + Fx::one());
+                    return true;
+                }
+            }
+        }
+        // 121558-121570: `Speed.X >= -0.01f` -> offsets 1..=4.
+        if self.vel.x >= -SPEED_EPS {
+            for num in 1..=DASH_CORNER_CORRECTION {
+                let x = self.pos.x + Fx::from_int(num);
+                if !self.grounded_at(rooms, x) {
+                    self.pos = Vec2::new(x, self.pos.y + Fx::one());
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Advance along X, snapping to the outside edge of that column on hitting a solid.
+    ///
+    /// In the dash state a wall contact first tries vanilla's `OnCollideH` handling
+    /// (121432-121459): a **grounded** dash that can crouch at the wall ducks instead of
+    /// stopping, otherwise a horizontal dash slides around a 1px-out corner (see
+    /// [`Player::corner_correct_dash_h`]).
     fn slide_x(&mut self, rooms: &[Room]) {
         let mut dx = self.vel.x;
         while dx != Fx::zero() {
             let step = clamp_step(dx);
             let nx = self.pos.x + step;
             if self.hits(rooms, nx, self.pos.y) {
+                if self.state == 2 {
+                    // 121432-121437: `onGround && DuckFreeAt(Position + UnitX*sign(Speed.X))`
+                    // -> `Ducking = true` and return (the dash becomes a slide).
+                    let sign = self.vel.x.signum();
+                    if self.on_ground && self.duck_free_at(rooms, self.pos.x + Fx::from_int(sign)) {
+                        self.ducking = true;
+                        return;
+                    }
+                    if self.corner_correct_dash_h(rooms) {
+                        return;
+                    }
+                }
                 self.pos.x = edge_x(nx, step);
                 self.vel.x = Fx::zero();
                 return;
@@ -1664,6 +1856,13 @@ impl Player {
             let step = clamp_step(dy);
             let ny = self.pos.y + step;
             if self.hits(rooms, self.pos.x, ny) {
+                if step > Fx::zero() {
+                    // 121536-121556: the air-dash landing correction runs before any
+                    // landing bookkeeping (and before the wavedash conversion below).
+                    if self.corner_correct_landing(rooms) {
+                        return;
+                    }
+                }
                 self.pos.y = edge_y(ny, step, self.box_dims().2);
                 if step > Fx::zero() {
                     self.on_ground = true;
@@ -1684,6 +1883,17 @@ impl Player {
                         self.vel.y = Fx::zero();
                         self.vel.x *= Fx::from_ratio(6, 5);
                         self.ducking = true;
+                    }
+                } else {
+                    // 121625-121646: a ceiling contact first tries the upward corner
+                    // correction; on success the upward speed survives the squeeze.
+                    if self.corner_correct_up(rooms) {
+                        return;
+                    }
+                    // 121662-121665: `if (varJumpTimer < 0.15f) varJumpTimer = 0f` -- a
+                    // bonk with less than 0.15s left (9 of the 12 ticks) kills it.
+                    if self.var_jump < 9 {
+                        self.var_jump = 0;
                     }
                 }
                 self.vel.y = Fx::zero();
@@ -3353,5 +3563,178 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -- corner correction + pose probes (pureCeleste.cs:121435-121655) ----------------
+
+    /// A room with a floor on the last row plus the given extra solid cells.
+    fn corner_room(w: u32, h: u32, extra: &[(u32, u32)]) -> Room {
+        let mut tiles = Tileset::new("Gameplay", w, h);
+        for x in 0..w {
+            tiles.set(x, h - 1, 1);
+        }
+        for (x, y) in extra {
+            tiles.set(*x, *y, 1);
+        }
+        Room {
+            name: "corner".into(),
+            bounds: RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: (w * 8) as f32,
+                h: (h * 8) as f32,
+            },
+            tiles,
+            bg: Tileset::new("Gameplay", w, h),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            ..Default::default()
+        }
+    }
+
+    /// Vanilla `OnCollideV` (121625-121646): clipping the corner of a ceiling tile nudges
+    /// the head sideways and **keeps** `Speed.Y`, because the early `return` skips the
+    /// `Speed.Y = 0` tail.
+    #[test]
+    fn ceiling_corner_correction_keeps_the_upward_speed() {
+        // 4x6 room, floor on row 5, one ceiling tile at (1, 1) = x 8..16, y 8..16.
+        let room = corner_room(4, 6, &[(1, 1)]);
+        let mut p = Player::new(Vec2::from_f32s(4.0, 16.0));
+        p.vel.y = -Fx::one();
+        p.slide_y(std::slice::from_ref(&room));
+        // The box [4,12)x[16,27) clips the tile by 4px; walking left to x = 0 clears it,
+        // so the correction moves up 1px and keeps going.
+        assert_eq!(p.pos, Vec2::from_f32s(0.0, 15.0), "nudged to the free side");
+        assert_eq!(p.vel.y, -Fx::one(), "still moving up");
+        assert!(!p.on_ground);
+    }
+
+    /// A ceiling with no free corner within the 4px reach stops the jump and cuts a
+    /// nearly finished `varJump` (121662-121665).
+    #[test]
+    fn ceiling_bonk_stops_the_jump_and_cuts_var_jump() {
+        let room = corner_room(4, 6, &[(0, 1), (1, 1), (2, 1), (3, 1)]);
+        let mut p = Player::new(Vec2::from_f32s(4.0, 16.0));
+        p.vel.y = -Fx::one();
+        p.var_jump = 5; // under 0.15s (9 of the 12 ticks) -> killed
+        p.slide_y(std::slice::from_ref(&room));
+        assert_eq!(p.pos.y, Fx::from_int(16));
+        assert_eq!(p.vel.y, Fx::zero(), "the bonk zeroes the upward speed");
+        assert_eq!(p.var_jump, 0, "0.15s left is not enough to keep the clamp");
+    }
+
+    #[test]
+    fn ceiling_bonk_keeps_a_fresh_var_jump() {
+        let room = corner_room(4, 6, &[(0, 1), (1, 1), (2, 1), (3, 1)]);
+        let mut p = Player::new(Vec2::from_f32s(4.0, 16.0));
+        p.vel.y = -Fx::one();
+        p.var_jump = 10;
+        p.slide_y(std::slice::from_ref(&room));
+        assert_eq!(p.var_jump, 10, "0.15s or more survives the bonk");
+    }
+
+    /// Vanilla `CanUnDuck` (119281-119295) probes the **normal** hitbox, so a ducked
+    /// player under a 1-tile gap cannot stand up; `CanUnDuckAt` (121168-121175) answers
+    /// for a neighbouring column (121884-121889).
+    #[test]
+    fn ducking_under_a_gap_cannot_stand() {
+        // Overhang at (0, 3) = x 0..8, y 24..32: the 6px duck box fits in y 34..40, the
+        // 11px normal box does not.
+        let room = corner_room(4, 6, &[(0, 3)]);
+        let mut p = Player::new(Vec2::from_f32s(0.0, 29.0));
+        p.ducking = true;
+        assert!(
+            !p.can_unduck(std::slice::from_ref(&room)),
+            "the normal box clips the overhang"
+        );
+        assert!(!p.can_unduck_at(std::slice::from_ref(&room), Fx::zero()));
+        assert!(
+            p.can_unduck_at(std::slice::from_ref(&room), Fx::from_int(8)),
+            "the next column is clear"
+        );
+        p.pos.x = Fx::from_int(8);
+        assert!(p.can_unduck(std::slice::from_ref(&room)));
+    }
+
+    /// Vanilla `OnCollideH` (121432-121437): a **grounded** dash whose duck box fits past
+    /// the obstacle crouches and keeps sliding instead of stopping.
+    #[test]
+    fn grounded_dash_into_an_overhang_crouches() {
+        // Overhang at (2, 1) = x 16..24, y 8..16: the 11px box [13,24) clips it while
+        // dashing right along the floor, the 6px duck box [18,24) does not.
+        let room = corner_room(4, 4, &[(2, 1)]);
+        let mut p = Player::new(Vec2::from_f32s(0.0, 13.0));
+        p.state = 2;
+        p.on_ground = true;
+        // A dash moves 4px per tick (240 px/s), so it takes three ticks to reach the
+        // overhang at x = 16.
+        p.vel = Vec2::new(Fx::from_int(4), Fx::zero());
+        for _ in 0..3 {
+            p.slide_x(std::slice::from_ref(&room));
+        }
+        assert!(p.ducking, "a ground dash that fits while ducking crouches");
+        assert_eq!(p.pos.x, Fx::from_int(8), "flush against the overhang");
+        assert_eq!(
+            p.vel.x,
+            Fx::from_int(4),
+            "the early return keeps the dash speed"
+        );
+    }
+
+    /// Vanilla `OnCollideH`'s dash branch (121439-121456): a horizontal dash that clips a
+    /// corner by a pixel or two slips past it instead of stopping.
+    #[test]
+    fn horizontal_dash_slips_past_a_ceiling_corner() {
+        // Floating block at (2, 1) = x 16..24, y 8..16; the dash box [15,26) clips its
+        // bottom edge by exactly 1px.
+        let room = corner_room(4, 6, &[(2, 1)]);
+        let mut p = Player::new(Vec2::from_f32s(0.0, 15.0));
+        p.state = 2;
+        p.dash_started_on_ground = true;
+        // A dash moves 4px per tick (240 px/s), so it takes three ticks to reach the
+        // block at x = 16.
+        p.vel = Vec2::new(Fx::from_int(4), Fx::zero());
+        for _ in 0..3 {
+            p.slide_x(std::slice::from_ref(&room));
+        }
+        assert_eq!(
+            p.pos,
+            Vec2::from_f32s(9.0, 16.0),
+            "down 1px and forward 1px"
+        );
+        assert_eq!(p.vel.x, Fx::from_int(4), "the dash keeps its speed");
+        assert_eq!(p.vel.y, Fx::zero());
+    }
+
+    /// Vanilla `OnCollideV` (121536-121556): a dash that **started in the air** and clips
+    /// the side of a platform slides off it instead of landing; a ground-started dash
+    /// lands normally (`dashStartedOnGround`, 122537).
+    #[test]
+    fn air_dash_landing_correction_slips_off_the_ledge() {
+        // Floor over columns 0..2 only: column 3 is a hole.
+        let mut room = corner_room(4, 4, &[]);
+        room.tiles.set(3, 3, 0);
+        let mut p = Player::new(Vec2::from_f32s(20.0, 13.0));
+        p.state = 2;
+        p.vel = Vec2::new(Fx::one(), Fx::one());
+        p.slide_y(std::slice::from_ref(&room));
+        assert_eq!(p.pos, Vec2::from_f32s(24.0, 14.0), "slid off the corner");
+        assert!(!p.on_ground, "did not land");
+        assert_eq!(p.vel.y, Fx::one(), "the falling speed survives");
+    }
+
+    #[test]
+    fn ground_dash_lands_on_the_ledge() {
+        let mut room = corner_room(4, 4, &[]);
+        room.tiles.set(3, 3, 0);
+        let mut p = Player::new(Vec2::from_f32s(20.0, 13.0));
+        p.state = 2;
+        p.dash_started_on_ground = true;
+        p.vel = Vec2::new(Fx::one(), Fx::one());
+        p.slide_y(std::slice::from_ref(&room));
+        assert!(p.on_ground, "a ground dash lands");
+        assert_eq!(p.pos.y, Fx::from_int(13));
+        assert_eq!(p.vel.y, Fx::zero());
     }
 }
