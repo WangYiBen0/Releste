@@ -17,9 +17,17 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/checkout@v7
+      # Determinate Nix, the successor to nix-installer-action. Composite
+      # action, so it adds no Node version deprecation warning.
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          # Adds the runner token to the fetch access-tokens, keeping the
+          # flake input downloads clear of the anonymous GitHub rate limit.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # Community cache; replacement for the archived magic-nix-cache-action,
+      # which now demands FlakeHub credentials and annotates every run.
+      - uses: nix-community/cache-nix-action@v7
 
       - name: Format check
         run: nix build --no-link .#checks.x86_64-linux.fmt
@@ -36,7 +44,7 @@ jobs:
       - name: Build all binaries
         run: nix build --no-link .#packages.x86_64-linux.default
 
-      - name: Build with opitional features
+      - name: Build with optional features
         run: nix build --no-link .#packages.x86_64-linux.full
 
       - name: Smoke test
@@ -45,10 +53,14 @@ jobs:
   content-pipeline:
     name: Content pipeline self test (no original resources)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: nix-community/cache-nix-action@v7
 
       - name: Pipeline unit tests
         run: |
