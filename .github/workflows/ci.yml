@@ -28,6 +28,11 @@ jobs:
       # Community cache; replacement for the archived magic-nix-cache-action,
       # which now demands FlakeHub credentials and annotates every run.
       - uses: nix-community/cache-nix-action@v7
+        with:
+          # primary-key is required in v7; both jobs share one cache so the
+          # second one restores what the first saved.
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Format check
         run: nix build --no-link .#checks.x86_64-linux.fmt
@@ -61,6 +66,11 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: nix-community/cache-nix-action@v7
+        with:
+          # primary-key is required in v7; both jobs share one cache so the
+          # second one restores what the first saved.
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Pipeline unit tests
         run: |
