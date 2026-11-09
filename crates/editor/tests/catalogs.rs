@@ -260,7 +260,7 @@ fn switching_language_live_reloads_the_catalog() {
         "switching language must re-read the catalog, not keep the old text"
     );
     assert!(
-        chinese.chars().any(|c| !c.is_ascii()),
+        !chinese.is_ascii(),
         "zh_CN label should be non-ASCII, got {chinese:?}"
     );
 

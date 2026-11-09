@@ -109,7 +109,7 @@ impl TileRenderer {
             }
         };
 
-        let pages = atlas.as_ref().map(|a| decode_pages(a)).unwrap_or_default();
+        let pages = atlas.as_ref().map(decode_pages).unwrap_or_default();
 
         let paths = defs
             .tilesets

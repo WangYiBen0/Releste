@@ -1853,8 +1853,8 @@ impl EditorUi {
                     let current = editor.current_room();
                     if room_under(&rooms, world) == Some(current) {
                         if let Some(room) = rooms.get(current) {
-                            let x = (((world.0 - room.bounds.0 + ox) / 8.0).floor() * 8.0) as f32;
-                            let y = (((world.1 - room.bounds.1 + oy) / 8.0).floor() * 8.0) as f32;
+                            let x = ((world.0 - room.bounds.0 + ox) / 8.0).floor() * 8.0;
+                            let y = ((world.1 - room.bounds.1 + oy) / 8.0).floor() * 8.0;
                             let result = if started {
                                 editor.move_entity(id, releste_math::Vec2::from_f32s(x, y))
                             } else {
@@ -2995,9 +2995,11 @@ mod tests {
     fn palette_patch_shows_the_painted_blob_art() {
         use releste_map::{Tileset, TilesetDef, TilesetsDoc};
         let mut defs = TilesetsDoc::default();
-        let mut def = TilesetDef::default();
-        def.padding = vec![(0, 0)];
-        def.center = vec![(1, 0)];
+        let def = TilesetDef {
+            padding: vec![(0, 0)],
+            center: vec![(1, 0)],
+            ..Default::default()
+        };
         defs.tilesets.insert("1".into(), def);
 
         // A 4x4 blob probed with empty surroundings: with no masks at all,
@@ -3128,7 +3130,7 @@ mod tests {
     #[test]
     fn downscaling_preserves_average_colour() {
         // A solid block must stay that colour after the box filter.
-        let rgba = vec![10u8, 20, 30, 255].repeat(64 * 64);
+        let rgba = [10u8, 20, 30, 255].repeat(64 * 64);
         let (w, h, out) = downscale_rgba(64, 64, &rgba, 16);
         assert_eq!((w, h), (16, 16));
         assert_eq!(&out[0..4], &[10, 20, 30, 255]);
@@ -3179,8 +3181,10 @@ mod tests {
         e.add_room(room).expect("room added");
 
         let mut defs = TilesetsDoc::default();
-        let mut def = TilesetDef::default();
-        def.center = vec![(1, 0)];
+        let mut def = TilesetDef {
+            center: vec![(1, 0)],
+            ..Default::default()
+        };
         def.masks.push(MaskEntry {
             mask: [1; 9],
             tiles: Vec::new(),
