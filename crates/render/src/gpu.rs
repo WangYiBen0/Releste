@@ -166,11 +166,24 @@ impl GpuRenderer {
             .map_err(|e| RenderError::Device(e.to_string()))?;
 
         let caps = surface.get_capabilities(&adapter);
+        // Vanilla (FNA/MonoGame) composites in **gamma** space: the atlas art is 8-bit sRGB-encoded
+        // data and every tint multiplies those raw values (`Color * alpha`,
+        // `pureCeleste.cs:111155-111199`). An sRGB swapchain decodes the atlas and re-encodes the
+        // result, so a non-white tint comes out lighter than vanilla -- the hair tint #AC3232
+        // rendered as about #D65454. Prefer a plain (gamma) swapchain and upload atlases as
+        // `Rgba8Unorm`; when a backend only offers sRGB, `fs_main_encoded` pre-decodes the product
+        // so the visible colour still matches (alpha blending then stays linear).
         let format = caps
             .formats
             .iter()
             .copied()
-            .find(wgpu::TextureFormat::is_srgb)
+            .find(|format| !format.is_srgb())
+            .or_else(|| {
+                caps.formats
+                    .iter()
+                    .copied()
+                    .find(wgpu::TextureFormat::is_srgb)
+            })
             .unwrap_or(caps.formats[0]);
 
         let present_mode = if config.vsync {
@@ -289,7 +302,13 @@ impl GpuRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                // `fs_main_encoded` keeps the visible colour equal to a gamma-space multiply when
+                // the swapchain is sRGB (see the format selection above).
+                entry_point: Some(if format.is_srgb() {
+                    "fs_main_encoded"
+                } else {
+                    "fs_main"
+                }),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -393,6 +412,9 @@ impl GpuRenderer {
     }
 
     /// Uploads RGBA8 pixels directly.
+    ///
+    /// The texture is `Rgba8Unorm`, never `Rgba8UnormSrgb`: the bytes are sRGB-encoded art and
+    /// the shader multiplies them in gamma space the way FNA does (`SPRITE_WGSL`).
     pub fn upload_rgba(
         &mut self,
         atlas_id: u32,
@@ -412,7 +434,7 @@ impl GpuRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -670,6 +692,12 @@ impl GpuRenderer {
 ///
 /// Vertex coordinates are already transformed to NDC on the CPU side
 /// (see [`crate::batch::SpriteBatch::vertices`]), so this only passes them through.
+///
+/// Colours multiply in **gamma** space, exactly like FNA's `SpriteBatch`: the atlas is uploaded
+/// as raw 8-bit data (`Rgba8Unorm`, see [`GpuRenderer::upload_rgba`]) and the vertex tint is the
+/// raw palette value, so `texel * tint` is the arithmetic vanilla performs. `fs_main` writes the
+/// product straight out on a non-sRGB swapchain; `fs_main_encoded` pre-decodes it for an sRGB
+/// swapchain, which would otherwise re-encode the value on write and lighten every non-white tint.
 const SPRITE_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -698,6 +726,17 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(t_diffuse, s_diffuse, in.uv) * in.color;
+}
+
+/// sRGB swapchain fallback: the hardware encodes on write, so undo that first and keep the
+/// visible result equal to the gamma-space multiply above.
+@fragment
+fn fs_main_encoded(in: VertexOutput) -> @location(0) vec4<f32> {
+    let color = textureSample(t_diffuse, s_diffuse, in.uv) * in.color;
+    // IEC 61966-2-1 transfer function, componentwise.
+    let low = color.rgb / 12.92;
+    let high = pow((color.rgb + 0.055) / 1.055, vec3<f32>(2.4));
+    return vec4<f32>(select(high, low, color.rgb <= vec3<f32>(0.04045)), color.a);
 }
 "#;
 
@@ -837,5 +876,100 @@ mod tests {
         };
         let bytes = bytemuck::bytes_of(&u);
         assert_eq!(bytes.len(), std::mem::size_of::<Uniforms>());
+    }
+
+    /// A minimal executor: the crate carries no async runtime (the binary drives [`GpuRenderer::new`]).
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        use std::task::{Context, Poll, Wake, Waker};
+
+        struct Noop;
+        impl Wake for Noop {
+            fn wake(self: std::sync::Arc<Self>) {}
+        }
+
+        let waker = Waker::from(std::sync::Arc::new(Noop));
+        let mut context = Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(fut);
+        loop {
+            match fut.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    /// `wgpu` only parses WGSL when a pipeline is created, so both fragment entry points are
+    /// compiled here. Skipped when the environment has no adapter (headless containers).
+    #[test]
+    fn sprite_shader_compiles_for_both_entry_points() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let Some(adapter) = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })) else {
+            eprintln!("no wgpu adapter available; skipping sprite shader validation");
+            return;
+        };
+        let (device, _queue) = block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("releste-shader-check"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .expect("request device");
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sprite-shader"),
+            source: wgpu::ShaderSource::Wgsl(SPRITE_WGSL.into()),
+        });
+
+        for (entry_point, format) in [
+            ("fs_main", wgpu::TextureFormat::Bgra8Unorm),
+            ("fs_main_encoded", wgpu::TextureFormat::Bgra8UnormSrgb),
+        ] {
+            device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let _pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry_point),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<SpriteVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x2,
+                            1 => Float32x2,
+                            2 => Float32x4
+                        ],
+                    }],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview: None,
+                cache: None,
+            });
+            let error = block_on(device.pop_error_scope());
+            assert!(error.is_none(), "{entry_point} failed: {error:?}");
+        }
     }
 }
