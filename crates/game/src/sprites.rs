@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use releste_render::atlas::{Sprite, SpriteAtlas, TextureGroup};
+use tracing::warn;
 
 /// World pixel size of one tile. Room `lvl_-1` is 320 wide / 40 cells = 8px.
 pub const TILE_PX: i32 = 8;
@@ -351,23 +352,32 @@ impl AnimationTable {
         for def in parsed.sprite {
             let mut anims = HashMap::new();
             for a in def.anim {
-                // Frame name = sprite path + animation subpath + zero-padded index
-                // (`GetFrames`' `Path + path` concatenation, 10454-10462).
+                // Frame name: vanilla `GetFrames` (`Path + path`, 10454-10462) resolved
+                // through `Atlas.GetAtlasSubtextureFromAtlasAt` -- the **exact** name for
+                // index 0, then every zero-padding level (see `frame_name_at`). Indexing the
+                // atlas by prefix rather than concatenating `path + two digits` is what makes
+                // the player's single-texture animations resolve: `duck` and `bubble` are
+                // named after their path and have no `duck00`/`bubble00`.
                 let prefix = format!("{}{}", def.path, a.path);
+                let exists = |name: &str| atlas.sprite(name).is_some();
+                let frame = |i: usize| {
+                    releste_render::atlas::frame_name_at(exists, &prefix, i).unwrap_or_else(|| {
+                        // Vanilla throws `Can't find sprite <path> with index <i>` here
+                        // (10467); keep the frame slot (and the parallel `hair` rows) and warn.
+                        warn!("sprite table: no texture for frame {prefix} #{i}");
+                        format!("{prefix}{i:02}")
+                    })
+                };
                 let frames: Vec<String> = match a.frames {
-                    Some(list) => list
-                        .iter()
-                        .map(|i| releste_render::atlas::frame_name(&prefix, *i))
-                        .collect(),
+                    Some(list) => list.iter().map(|i| frame(*i)).collect(),
                     None => {
                         // Enumerate all frames: `GetFrames(path, null)` takes indices until a frame is missing.
                         let mut names = Vec::new();
                         for i in 0..256usize {
-                            let name = releste_render::atlas::frame_name(&prefix, i);
-                            if atlas.sprite(&name).is_none() {
+                            if releste_render::atlas::frame_name_at(exists, &prefix, i).is_none() {
                                 break;
                             }
-                            names.push(name);
+                            names.push(frame(i));
                         }
                         names
                     }

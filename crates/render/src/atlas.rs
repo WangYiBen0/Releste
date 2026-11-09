@@ -266,11 +266,31 @@ impl SpriteAtlas {
     }
 }
 
-/// Animation frame name: `prefix + a two-digit zero-padded index` (Monocle's
-/// zero-padding lookup in `GetAtlasSubtextureFromAtlasAt`, 14327-14343 -- it tries
-/// no padding first, then pads level by level; this atlas uses two digits, `idle00`).
-pub fn frame_name(prefix: &str, index: usize) -> String {
-    format!("{prefix}{:02}", index)
+/// Resolves the texture of one animation frame exactly like Monocle's
+/// `Atlas.GetAtlasSubtextureFromAtlasAt` (`pureCeleste.cs:14311-14329`):
+///
+/// - `index == 0` first tries the **exact** `prefix`. Player animations whose single
+///   texture is named after their path (`characters/player/duck`, `characters/player/bubble`)
+///   only resolve here -- they have no `duck00` (`14313-14316`);
+/// - otherwise `prefix + index` is tried with 0 to 5 extra leading zeros and the first hit
+///   wins (`idle` 1 -> `idle1`, `idle01`, ... -> `idle01`; `14317-14326`);
+/// - no hit at all -> `None`. Vanilla throws `Can't find sprite ...` at `10467`; callers
+///   warn and keep the frame slot instead.
+///
+/// `exists` must be the atlas' own case-insensitive lookup.
+pub fn frame_name_at(exists: impl Fn(&str) -> bool, prefix: &str, index: usize) -> Option<String> {
+    if index == 0 && exists(prefix) {
+        return Some(prefix.to_string());
+    }
+    let mut text = index.to_string();
+    for _ in 0..6 {
+        let name = format!("{prefix}{text}");
+        if exists(&name) {
+            return Some(name);
+        }
+        text.insert(0, '0');
+    }
+    None
 }
 
 #[cfg(test)]
@@ -360,6 +380,46 @@ source = "atlas/Checkpoints/Checkpoints/10_a-00.data"
             Err(AtlasError::SpriteNotFound(n)) => assert_eq!(n, "ghost"),
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn frame_name_at_prefers_the_exact_key_for_index_zero() {
+        // The player's `duck` animation (`Loop id="duck" path="duck" frames="0"`) has a
+        // single texture named after the path: no `duck00` exists.
+        let exists = |n: &str| {
+            matches!(
+                n,
+                "characters\\player\\duck"
+                    | "characters\\player\\idle00"
+                    | "characters\\player\\idle01"
+            )
+        };
+        assert_eq!(
+            frame_name_at(exists, "characters\\player\\duck", 0).as_deref(),
+            Some("characters\\player\\duck")
+        );
+        // Without an exact key the padded lookup still runs for index 0.
+        assert_eq!(
+            frame_name_at(exists, "characters\\player\\idle", 0).as_deref(),
+            Some("characters\\player\\idle00")
+        );
+        assert_eq!(
+            frame_name_at(exists, "characters\\player\\idle", 1).as_deref(),
+            Some("characters\\player\\idle01")
+        );
+        assert_eq!(frame_name_at(exists, "characters\\player\\idle", 2), None);
+    }
+
+    #[test]
+    fn frame_name_at_tries_every_zero_padding_level() {
+        let one = |n: &str| n == "sprite0";
+        let three = |n: &str| n == "sprite003";
+        assert_eq!(frame_name_at(one, "sprite", 0).as_deref(), Some("sprite0"));
+        assert_eq!(
+            frame_name_at(three, "sprite", 3).as_deref(),
+            Some("sprite003")
+        );
+        assert_eq!(frame_name_at(|_| false, "sprite", 7), None);
     }
 
     #[test]
