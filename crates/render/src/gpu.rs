@@ -883,6 +883,9 @@ mod tests {
         use std::task::{Context, Poll, Wake, Waker};
 
         struct Noop;
+        // clippy prefers `std::task::Waker::noop()`, which is only available from Rust
+        // 1.85; this workspace targets MSRV 1.80 (AGENTS.md 15.2), so the waker stays.
+        #[allow(clippy::manual_noop_waker)]
         impl Wake for Noop {
             fn wake(self: std::sync::Arc<Self>) {}
         }
