@@ -788,6 +788,27 @@ impl Player {
         self.auto_jump = 0;
     }
 
+    /// On-room-transition refresh (vanilla `Player.OnTransition`,
+    /// pureCeleste.cs:120540-120547): refill the dash and stamina, re-arm the wall
+    /// slide timer, drop the jump grace and any force-move override. Called once the
+    /// transition actually completes (the old room's entities unload only here).
+    pub fn on_transition(&mut self) {
+        // wallSlideTimer = 1.2f (120541) -> 72 ticks.
+        self.wall_slide_ticks = WALLSLIDE_TICKS;
+        // jumpGraceTimer = 0f (120542).
+        self.coyote = 0;
+        // forceMoveXTimer = 0f (120543).
+        self.force_move_x_ticks = 0;
+        // ChaserStates.Clear() (120544) - no chaser state is ported yet; documented.
+        // RefillDash() (120545, 121082-121090: only when not already full).
+        if self.dashes < self.max_dashes {
+            self.dashes = self.max_dashes;
+        }
+        // RefillStamina() (120546, 121108-121111).
+        self.stamina = CLIMB_MAX_STAMINA;
+        // Leader.TransferFollowers() (120547) - no leader follows are ported yet.
+    }
+
     /// Whether a world-coordinate point is inside a solid tile of any touched room
     /// (Monocle `Scene.CollideCheck<Solid>(point)` point semantics; used by
     /// `SlipCheck`).
@@ -2950,6 +2971,37 @@ mod tests {
             "SuperJump: Speed.X = 260 * Facing (120748)"
         );
         assert_eq!(p.vel.y, JUMP_SPEED, "SuperJump: Speed.Y = -105 (120749)");
+    }
+
+    /// `Player.OnTransition` (pureCeleste.cs:120540-120547) refills the dash and stamina
+    /// and re-arms the wall slide once a room transition completes (called at
+    /// pureCeleste.cs:115416). Regression: a wave dash over a room seam previously kept
+    /// the spent dash and drained stamina.
+    #[test]
+    fn on_transition_refills_dash_and_stamina() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        // Spend the dash and drain some stamina.
+        let dash = Input {
+            right: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room));
+        assert_eq!(p.dashes, 0, "the dash is consumed (122534)");
+        p.stamina = Fx::from_ratio(-1, 1); // -1 (arbitrary drained value)
+        p.coyote = 5;
+        p.force_move_x_ticks = 3;
+        p.wall_slide_ticks = 0;
+        p.on_transition();
+        assert_eq!(p.dashes, p.max_dashes, "RefillDash (120545)");
+        assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "RefillStamina (120546)");
+        assert_eq!(p.coyote, 0, "jumpGraceTimer = 0 (120542)");
+        assert_eq!(p.force_move_x_ticks, 0, "forceMoveXTimer = 0 (120543)");
+        assert_eq!(
+            p.wall_slide_ticks, WALLSLIDE_TICKS,
+            "wallSlideTimer = 1.2 (120541)"
+        );
     }
 
     /// Vanilla `OnCollideV` (121577-121582): a **down-diagonal dash that lands** becomes a

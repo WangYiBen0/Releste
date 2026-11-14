@@ -642,6 +642,10 @@ impl GameService {
             // Transition ends: the old-room entities are unloaded only here (the camera is now entirely in the new room, so
             // dropping the old batch is invisible, just like vanilla UnloadEntities).
             self.transition_statics = None;
+            // Vanilla runs `player.OnTransition()` here (pureCeleste.cs:115416) right after
+            // the old room's UnloadEntities: it refills the dash and stamina and re-arms the
+            // wall slide. Without it a wave dash across a room seam kept the spent dash.
+            self.player.on_transition();
         }
     }
 }
@@ -882,6 +886,44 @@ mod tests {
         assert_eq!(
             service.camera.position,
             GameService::vanilla_camera_center(&service.session, anchor, "lvl_b")
+        );
+    }
+
+    /// Crossing a room seam must run `player.OnTransition()` (pureCeleste.cs:115416,
+    /// 120540-120547) and refill the spent dash. Regression: a wave dash over a seam used
+    /// to carry the spent dash into the next room -- high horizontal speed, no refill.
+    #[test]
+    fn crossing_a_seam_refills_the_dash() {
+        let doc = seam_map();
+        let session = Session::from_doc(doc, "test");
+        let mut service = GameService::new(session, None, None, None);
+        // Spend the dash before walking off the seam.
+        service.input.right = true;
+        service.input.dash = true;
+        service.simulate_tick();
+        service.input.dash = false;
+        assert_eq!(service.player.dashes, 0, "the dash is consumed");
+        service.input.right = true;
+        for _ in 0..240 {
+            service.simulate_tick();
+            if service.transition.is_some() {
+                break;
+            }
+        }
+        assert!(
+            service.transition.is_some(),
+            "the seam must start a transition"
+        );
+        for _ in 0..64 {
+            service.simulate_tick();
+            if service.transition.is_none() {
+                break;
+            }
+        }
+        assert!(service.transition.is_none(), "the glide must finish");
+        assert_eq!(
+            service.player.dashes, service.player.max_dashes,
+            "crossing the seam refills the dash (OnTransition/RefillDash, 115416/120545)"
         );
     }
 
