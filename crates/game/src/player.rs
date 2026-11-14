@@ -1124,13 +1124,17 @@ impl Player {
         self.dash_attack = 0;
         self.vel.x = SUPER_JUMP_X * Fx::from_int(self.facing);
         self.vel.y = JUMP_SPEED;
-        self.var_jump_speed = JUMP_SPEED;
         // 120753-120760: ducked super jump -- horizontal speed x1.25, vertical speed x0.5.
         if self.ducking {
             self.ducking = false;
             self.vel.x *= Fx::from_ratio(5, 4);
             self.vel.y *= Fx::from_ratio(1, 2);
         }
+        // `varJumpSpeed = Speed.Y` (120767) is assigned **after** the duck branch, so the
+        // varJump clamp on the next tick keeps the *halved* vertical speed. Setting it
+        // before the duck branch left it at -105 while vel.y was -52.5, so the clamp
+        // yanked the wave dash back up to full height at full horizontal speed.
+        self.var_jump_speed = self.vel.y;
         self.on_ground = false;
         self.state = 0;
         let _ = rooms;
@@ -3049,6 +3053,27 @@ mod tests {
             "hyper vertical speed: -105 * 0.5 = -52.5 px/s (120749 + 120757), got {vy_ps}"
         );
         assert!(!p.ducking, "the ducked branch clears Ducking (120755)");
+        // The varJump clamp must keep the **halved** vertical speed for the whole window.
+        // Regression: `varJumpSpeed` was set to -105 before the duck branch, so on the
+        // next held-jump tick the clamp (`Speed.Y = min(Speed.Y, varJumpSpeed)`,
+        // 122134) yanked the wavedash back up to -105 at full speed -- high horizontal,
+        // vertical not reduced. Vanilla assigns `varJumpSpeed = Speed.Y` *after* the duck
+        // branch (120767), so it is -52.5 here.
+        assert_eq!(
+            p.var_jump_speed, p.vel.y,
+            "varJumpSpeed = halved Speed.Y (120767)"
+        );
+        for _ in 0..5 {
+            // Hold jump: the clamp keeps vertical pinned at -52.5 through the window.
+            p.step(&jump, std::slice::from_ref(&room));
+            if p.var_jump > 0 {
+                assert!(
+                    (p.vel.y.to_f32() * 60.0 + 52.5).abs() < 1.0,
+                    "held-jump varJump must stay at -52.5, got {} px/s (122134)",
+                    p.vel.y.to_f32() * 60.0
+                );
+            }
+        }
     }
 
     /// A room with a non-(0,0) origin: hitting a wall / landing / hitting the ceiling must

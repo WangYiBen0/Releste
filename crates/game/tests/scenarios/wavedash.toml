@@ -1,0 +1,55 @@
+# Wave dash: dash down-diagonal on the ground (hyper), then jump inside the dash window
+# as it converts to the duck slide. The SuperJump ducked branch launches with
+#   Speed.X = 260 * 1.25 = 325 px/s -> 5.4167 px/tick (pureCeleste.cs:120748 + 120756)
+#   Speed.Y = -105 * 0.5 = -52.5 px/s -> -0.875 px/tick (120749 + 120757)
+# and `varJumpSpeed = Speed.Y` is assigned *after* the duck branch (120767), so the
+# held-jump varJump clamp (Speed.Y = min(Speed.Y, varJumpSpeed), 122134) keeps vertical
+# pinned at -52.5 for the whole window.
+#
+# Regression: varJumpSpeed used to be set before the duck branch, so the clamp yanked the
+# launch back to -105 on the next held-jump tick while retaining the horizontal 325 --
+# high speed, vertical not reduced.
+#
+# Run: cargo run --bin releste -- --root assets --script crates/game/tests/scenarios/wavedash.toml
+
+[scenario]
+ticks = 40
+map = "0-Intro.map"
+note = "grounded down-right dash, jump inside the dash window: wave dash"
+
+[[input]]
+from = 4
+to = 30
+right = true
+
+[[input]]
+from = 4
+to = 30
+down = true
+
+[[input]]
+from = 6
+to = 6
+dash = true
+
+[[input]]
+from = 12
+to = 16
+jump = true
+
+[[expect]]
+tick = 11
+state = 2
+vx = 3.394             # 240/sqrt(2) x1.2 = the duck slide (121582)
+
+[[expect]]
+tick = 12
+state = 0              # SuperJump returns to Normal
+vx = 5.4167            # 325 px/s ducked hyper (120748 x 1.25)
+vy = -0.875            # -52.5 px/s ducked hyper (120749 x 0.5)
+
+[[expect]]
+tick = 14
+state = 0
+vx = 5.233             # still high horizontal through the varJump window
+vy = -0.875            # vertical stays pinned at -52.5 (122134 x varJumpSpeed=-52.5, 120767)
