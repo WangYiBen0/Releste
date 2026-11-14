@@ -310,6 +310,7 @@ impl GameService {
                 .anim_frame_texture(&self.session.anims)
                 .as_deref(),
             self.player.anim_frame_hair(&self.session.anims),
+            self.player.hair_nodes(),
         )
     }
 

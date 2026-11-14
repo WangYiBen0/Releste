@@ -287,6 +287,7 @@ impl Recorder {
             player.hair_color(),
             body.as_deref(),
             hair,
+            player.hair_nodes(),
         );
         // Centre the canvas on the hitbox centre so every frame is comparable, but keep
         // the two anchors distinct: `Player.Position` is the hitbox bottom centre (the feet,
@@ -321,8 +322,8 @@ impl Recorder {
             (feet.y.to_f32() - origin.1).round() as i64,
         );
         marker(&mut frame, ax, ay, Rgba([80, 255, 120, 255]));
-        let facing = if player.facing < 0 { -1.0 } else { 1.0 };
-        let root = crate::session::hair_nodes(feet, facing, hair)[0];
+        // Node 0 of the simulated chain is the hair root itself (world space).
+        let root = player.hair_nodes()[0];
         let (rx, ry) = (
             (root.x.to_f32() - origin.0).round() as i64,
             (root.y.to_f32() - origin.1).round() as i64,

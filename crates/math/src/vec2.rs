@@ -94,6 +94,31 @@ impl Vec2 {
         self.x * other.x + self.y * other.y
     }
 
+    /// Length (fixed-point, no `f32`), computed in `i128` so it does not inherit the
+    /// [`Vec2::len_sq`] overflow limit -- the hair spring measures the 200px
+    /// `PlayerHair.Start` jump.
+    ///
+    /// Works in *bits* space: `sqrt(x_bits^2 + y_bits^2)` is already the bit pattern of
+    /// the length, because the fractional scale cancels out
+    /// (`sqrt(v^2 * 2^32) = v * 2^16`). The result saturates at the `Fx` range.
+    pub fn length(self) -> Fx {
+        let x = self.x.bits() as i128;
+        let y = self.y.bits() as i128;
+        let bits = isqrt((x * x + y * y) as u128);
+        Fx::from_bits(bits.min(i32::MAX as u128) as i32)
+    }
+
+    /// `self / |self|`, or [`Vec2::ZERO`] for a zero vector (XNA `SafeNormalize`,
+    /// which vanilla uses for the hair segment clamp, `pureCeleste.cs:111133`).
+    pub fn safe_normalized(self) -> Vec2 {
+        let len = self.length();
+        if len == Fx::zero() {
+            Vec2::ZERO
+        } else {
+            Vec2::new(self.x / len, self.y / len)
+        }
+    }
+
     /// Floor each component (XNA `Vector2.Floor()`; vanilla hair rendering
     /// uses it to snap the hair root to integer pixels,
     /// `pureCeleste.cs:111179` `Nodes[0] = Nodes[0].Floor()`).
@@ -107,6 +132,23 @@ impl Vec2 {
             x: self.x.abs(),
             y: self.y.abs(),
         }
+    }
+}
+
+/// Integer square root of a `u128`, floored (integer Newton, monotone from above).
+fn isqrt(value: u128) -> u128 {
+    if value < 2 {
+        return value;
+    }
+    // Start from a power of two at least sqrt(value) (`log2(value)/2`, rounded up), so
+    // every Newton step decreases until the floor is reached.
+    let mut x = 1u128 << ((127 - value.leading_zeros()) / 2 + 1);
+    loop {
+        let next = (x + value / x) >> 1;
+        if next >= x {
+            return x;
+        }
+        x = next;
     }
 }
 
@@ -199,5 +241,17 @@ mod tests {
         assert_eq!(c, Vec2::new(Fx::from_int(3), Fx::from_int(7)));
         let d = a * Fx::from_int(2);
         assert_eq!(d, Vec2::new(Fx::from_int(4), Fx::from_int(6)));
+    }
+
+    #[test]
+    fn length_and_safe_normalize() {
+        let v = Vec2::new(Fx::from_int(3), Fx::from_int(4));
+        assert_eq!(v.length(), Fx::from_int(5));
+        let unit = v.safe_normalized();
+        assert!(
+            (unit.length() - Fx::one()).abs() <= Fx::from_bits(4),
+            "normalising must land on the unit circle, got {unit:?}"
+        );
+        assert_eq!(Vec2::ZERO.safe_normalized(), Vec2::ZERO);
     }
 }

@@ -390,31 +390,6 @@ fn bangs_frame(hair_frame: usize) -> &'static str {
     }
 }
 
-/// The four hair node positions (vanilla `PlayerHair.AfterUpdate`, 111114-111139).
-///
-/// `Nodes[0] = RenderPosition + (0, -9) + HairOffset*(Facing, 1)` (111116-111117), then
-/// every later node steps by `(0-Facing)*StepInFacingPerSegment + StepPerSegment`
-/// (`StepInFacingPerSegment = 0.5`, `StepPerSegment = (0, 2)`, 111079-111081; node 1 uses
-/// twice the facing step, 111118). `Render` then floors node 0 (111179) so the whole
-/// chain snaps to integer pixels instead of drifting with the player's subpixel position.
-///
-/// Pure by design: the hair placement is exactly the part that kept drifting, so it is
-/// unit-tested without a GPU.
-pub fn hair_nodes(
-    anchor: Vec2,
-    facing: f32,
-    hair: sprites::HairFrame,
-) -> [Vec2; sprites::HAIR_COUNT] {
-    let mut nodes = [Vec2::ZERO; sprites::HAIR_COUNT];
-    nodes[0] = anchor + Vec2::from_f32s(hair.offset.0 as f32 * facing, -9.0 + hair.offset.1 as f32);
-    for i in 1..sprites::HAIR_COUNT {
-        let step_x = (0.0 - facing) * if i == 1 { 1.0 } else { 0.5 };
-        nodes[i] = nodes[i - 1] + Vec2::from_f32s(step_x, 2.0);
-    }
-    nodes[0] = nodes[0].floor();
-    nodes
-}
-
 impl Session {
     /// Refresh backdrop visibility every frame (vanilla `Backdrop.Update`,
     /// `109468-109489`).
@@ -732,9 +707,15 @@ impl Session {
     /// - The body draws last (Layer::Player is above PlayerHair, guaranteed by layer
     ///   sort order).
     ///
-    /// Not ported yet: hair strand motion simulation (SimulateMotion/StepApproach,
-    /// along with the animation system); the four-direction body outline
+    /// `nodes` is the simulated hair chain from [`crate::player::Player::hair_nodes`]
+    /// (vanilla `PlayerHair.Nodes`, 111088), in **world space**. The chain length is the
+    /// live `PlayerSprite.HairCount` (4, or 5 while two dashes are stocked).
+    ///
+    /// Not ported yet: the four-direction body outline
     /// (DrawPlayerSpriteOutline, off for idle).
+    // One argument per draw input; bundling them into a struct would hide the vanilla
+    // body/hair/nodes mapping this function is documenting.
+    #[allow(clippy::too_many_arguments)]
     pub fn player_draws(
         &self,
         tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
@@ -743,6 +724,7 @@ impl Session {
         hair_color: [f32; 4],
         body_sprite: Option<&str>,
         hair: sprites::HairFrame,
+        nodes: &[Vec2],
     ) -> Vec<SpriteDraw> {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
@@ -752,17 +734,28 @@ impl Session {
         // (`if (!Sprite.HasHair) return;`, 111157). `HasHair` is per **frame**
         // (111363-111371), taken from the `<Metadata><Frames hair=...>` table
         // (111452-111480) -- e.g. `fallPose` is `x|x|...` and draws none.
-        if !hair.has_hair {
+        if !hair.has_hair || nodes.is_empty() {
             return body.into_iter().collect();
         }
 
-        let nodes = hair_nodes(anchor, facing, hair);
-        let pieces: [(&str, &Vec2); sprites::HAIR_COUNT] = [
-            (bangs_frame(hair.frame), &nodes[0]),
-            (sprites::PLAYER_HAIR_SPRITE, &nodes[1]),
-            (sprites::PLAYER_HAIR_SPRITE, &nodes[2]),
-            (sprites::PLAYER_HAIR_SPRITE, &nodes[3]),
-        ];
+        // Node 0 draws the bangs, the rest draw `hair00`; `Render` floors node 0
+        // (111179) so the head piece snaps to whole pixels instead of drifting with the
+        // player's subpixel position.
+        let pieces: Vec<(&str, Vec2)> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                (
+                    if i == 0 {
+                        bangs_frame(hair.frame)
+                    } else {
+                        sprites::PLAYER_HAIR_SPRITE
+                    },
+                    if i == 0 { node.floor() } else { *node },
+                )
+            })
+            .collect();
+        let count = pieces.len();
         let border = [0.0, 0.0, 0.0, 1.0];
         let outline_offsets = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
 
@@ -770,8 +763,8 @@ impl Session {
         // First draw all outlines for every node (4 copies at +/-1px), then draw the base
         // color from tail to head (111179-111197) -- two passes, not alternating per node.
         for (i, (name, node)) in pieces.iter().enumerate() {
-            let scale = sprites::hair_scale(i, facing);
-            let Some(base) = self.hair_piece(tex_size, name, **node, scale, border) else {
+            let scale = sprites::hair_scale(i, facing, count);
+            let Some(base) = self.hair_piece(tex_size, name, *node, scale, border) else {
                 continue;
             };
             for (dx, dy) in outline_offsets {
@@ -781,8 +774,8 @@ impl Session {
             }
         }
         for (i, (name, node)) in pieces.iter().enumerate().rev() {
-            let scale = sprites::hair_scale(i, facing);
-            if let Some(mut d) = self.hair_piece(tex_size, name, **node, scale, hair_color) {
+            let scale = sprites::hair_scale(i, facing, count);
+            if let Some(mut d) = self.hair_piece(tex_size, name, *node, scale, hair_color) {
                 d.layer = Layer::PlayerHair.value() + 1; // base color on top of the outline
                 out.push(d);
             }
@@ -1781,45 +1774,6 @@ mod tests {
         assert_eq!(narrow, vec![(48, 0, 8, 52, -8.0)]);
     }
 
-    /// Hair placement follows the vanilla per-frame `HairOffset`, not a constant.
-    ///
-    /// Regression: the offset used to be the fixed `(0, -2)` (idle frame 0), so every
-    /// animation that shifts the hair (`runFast` is `1,-1`/`1,-3`, `flip` is `-1,-1`
-    /// with its own bangs frame) drew it misaligned.
-    #[test]
-    fn hair_nodes_use_the_per_frame_offset_and_facing() {
-        let anchor = Vec2::from_f32s(100.0, 200.0);
-
-        // Facing right, runFast frame 1: offset (1, -1) -> node 0 = (101, 190), floored.
-        let right = hair_nodes(
-            anchor,
-            1.0,
-            sprites::HairFrame {
-                has_hair: true,
-                offset: (1, -1),
-                frame: 0,
-            },
-        );
-        assert_eq!(right[0], Vec2::from_f32s(101.0, 190.0));
-        // Node 1 steps (0-Facing)*1 + (0,2) = (-1, +2).
-        assert_eq!(right[1], Vec2::from_f32s(100.0, 192.0));
-        // Later nodes step half a pixel sideways.
-        assert_eq!(right[2], Vec2::from_f32s(99.5, 194.0));
-
-        // Facing left mirrors the horizontal offset and the step direction.
-        let left = hair_nodes(
-            anchor,
-            -1.0,
-            sprites::HairFrame {
-                has_hair: true,
-                offset: (1, -1),
-                frame: 0,
-            },
-        );
-        assert_eq!(left[0], Vec2::from_f32s(99.0, 190.0));
-        assert_eq!(left[1], Vec2::from_f32s(100.0, 192.0));
-    }
-
     /// A frame without hair metadata (vanilla `HasHair = false`) draws no hair, and the
     /// default offset is the vanilla zero, not the old `(0, -2)` constant.
     #[test]
@@ -1828,8 +1782,6 @@ mod tests {
         assert!(!hair.has_hair, "`x` means no hair on this frame");
         assert_eq!(hair.offset, (0, 0), "vanilla default offset is zero");
         assert_eq!(sprites::HairFrame::default().offset, (0, 0));
-        let nodes = hair_nodes(Vec2::from_f32s(10.0, 20.0), 1.0, hair);
-        assert_eq!(nodes[0], Vec2::from_f32s(10.0, 11.0), "anchor + (0, -9)");
     }
 
     /// Left and right facing must be mirror images about `Player.Position`.

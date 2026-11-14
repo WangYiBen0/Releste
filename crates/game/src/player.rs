@@ -174,6 +174,22 @@ const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
 /// Hair flash duration 0.12s = 7 ticks (`UpdateHair`: `hairFlashTimer = 0.12f`,
 /// pureCeleste.cs:120271).
 const HAIR_FLASH_TICKS: u8 = 7;
+/// Hair chain defaults (vanilla `PlayerHair` fields, pureCeleste.cs:111079-111082,
+/// re-assigned by `Player.Update`'s final else branch, 119982-119987):
+/// `StepPerSegment = (0, 2)`, `StepInFacingPerSegment = 0.5`, `StepApproach = 64`,
+/// `StepYSinePerSegment = 0`.
+const HAIR_STEP_PER_SEGMENT: Vec2 = Vec2::new(Fx::zero(), Fx::from_int(2));
+const HAIR_STEP_IN_FACING: Fx = Fx::from_ratio(1, 2);
+const HAIR_STEP_APPROACH: Fx = Fx::from_int(64);
+const HAIR_STEP_Y_SINE: Fx = Fx::zero();
+/// Two-dash hair config (vanilla `Player.Update`'s `Dashes > 1` branch,
+/// 119965-119975): `StepInFacingPerSegment = 0`, `StepApproach = 90`,
+/// `StepYSinePerSegment = 1`, and `StepPerSegment` becomes a wave at
+/// `sin(TimeActive * 2) * 0.7 - Facing * 3` / `sin(TimeActive)`.
+const HAIR_TWO_DASH_APPROACH: Fx = Fx::from_int(90);
+/// Longest distance allowed between two hair nodes (`PlayerHair.AfterUpdate`'s
+/// `float num = 3f`, pureCeleste.cs:111123/111132).
+const HAIR_MAX_SEGMENT: Fx = Fx::from_int(3);
 /// Hair color ease-in rate 6/s (`Lerp(Hair.Color, Used, 6f*dt)`, 120258-120262; the
 /// per-tick lerp factor = 6/60 = 0.1).
 /// Max climb stamina 110 (`ClimbMaxStamina`, pureCeleste.cs:118504; full at spawn,
@@ -331,6 +347,21 @@ pub struct Player {
     /// The **current** hair color (the carrier for `UpdateHair`'s per-frame lerp,
     /// 120258-120262).
     hair_color_current: [f32; 4],
+    /// Simulated hair node positions in **world space** (vanilla `PlayerHair.Nodes`,
+    /// pureCeleste.cs:111088). Node 0 is pinned to the head every tick (111116) and the
+    /// later nodes chase their parents, so the chain genuinely trails the player -- storing
+    /// it relative to the player would hide the drag.
+    hair_nodes: [Vec2; crate::sprites::HAIR_MAX],
+    /// Live segment count (vanilla `PlayerSprite.HairCount`: 4 normally, 5 with two
+    /// dashes -- 111321 and 119986).
+    hair_count: usize,
+    /// Seconds since spawn (vanilla `Scene.TimeActive`), read by the two-dash hair
+    /// config (119967-119969).
+    hair_time: Fx,
+    /// `PlayerHair.wave` (111142: `wave += dt * 4`), the phase of the per-segment sine.
+    hair_wave: Fx,
+    /// `PlayerHair.Start` has run (vanilla `startHairCalled`, 120237-120245).
+    hair_started: bool,
     /// State machine (vanilla `StateMachine.State`, numbered as vanilla: 0 = Normal,
     /// 2 = Dash, 119397-119409; 1/3/8 etc. not implemented).
     state: u8,
@@ -434,6 +465,11 @@ impl Player {
             last_dashes: 1,
             hair_flash: 0,
             hair_color_current: crate::sprites::hair_color::NORMAL,
+            hair_nodes: [Vec2::ZERO; crate::sprites::HAIR_MAX],
+            hair_count: crate::sprites::HAIR_COUNT,
+            hair_time: Fx::zero(),
+            hair_wave: Fx::zero(),
+            hair_started: false,
             state: 0,
             dash_dir: Vec2::ZERO,
             dash_phase: 0,
@@ -544,6 +580,118 @@ impl Player {
         }
         self.update_animation(table);
         self.update_sprite(table, input, rooms);
+        self.update_hair(table);
+    }
+
+    /// The simulated hair chain for this tick, in **world space** like vanilla
+    /// `PlayerHair.Nodes` (pureCeleste.cs:111088); node 0 is the head.
+    ///
+    /// Its length is the live `PlayerSprite.HairCount` (4, or 5 while two dashes are
+    /// stocked, 119986).
+    pub fn hair_nodes(&self) -> &[Vec2] {
+        &self.hair_nodes[..self.hair_count]
+    }
+
+    /// The sprite/hair anchor: the **hitbox bottom centre** (vanilla `Player.Position`,
+    /// pureCeleste.cs:118856). The hitbox's bottom edge is `pos.y + PLAYER_H` both standing
+    /// and ducking (`DUCK_H + DUCK_Y_OFF = 11`), so the anchor never moves on a crouch.
+    pub fn anchor(&self) -> Vec2 {
+        self.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H)
+    }
+
+    /// Advance the hair: vanilla `PlayerHair.Update`'s wave (111142), `Player.Update`'s
+    /// hair config (119955-119990) and `PlayerHair.AfterUpdate` (111114-111139).
+    ///
+    /// The chain is a spring: the root is pinned to the head this tick, and each later
+    /// node eases toward a target one `StepPerSegment` beyond its parent at
+    /// `(1 - i/HairCount*0.5) * StepApproach` per second, never more than
+    /// [`HAIR_MAX_SEGMENT`] from that parent.
+    fn update_hair(&mut self, table: &crate::sprites::AnimationTable) {
+        self.hair_time += releste_math::FIXED_DT;
+        // `PlayerHair.Update`: `wave += Engine.DeltaTime * 4f` (111142).
+        self.hair_wave += Fx::from_int(4) * releste_math::FIXED_DT;
+        let facing = Fx::from_int(self.facing);
+        let anchor = self.anchor();
+
+        // The wind branch (`windTimeout > 0`, 119955-119963) is unreachable while wind
+        // zones are unimplemented.
+        let (step_per_segment, step_in_facing, step_approach, step_y_sine) = if self.dashes > 1 {
+            // Two dashes (119965-119975): a wide wave, no facing step, approach 90, and a
+            // per-segment sine (`StepYSinePerSegment = 1`).
+            (
+                Vec2::new(
+                    (self.hair_time * Fx::from_int(2)).sin() * Fx::from_ratio(7, 10)
+                        - facing * Fx::from_int(3),
+                    self.hair_time.sin(),
+                ),
+                Fx::zero(),
+                HAIR_TWO_DASH_APPROACH,
+                Fx::one(),
+            )
+        } else {
+            (
+                HAIR_STEP_PER_SEGMENT,
+                HAIR_STEP_IN_FACING,
+                HAIR_STEP_APPROACH,
+                HAIR_STEP_Y_SINE,
+            )
+        };
+
+        // `Sprite.HairCount = ((Dashes > 1) ? 5 : startHairCount)` (119986; the Prologue
+        // starts at 4, 111321). The `State == 5` (RedDash) `HairCount = 1` override
+        // (119980-119983) needs a state this port does not have yet.
+        let count = if self.dashes > 1 {
+            crate::sprites::HAIR_MAX
+        } else {
+            crate::sprites::HAIR_COUNT
+        };
+        // Growing the tail duplicates the previous last node (`Nodes.Add(Nodes[i - 1])`,
+        // 111126).
+        for i in self.hair_count..count {
+            self.hair_nodes[i] = self.hair_nodes[i - 1];
+        }
+        self.hair_count = count;
+
+        if !self.hair_started {
+            // `StartHair` -> `PlayerHair.Start` (111104-111111): the nodes begin 200px to
+            // the side and below, so the tail swings in instead of stacking on the head.
+            self.hair_started = true;
+            let start = anchor + Vec2::new(-facing * Fx::from_int(200), Fx::from_int(200));
+            self.hair_nodes = [start; crate::sprites::HAIR_MAX];
+        }
+
+        // `Nodes[0] = RenderPosition + (0, -9 * Scale.Y) + HairOffset * (Facing, 1)`
+        // (111116-111117). `Scale.Y` is 1: the dash squash/stretch is not ported.
+        let offset = self.anim_frame_hair(table).offset;
+        self.hair_nodes[0] =
+            anchor + Vec2::new(Fx::from_int(offset.0) * facing, Fx::from_int(offset.1 - 9));
+
+        let mut target = self.hair_nodes[0]
+            + Vec2::new(
+                -facing * step_in_facing * Fx::from_int(2),
+                self.hair_wave.sin() * step_y_sine,
+            )
+            + step_per_segment;
+        let mut previous = self.hair_nodes[0];
+        for i in 1..self.hair_count {
+            // `num2 = (1 - i / HairCount * 0.5) * StepApproach` (111127-111129), applied
+            // per tick (`num2 * Engine.DeltaTime`).
+            let rate = (Fx::one() - Fx::from_ratio(i as i32, (2 * self.hair_count) as i32))
+                * step_approach
+                * releste_math::FIXED_DT;
+            self.hair_nodes[i] = approach_vec(self.hair_nodes[i], target, rate);
+            let delta = self.hair_nodes[i] - previous;
+            if delta.length() > HAIR_MAX_SEGMENT {
+                self.hair_nodes[i] = previous + delta.safe_normalized() * HAIR_MAX_SEGMENT;
+            }
+            target = self.hair_nodes[i]
+                + Vec2::new(
+                    -facing * step_in_facing,
+                    (self.hair_wave + Fx::from_ratio(i as i32 * 8, 10)).sin() * step_y_sine,
+                )
+                + step_per_segment;
+            previous = self.hair_nodes[i];
+        }
     }
 
     /// The shared timers and refill at the head of vanilla `Player.Update`
@@ -1961,6 +2109,18 @@ fn approach(v: &mut Fx, target: Fx, rate: Fx) {
         *v = target;
     } else {
         *v += Fx::from_int(diff.signum()) * rate;
+    }
+}
+
+/// Vanilla `Calc.Approach(Vector2 value, Vector2 target, float maxMove)`: move `value`
+/// toward `target` by at most `max_move`, **along the normalised direction** (not
+/// component-wise), which is what `PlayerHair.AfterUpdate` relies on for the spring.
+fn approach_vec(value: Vec2, target: Vec2, max_move: Fx) -> Vec2 {
+    let delta = target - value;
+    if delta.length() <= max_move {
+        target
+    } else {
+        value + delta.safe_normalized() * max_move
     }
 }
 
@@ -3736,5 +3896,146 @@ mod tests {
         assert!(p.on_ground, "a ground dash lands");
         assert_eq!(p.pos.y, Fx::from_int(13));
         assert_eq!(p.vel.y, Fx::zero());
+    }
+
+    /// The shared table with per-frame hair metadata on every player animation, so the
+    /// spring has an offset to follow whichever animation is playing.
+    fn hair_table(offset: (i32, i32)) -> crate::sprites::AnimationTable {
+        let mut table = anim_table();
+        let frame = crate::sprites::HairFrame {
+            has_hair: true,
+            offset,
+            frame: 0,
+        };
+        if let Some(def) = table.sprites.get_mut("player") {
+            for anim in def.anims.values_mut() {
+                anim.hair = vec![frame; anim.frames.len()];
+            }
+        }
+        table
+    }
+
+    /// The hair root is the frame's `HairOffset` mirrored by facing, 9px above the anchor
+    /// (vanilla `Nodes[0] = RenderPosition + (0, -9) + HairOffset * (Facing, 1)`,
+    /// 111116-111117). Regression: this used to be the fixed offset `(0, -2)`.
+    #[test]
+    fn hair_root_follows_the_per_frame_offset_and_facing() {
+        let room = wide_room();
+        let table = hair_table((1, -1));
+        let mut p = settled(&room, 40.0);
+        p.facing = 1;
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.hair_nodes()[0], p.anchor() + Vec2::from_f32s(1.0, -10.0));
+        p.facing = -1;
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.hair_nodes()[0], p.anchor() + Vec2::from_f32s(-1.0, -10.0));
+    }
+
+    /// `PlayerHair.Start` drops the chain 200px to the side (111104-111111) and the first
+    /// tick only clamps it back to [`HAIR_MAX_SEGMENT`] from the head (111132), so the
+    /// hair swings in instead of teleporting onto the skull.
+    #[test]
+    fn hair_chain_starts_at_the_clamp_behind_the_head() {
+        let room = wide_room();
+        let table = hair_table((0, -2));
+        let mut p = settled(&room, 40.0);
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        let nodes = p.hair_nodes();
+        let gap = (nodes[1] - nodes[0]).length();
+        assert!(
+            (gap - HAIR_MAX_SEGMENT).abs() <= Fx::from_ratio(1, 100),
+            "clamped 3px behind the head, gap {gap:?}"
+        );
+        assert!(
+            nodes[1].y < p.anchor().y - Fx::from_int(8),
+            "the tail hangs below the root, got {:?}",
+            nodes[1]
+        );
+    }
+
+    /// Standing still, the chain converges on the static step chain
+    /// `(0-Facing)*StepInFacingPerSegment + (0, 2)` per node with node 1 using twice the
+    /// facing step (111118) and the defaults of 119982-119987.
+    #[test]
+    fn hair_chain_settles_on_the_step_chain() {
+        let room = wide_room();
+        let table = hair_table((0, -2));
+        let mut p = settled(&room, 40.0);
+        for _ in 0..400 {
+            p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        }
+        // Facing right and offset (0,-2): node 0 = anchor + (0,-11), then (-1,-9),
+        // (-1.5,-7), (-2,-5).
+        let anchor = p.anchor();
+        let expected = [
+            anchor + Vec2::from_f32s(0.0, -11.0),
+            anchor + Vec2::from_f32s(-1.0, -9.0),
+            anchor + Vec2::from_f32s(-1.5, -7.0),
+            anchor + Vec2::from_f32s(-2.0, -5.0),
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            let got = p.hair_nodes()[i];
+            assert!(
+                (got - *want).length() <= Fx::from_ratio(1, 2),
+                "node {i} settled at {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    /// Running stretches the tail: each node eases toward a target one step behind its
+    /// parent, so at speed it sits exactly on the 3px clamp (111123-111132).
+    #[test]
+    fn hair_chain_is_stretched_while_running() {
+        let room = wide_room();
+        let table = hair_table((0, -2));
+        let mut p = settled(&room, 40.0);
+        let right = Input {
+            right: true,
+            ..Input::default()
+        };
+        for _ in 0..120 {
+            p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        }
+        for _ in 0..60 {
+            p.step(&right, std::slice::from_ref(&room));
+            p.update_visuals(&table, &right, std::slice::from_ref(&room));
+        }
+        let nodes = p.hair_nodes();
+        for i in 1..nodes.len() {
+            let gap = (nodes[i] - nodes[i - 1]).length();
+            assert!(
+                gap <= HAIR_MAX_SEGMENT,
+                "node {i} is past the 3px clamp, gap {gap:?}"
+            );
+        }
+        let gap = (nodes[3] - nodes[2]).length();
+        assert!(
+            gap > Fx::from_ratio(5, 2),
+            "running must pull the chain taut, gap {gap:?}"
+        );
+    }
+
+    /// Two stocked dashes lengthen the tail to five segments (119986) and pull it
+    /// backwards with `StepPerSegment.x = sin(2 * TimeActive) * 0.7 - Facing * 3`
+    /// (119965-119975).
+    #[test]
+    fn two_dashes_lengthen_and_pull_back_the_hair() {
+        let room = wide_room();
+        let table = hair_table((0, -2));
+        let mut p = settled(&room, 40.0);
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.hair_nodes().len(), crate::sprites::HAIR_COUNT);
+        p.dashes = 2;
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.hair_nodes().len(), crate::sprites::HAIR_MAX);
+        for _ in 0..300 {
+            p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        }
+        let tail = p.hair_nodes()[4];
+        let head = p.hair_nodes()[0];
+        assert!(
+            tail.x < head.x - Fx::from_int(6),
+            "the two-dash tail trails backwards, got {tail:?} vs head {head:?}"
+        );
     }
 }

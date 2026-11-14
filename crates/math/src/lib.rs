@@ -9,6 +9,7 @@
 
 mod fixed;
 mod rect;
+mod trig;
 mod vec2;
 
 pub use fixed::Fx;

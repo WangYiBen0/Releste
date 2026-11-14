@@ -116,6 +116,29 @@ impl Fx {
         }
     }
 
+    /// Square root, rounded down; negative inputs return zero.
+    ///
+    /// Integer Newton iteration over the raw bits: `sqrt(x)` in Q16.16 needs the radicand
+    /// shifted left by `FRACTIONAL_BITS`, and the guess `2^ceil(bits/2)` halves the digit
+    /// count each step, so six iterations exhaust a 32-bit input. No `f32` anywhere
+    /// (AGENTS.md 15.7); used by [`crate::Vec2::length`] and the hair segment clamp
+    /// (vanilla `Vector2.SafeNormalize`, `pureCeleste.cs:111133`).
+    pub fn sqrt(self) -> Self {
+        if self.0 <= 0 {
+            return Fx::zero();
+        }
+        let n = (self.0 as i64) << Self::FRACTIONAL_BITS;
+        let mut r = 1i64 << ((64 - (n as u64).leading_zeros() as i64 + 1) / 2);
+        for _ in 0..6 {
+            r = (r + n / r) / 2;
+        }
+        // Newton can land one above the floor; walk back so the result is exact.
+        while r > 0 && r * r > n {
+            r -= 1;
+        }
+        Fx::from_bits(r as i32)
+    }
+
     /// Maximum.
     #[inline]
     pub fn max(self, other: Self) -> Self {
@@ -249,6 +272,35 @@ mod tests {
         let c = a * b; // 6.0
         assert_eq!(c, Fx::from_int(6));
         assert_eq!(c / a, b);
+    }
+
+    #[test]
+    fn sqrt_lands_on_the_integer_roots() {
+        assert_eq!(Fx::zero().sqrt(), Fx::zero());
+        assert_eq!(Fx::from_int(-4).sqrt(), Fx::zero());
+        assert_eq!(Fx::from_int(1).sqrt(), Fx::one());
+        assert_eq!(Fx::from_int(4).sqrt(), Fx::from_int(2));
+        assert_eq!(Fx::from_int(81).sqrt(), Fx::from_int(9));
+        assert_eq!(Fx::from_ratio(1, 4).sqrt(), Fx::from_ratio(1, 2));
+    }
+
+    #[test]
+    fn sqrt_is_accurate_and_floored() {
+        // sqrt(2) = 1.41421356 -> 1.41421 in Q16.16 (bit 92681).
+        let root = Fx::from_int(2).sqrt();
+        assert!((root.to_f64() - 2f64.sqrt()).abs() < 2e-5, "{root}");
+        // Floor semantics: root^2 must not exceed the radicand, and the result tracks the
+        // real square root (f64 is fine here -- this is a test, not the simulation).
+        for x in 1..200 {
+            let value = Fx::from_ratio(x, 7);
+            let root = value.sqrt();
+            let want = value.to_f64().sqrt();
+            assert!(root * root <= value, "sqrt({value}) rounded up");
+            assert!(
+                (root.to_f64() - want).abs() < 2e-4,
+                "sqrt({value}) = {root}, want {want}"
+            );
+        }
     }
 
     #[test]

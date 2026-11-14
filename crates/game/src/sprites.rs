@@ -87,6 +87,12 @@ pub const HAIR_FRAME_ORIGIN: (f32, f32) = (5.0, 5.0);
 /// Node 0 draws the bangs, 1..4 draw `hair00`, and **each segment narrows toward the tail** (`GetHairScale`).
 pub const HAIR_COUNT: usize = 4;
 
+/// The two-dash tail length: `pureCeleste.cs:119986` `Sprite.HairCount = ((Dashes > 1) ? 5 : startHairCount)`.
+///
+/// The hair array is sized for the longest tail; `Player::hair_nodes` reports how many of them
+/// are live this tick.
+pub const HAIR_MAX: usize = 5;
+
 /// Logical frame origin -> **origin within the trimmed subimage**.
 ///
 /// The atlas `.meta` only gives the subimage position within the logical frame (a negative value, Monocle's
@@ -109,12 +115,14 @@ pub fn origin_in_trim(sprite: &Sprite, frame_origin: (f32, f32)) -> (f32, f32) {
 
 /// Hair segment scale: `pureCeleste.cs:111201-111205` `GetHairScale(index)`.
 ///
-/// `num = 0.25 + (1 - index / HairCount) * 0.75`, thinner toward the tail:
-/// index 0 -> 1.0, 1 -> 0.8125, 2 -> 0.625, 3 -> 0.4375.
+/// `num = 0.25 + (1 - index / HairCount) * 0.75`, thinner toward the tail: with the usual
+/// [`HAIR_COUNT`] of 4 that is index 0 -> 1.0, 1 -> 0.8125, 2 -> 0.625, 3 -> 0.4375. The divisor
+/// is the **live** segment count (`PlayerSprite.HairCount`, 4 normally and 5 with two dashes),
+/// not a constant.
 /// **the x scale of index 0 is `Facing`** (bangs mirror with facing), not `num`.
-pub fn hair_scale(index: usize, facing: f32) -> (f32, f32) {
+pub fn hair_scale(index: usize, facing: f32, count: usize) -> (f32, f32) {
     let i = index as f32;
-    let num = 0.25 + (1.0 - i / HAIR_COUNT as f32) * 0.75;
+    let num = 0.25 + (1.0 - i / count as f32) * 0.75;
     (if index == 0 { facing } else { num }, num)
 }
 
