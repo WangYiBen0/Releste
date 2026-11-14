@@ -721,6 +721,7 @@ impl Session {
         tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
         pos: Vec2,
         flip_x: bool,
+        scale: [f32; 2],
         hair_color: [f32; 4],
         body_sprite: Option<&str>,
         hair: sprites::HairFrame,
@@ -728,7 +729,7 @@ impl Session {
     ) -> Vec<SpriteDraw> {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
-        let body = self.body_draw(tex_size, anchor, flip_x, body_sprite);
+        let body = self.body_draw(tex_size, anchor, flip_x, scale, body_sprite);
 
         // `PlayerHair.Render` returns immediately when the frame has no hair
         // (`if (!Sprite.HasHair) return;`, 111157). `HasHair` is per **frame**
@@ -831,6 +832,7 @@ impl Session {
         tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
         anchor: Vec2,
         flip_x: bool,
+        scale: [f32; 2],
         body_sprite_name: Option<&str>,
     ) -> Option<SpriteDraw> {
         let (group, sprite) = self
@@ -850,12 +852,19 @@ impl Session {
         // the same thing only when the effective origin sits at the quad's centre -- not the
         // case for a trimmed frame (`runFast00`: origin.x 9 of width 14), so the two facings
         // were not mirror images and the flipped sprite looked shifted.
+        //
+        // `Sprite.Scale` (the dash/jump stretch) scales the quad **about the origin**
+        // (the same FNA rule above): the top-left moves by `origin * (1 - scale)` and the
+        // size scales by `scale`. `Scale.X` is negative to mirror, which this renderer
+        // already folds into `flip_x`, so the absolute value is used here.
+        let sx = scale[0];
+        let sy = scale[1];
         let offset_x = if flip_x { w - origin.0 } else { origin.0 };
         Some(
             SpriteDraw::new(
                 id,
-                anchor - Vec2::from_f32s(offset_x, origin.1),
-                Vec2::from_f32s(w, h),
+                anchor - Vec2::from_f32s(offset_x * sx, origin.1 * sy),
+                Vec2::from_f32s(w * sx, h * sy),
                 uv,
             )
             .with_layer(Layer::Player.value())
@@ -1857,10 +1866,10 @@ mod tests {
             "characters\\player\\jumpSlow00",
         ] {
             let right = session
-                .body_draw(&size, anchor, false, Some(name))
+                .body_draw(&size, anchor, false, [1.0, 1.0], Some(name))
                 .unwrap_or_else(|| panic!("{name} missing from the fixture atlas"));
             let left = session
-                .body_draw(&size, anchor, true, Some(name))
+                .body_draw(&size, anchor, true, [1.0, 1.0], Some(name))
                 .expect("the same sprite must resolve when flipped");
 
             // Reflecting the unflipped quad about the anchor gives the flipped quad.

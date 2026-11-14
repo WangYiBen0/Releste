@@ -284,6 +284,7 @@ impl Recorder {
             &|id| self.textures.size(id),
             player.pos,
             player.facing < 0,
+            player.sprite_scale(),
             player.hair_color(),
             body.as_deref(),
             hair,

@@ -362,6 +362,16 @@ pub struct Player {
     hair_wave: Fx,
     /// `PlayerHair.Start` has run (vanilla `startHairCalled`, 120237-120245).
     hair_started: bool,
+    /// `Player.Sprite.Scale` (vanilla starts at `Vector2.One`); springs back to 1 in
+    /// `UpdateSprite` (120302-120303) and is setback by dash/jump/hit actions
+    /// (120724/120995/121037/121587/121992). Read twice by the sim: the hair root
+    /// Y-offset is `-9 * Scale.Y` (111117) and the hair rigidity gate below.
+    sprite_scale: [Fx; 2],
+    /// `PlayerHair.SimulateMotion` (111077, set at 120296): when false the hair chain does
+    /// **not** chase its parent (the 111127-111131 approach is skipped), so it goes rigid
+    /// and is only held within the max-segment constraint (111132-111134). Gated on
+    /// `applyGravity`, which vanilla passes through `UpdateHair(applyGravity)`.
+    simulate_motion: bool,
     /// State machine (vanilla `StateMachine.State`, numbered as vanilla: 0 = Normal,
     /// 2 = Dash, 119397-119409; 1/3/8 etc. not implemented).
     state: u8,
@@ -470,6 +480,8 @@ impl Player {
             hair_time: Fx::zero(),
             hair_wave: Fx::zero(),
             hair_started: false,
+            sprite_scale: [Fx::one(), Fx::one()],
+            simulate_motion: true,
             state: 0,
             dash_dir: Vec2::ZERO,
             dash_phase: 0,
@@ -661,10 +673,11 @@ impl Player {
         }
 
         // `Nodes[0] = RenderPosition + (0, -9 * Scale.Y) + HairOffset * (Facing, 1)`
-        // (111116-111117). `Scale.Y` is 1: the dash squash/stretch is not ported.
+        // (111116-111117). `Scale.Y` springs back to 1 (120302-120303), but a dash
+        // squeeze finds it < 1, pulling the root down toward the body.
         let offset = self.anim_frame_hair(table).offset;
-        self.hair_nodes[0] =
-            anchor + Vec2::new(Fx::from_int(offset.0) * facing, Fx::from_int(offset.1 - 9));
+        let root_y = Fx::from_int(offset.1) - Fx::from_int(9) * self.sprite_scale[1];
+        self.hair_nodes[0] = anchor + Vec2::new(Fx::from_int(offset.0) * facing, root_y);
 
         let mut target = self.hair_nodes[0]
             + Vec2::new(
@@ -675,11 +688,15 @@ impl Player {
         let mut previous = self.hair_nodes[0];
         for i in 1..self.hair_count {
             // `num2 = (1 - i / HairCount * 0.5) * StepApproach` (111127-111129), applied
-            // per tick (`num2 * Engine.DeltaTime`).
-            let rate = (Fx::one() - Fx::from_ratio(i as i32, (2 * self.hair_count) as i32))
-                * step_approach
-                * releste_math::FIXED_DT;
-            self.hair_nodes[i] = approach_vec(self.hair_nodes[i], target, rate);
+            // per tick (`num2 * Engine.DeltaTime`); skipped entirely when
+            // `SimulateMotion` is false (111127) -- the chain goes rigid and is only held
+            // within the max-segment constraint below.
+            if self.simulate_motion {
+                let rate = (Fx::one() - Fx::from_ratio(i as i32, (2 * self.hair_count) as i32))
+                    * step_approach
+                    * releste_math::FIXED_DT;
+                self.hair_nodes[i] = approach_vec(self.hair_nodes[i], target, rate);
+            }
             let delta = self.hair_nodes[i] - previous;
             if delta.length() > HAIR_MAX_SEGMENT {
                 self.hair_nodes[i] = previous + delta.safe_normalized() * HAIR_MAX_SEGMENT;
@@ -768,6 +785,12 @@ impl Player {
         // The current per-frame lerp value (`UpdateHair` writes it into `Hair.Color`,
         // read directly by rendering).
         self.hair_color_current
+    }
+
+    /// `Player.Sprite.Scale`, converted for the renderer (render f32 is allowed; the
+    /// sim tracks it in `Fx`, 120302-120303 + the dash/jump setters).
+    pub fn sprite_scale(&self) -> [f32; 2] {
+        [self.sprite_scale[0].to_f32(), self.sprite_scale[1].to_f32()]
     }
 
     /// Adjustment before an up transition (vanilla `BeforeUpTransition`,
@@ -973,6 +996,8 @@ impl Player {
         self.vel.x = WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
+        // `Sprite.Scale = (0.6, 1.4)` (120853) -- the wall-jump vertical stretch.
+        self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         let _ = rooms;
     }
@@ -1156,6 +1181,9 @@ impl Player {
         // before the duck branch left it at -105 while vel.y was -52.5, so the clamp
         // yanked the wave dash back up to full height at full horizontal speed.
         self.var_jump_speed = self.vel.y;
+        // `Sprite.Scale = (0.6, 1.4)` (120768) -- the super-jump vertical stretch; it
+        // springs back to 1 in `UpdateSprite` (120302-120303).
+        self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         self.state = 0;
         let _ = rooms;
@@ -1173,6 +1201,8 @@ impl Player {
         self.vel.x = SUPER_WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = SUPER_WALLJUMP_Y;
         self.var_jump_speed = SUPER_WALLJUMP_Y;
+        // `Sprite.Scale = (0.6, 1.4)` (120884) -- the super wall-jump vertical stretch.
+        self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         self.state = 0;
     }
@@ -1460,6 +1490,11 @@ impl Player {
         input: &Input,
         rooms: &[Room],
     ) {
+        // `Sprite.Scale.X/Y = Approach(Scale.X/Y, 1, 1.75 * dt)` (120302-120303): the
+        // dash/jump stretch springs back to 1 at 105 px/s-> 7/240 per tick.
+        const SPRING_RATE: Fx = Fx::from_ratio(7, 240);
+        approach(&mut self.sprite_scale[0], Fx::one(), SPRING_RATE);
+        approach(&mut self.sprite_scale[1], Fx::one(), SPRING_RATE);
         let dash_attacking = self.dash_attack > 0;
         if dash_attacking {
             if self.on_ground
@@ -2057,6 +2092,18 @@ impl Player {
                         self.vel.x *= Fx::from_ratio(6, 5);
                         self.ducking = true;
                     }
+                    // 121584-121589: the landing squash (`Sprite.Scale.X =
+                    // Lerp(1,1.6,amount)`, `Scale.Y = Lerp(1,0.4,amount)` with
+                    // `amount = min(Speed.Y / 240, 1)`), gated on not climbing. Because it
+                    // reads `Speed.Y` *after* the dash conversion zeroes it, a
+                    // down-diagonal dash landing keeps scale (1,1) while a hard fall
+                    // stretches horizontally. 240 px/s = 4 px/tick.
+                    if self.state != 1 {
+                        let amount = self.vel.y.min(Fx::from_int(4)) / Fx::from_int(4);
+                        let sx = Fx::one() + Fx::from_ratio(3, 5) * amount;
+                        let sy = Fx::one() - Fx::from_ratio(3, 5) * amount;
+                        self.sprite_scale = [sx, sy];
+                    }
                 } else {
                     // 121625-121646: a ceiling contact first tries the upward corner
                     // correction; on success the upward speed survives the squeeze.
@@ -2384,6 +2431,11 @@ mod tests {
             p.step(&Input::default(), std::slice::from_ref(room));
         }
         assert!(p.on_ground, "fixture: player must settle on the floor");
+        // `step` does not run `update_visuals`, so the landing squash (set in `slide_y`)
+        // would be left stuck at its collision value; the fixture's intent is a neutral,
+        // rested player, so restore scale to 1 (as the real per-frame `update_visuals`
+        // decay would after enough frames).
+        p.sprite_scale = [Fx::one(), Fx::one()];
         p
     }
 
@@ -2971,6 +3023,59 @@ mod tests {
             "SuperJump: Speed.X = 260 * Facing (120748)"
         );
         assert_eq!(p.vel.y, JUMP_SPEED, "SuperJump: Speed.Y = -105 (120749)");
+    }
+
+    /// `Sprite.Scale` set by the super jump (0.6,1.4 at 120768) then springs back to 1
+    /// each tick through `UpdateSprite` (120302-120303, rate 1.75 * dt). The value is
+    /// consumed by the renderer (body squash about the origin) and by the hair root
+    /// offset (`-9 * Scale.Y`, 111117), so it must be tracked in the sim.
+    #[test]
+    fn super_jump_sets_scale_then_it_springs_back() {
+        let room = wide_room();
+        let table = anim_table();
+        let mut p = settled(&room, 40.0);
+        // Ground dash -> super jump on the next tick, mirroring the wavedash scenario.
+        let dash = Input {
+            right: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room)); // enter State 2
+        p.step(&dash, std::slice::from_ref(&room)); // speed takes effect (still grounded)
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        p.step(&jump, std::slice::from_ref(&room));
+        assert!(
+            (p.sprite_scale[0].to_f32() - 0.6).abs() < 0.01,
+            "SuperJump Scale.X = 0.6 (120768, got {})",
+            p.sprite_scale[0].to_f32()
+        );
+        assert!(
+            (p.sprite_scale[1].to_f32() - 1.4).abs() < 0.01,
+            "SuperJump Scale.Y = 1.4 (120768, got {})",
+            p.sprite_scale[1].to_f32()
+        );
+        // The spring-back runs per frame in `update_sprite` (120302-120303): `step` only
+        // does movement/state, so call `update_visuals` to observe the decay toward 1.
+        let grounded = Input::default();
+        for _ in 0..3 {
+            p.update_visuals(&table, &grounded, std::slice::from_ref(&room));
+        }
+        let mid_x = p.sprite_scale[0].to_f32();
+        assert!(
+            mid_x > 0.6 && mid_x < 1.0,
+            "scale approaches 1 from 0.6 (got {mid_x})"
+        );
+        for _ in 0..120 {
+            p.update_visuals(&table, &grounded, std::slice::from_ref(&room));
+        }
+        let settled_y = p.sprite_scale[1].to_f32();
+        assert!(
+            (settled_y - 1.0).abs() < 0.01,
+            "scale settles back at 1 (120302-120303, got {settled_y})"
+        );
     }
 
     /// `Player.OnTransition` (pureCeleste.cs:120540-120547) refills the dash and stamina

@@ -305,6 +305,7 @@ impl GameService {
             &|id| gpu.texture_size(id),
             pos,
             self.player.facing < 0,
+            self.player.sprite_scale(),
             self.player.hair_color(),
             self.player
                 .anim_frame_texture(&self.session.anims)
