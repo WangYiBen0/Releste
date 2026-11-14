@@ -622,6 +622,13 @@ impl GameService {
         glide(&mut self.player.pos.y, t.player_to.y);
         let reached = self.player.pos == t.player_to;
 
+        // The hair chain keeps advancing rigidly while the player glides, matching vanilla
+        // `Player.TransitionTo -> UpdateHair(applyGravity:false)` (120551-120552): node 0
+        // follows the gliding head, the rest are only clamped (SimulateMotion=false), so the
+        // hair drags behind as Madeline is carried across the seam instead of staying frozen
+        // at the pre-transition pose (the body animation is correctly frozen, 115659-115668).
+        self.player.update_hair_rigid(&self.session.anims);
+
         // cameraAt = Approach(cameraAt, 1, dt / 0.65) (115366).
         // Easing is a render-side presentation (allowed by AGENTS.md 15.7); compute it in f32 then convert back to Fx.
         t.ticks += 1;
@@ -943,5 +950,48 @@ mod tests {
         let expected =
             Vec2::from_f32s(40.0, 90.0) + (target - Vec2::from_f32s(40.0, 90.0)) * CAMERA_LERP;
         assert_eq!(service.camera.position, expected);
+    }
+
+    /// During a room transition the body stays frozen but the hair chain keeps advancing
+    /// rigidly (`Player.TransitionTo -> UpdateHair(applyGravity:false)`, 120551-120552):
+    /// node 0 re-anchors to the gliding head each tick instead of freezing at the
+    /// pre-transition pose.
+    #[test]
+    fn the_hair_chain_follows_the_head_rigidly_during_a_transition() {
+        let doc = seam_map();
+        let session = Session::from_doc(doc, "test");
+        let mut service = GameService::new(session, None, None, None);
+        service.input.right = true;
+        for _ in 0..240 {
+            service.simulate_tick();
+            if service.transition.is_some() {
+                break;
+            }
+        }
+        assert!(
+            service.transition.is_some(),
+            "the seam must start a transition"
+        );
+        let before = service.player.hair_nodes()[0];
+        let head_before = service.player.pos;
+
+        // The player glides toward the next room (X first, then Y, 120553-120556). After a
+        // handful of ticks the hair root (node 0) must have moved with the head rather than
+        // staying at the pre-transition value -- the observable proof that the chain is still
+        // being updated (rigidly) during the glide.
+        for _ in 0..8 {
+            service.simulate_tick();
+            if service.transition.is_none() {
+                break;
+            }
+        }
+        assert!(
+            service.player.pos != head_before,
+            "the head must have glided toward the next room"
+        );
+        assert!(
+            service.player.hair_nodes()[0] != before,
+            "hair node 0 must follow the gliding head during a transition"
+        );
     }
 }

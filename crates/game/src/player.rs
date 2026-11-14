@@ -595,6 +595,21 @@ impl Player {
         self.update_hair(table);
     }
 
+    /// Advance only the hair chain during a room transition, matching vanilla
+    /// `Player.TransitionTo` -> `UpdateHair(applyGravity: false)` (pureCeleste.cs:120551-120552,
+    /// which sets `Hair.SimulateMotion = applyGravity` at 120296). The main `Update` (and so
+    /// `UpdateSprite`/`Sprite.Update`) is skipped while transitioning (Level.Update's
+    /// `else if (!Transitioning)` branch, 115659-115668), so the body pose stays frozen; the
+    /// hair, however, is still advanced: node 0 follows the gliding head (`Nodes[0]`
+    /// 111116-111117) while the chase toward `target` is skipped (111127 is gated off), so
+    /// the chain runs rigid and is only held within the max-segment clamp (111132-111134).
+    /// This is the only observable effect of `SimulateMotion == false`, so keep the flag
+    /// persistent until the next normal `update_visuals` restores it (`UpdateHair(true)`).
+    pub fn update_hair_rigid(&mut self, table: &crate::sprites::AnimationTable) {
+        self.simulate_motion = false;
+        self.update_hair(table);
+    }
+
     /// The simulated hair chain for this tick, in **world space** like vanilla
     /// `PlayerHair.Nodes` (pureCeleste.cs:111088); node 0 is the head.
     ///
