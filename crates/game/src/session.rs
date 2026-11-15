@@ -31,6 +31,11 @@ const TILE: f32 = sprites::TILE_PX as f32;
 /// `Effects(300) < this layer < Foreground(500)`.
 const LAYER_INTRO_CRUSHER: i32 = Layer::Foreground.value() - 100;
 
+/// The fallback atlas vanilla consults when a `atlas="game"` texture is absent from
+/// Gameplay (`MapData.cs:345-362`): `GFX.Misc`. The content pipeline writes it as one
+/// `png` group per sprite.
+const MISC_ATLAS: &str = "Misc";
+
 /// Draw layer for `wire` (`above=false`): vanilla `Depth = 2000`
 /// (`pureCeleste.cs:106687`) -- drawn after the background layer and before the
 /// terrain and the player (in vanilla, smaller values draw in front). The engine layer
@@ -154,6 +159,21 @@ fn bridge_cells(start_x: f32, width: i32, gap: (f32, f32)) -> Vec<(f32, i16, i16
     out
 }
 
+/// The draw flags a `parallax` backdrop resolves to: `(flip_x, flip_y, additive)`.
+///
+/// `Parallax.Render` (`112208-112218`) derives a single `SpriteEffects` value from the
+/// two booleans (`FlipX && FlipY` -> both, otherwise whichever is set), which the
+/// engine expresses as two independent UV swaps; and `ParseBackdrop`
+/// (`112658-112673`) lowercases `blendmode` before comparing it with `"additive"`, so
+/// the mode is matched case-insensitively here too.
+fn parallax_flags(bd: &Backdrop) -> (bool, bool, bool) {
+    (
+        bd.flip_x,
+        bd.flip_y,
+        bd.blend.eq_ignore_ascii_case("additive"),
+    )
+}
+
 /// The effective color of a single `Backdrop`: all-zero is treated as "unset" and
 /// takes vanilla's default white (starting from `112789`
 /// `backdrop.Color = Color.White`; `112790-112796` only override it when
@@ -178,7 +198,8 @@ fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
 ///    `Backdrop.CameraOffset` concept yet (`CameraOffset` is a field unique to
 ///    `Parallax`, default `Vector2.Zero`, `112129-112130`), so it uses the camera
 ///    position directly.
-/// 2. `p = (Position - v*Scroll).Floor()` (`112166`).
+/// 2. `p = (Position - v*Scroll).Floor()` (`112166`), where `Position` is the
+///    accumulator that `Parallax.Update` advances by `Speed * dt` (`112149-112151`).
 /// 3. If `LoopX`/`LoopY`: two `while` loops fold `p.X`/`p.Y` back (`112185-112206`), in
 ///    the same order as vanilla (first `<0` add, then `>0` subtract); with `!Loop`
 ///    nothing is folded.
@@ -190,6 +211,7 @@ fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
 ///    `Vector2.Zero` (top-left of the cropped sub-image) and scale `1`.
 fn parallax_tiles(
     bd: &Backdrop,
+    position: (f32, f32),
     camera_pos: (f32, f32),
     tex: (f32, f32),
     screen: (f32, f32),
@@ -200,9 +222,11 @@ fn parallax_tiles(
     let (tw, th) = (tex.0.max(1.0), tex.1.max(1.0));
     // 1. v = (Camera + CameraOffset).Floor() (no CameraOffset).
     let (cam_x, cam_y) = (camera_pos.0.floor(), camera_pos.1.floor());
-    // 2. p = (Position - v*Scroll).Floor().
-    let mut px = (bd.x - cam_x * bd.scroll_x).floor();
-    let mut py = (bd.y - cam_y * bd.scroll_y).floor();
+    // 2. p = (Position - v*Scroll).Floor(). `Position` starts at the parsed `x`/`y`
+    // and drifts with `Speed` every tick (`Parallax.Update`), so the caller passes the
+    // accumulated value rather than reading `bd.x`/`bd.y` directly.
+    let mut px = (position.0 - cam_x * bd.scroll_x).floor();
+    let mut py = (position.1 - cam_y * bd.scroll_y).floor();
     // 3. while folding (vanilla's two-while order: first <0 add, then >0 subtract).
     if bd.loop_x {
         while px < 0.0 {
@@ -240,6 +264,17 @@ fn parallax_tiles(
     out
 }
 
+/// Everything a backdrop pass needs besides the drawings and the slice itself, bundled
+/// so the two calls (backgrounds, foregrounds) stay readable.
+struct BackdropCtx<'a> {
+    /// Per-slot `Speed * dt` drift, parallel to visibility.
+    drifts: &'a [Vec2],
+    camera_pos: Vec2,
+    visibility: &'a [bool],
+    session: &'a Session,
+    gpu: &'a GpuRenderer,
+}
+
 /// Background / foreground parallax texture tiling (`Parallax.Render`,
 /// `pureCeleste.cs:112163-112236`).
 ///
@@ -251,11 +286,13 @@ fn parallax_tiles(
 /// - An origin of `Vector2.Zero` into the cropped sub-image means top-left alignment,
 ///   so this uses `sprite.w/h` and `uv_for_sprite` directly and does not go through
 ///   [`sprites::origin_in_trim`] (which is for sprites that have an in-frame origin).
-/// - `blendmode="additive"` is not supported yet (the wgpu backend currently has only
-///   a single `PREMULTIPLIED_ALPHA_BLENDING` pipeline, see `gpu.rs:289-291`), so
-///   everything draws premultiplied-alpha; a known deviation. Likewise `FlipY`
-///   (`SpriteDraw` only has `flip_x`) and the horizontal drift driven by
-///   `WindMultiplier` (`112157`) do not take effect yet; 0-Intro does not use them.
+/// - `blendmode="additive"` selects the backend's second pipeline
+///   (`SpriteDraw::additive` -> `wgpu` `src + dst`), matching `BlendState.Additive`
+///   (`112658-112673`). `FlipX`/`FlipY` map to `SpriteDraw::with_flip_x`/`...
+///   with_flip_y` exactly as `Parallax.Render` derives `SpriteEffects`
+///   (`112208-112218`). The horizontal drift driven by `WindMultiplier` (`112157`) is
+///   still unported because `Level.Wind` is not modelled yet; no map in the asset set
+///   sets a non-zero `wind`.
 /// - `fadeIn` (`DoFadeIn`, `112153-112160`) and `FadeX`/`FadeY` (`Fader`,
 ///   `109343-109378`) are not ported yet: 0-Intro's `ParseBackdrop` (`112651`
 ///   `DoFadeIn = bool.Parse(child.Attr("fadeIn", "false"))`) defaults to `false`, so
@@ -270,12 +307,16 @@ fn parallax_tiles(
 fn push_backdrops(
     out: &mut Vec<SpriteDraw>,
     backdrops: &[Backdrop],
-    camera_pos: Vec2,
     layer: i32,
-    visibility: &[bool],
-    session: &Session,
-    gpu: &GpuRenderer,
+    ctx: BackdropCtx<'_>,
 ) {
+    let BackdropCtx {
+        drifts,
+        camera_pos,
+        visibility,
+        session,
+        gpu,
+    } = ctx;
     let screen = (releste_render::BASE_WIDTH, releste_render::BASE_HEIGHT);
     for (i, bd) in backdrops.iter().enumerate() {
         // Room-filter visibility is refreshed by [`Session::update_backdrop_visibility`]
@@ -300,13 +341,6 @@ fn push_backdrops(
             }
             continue;
         }
-        if bd.flip_y && session.warn_once(&format!("backdrop-flipy:{}", bd.texture)) {
-            warn!(
-                texture = %bd.texture,
-                "backdrop flipy is not supported yet; drawing unflipped"
-            );
-        }
-
         let Some((group, sprite)) = session.atlas.sprite(&bd.texture) else {
             if session.warn_once(&format!("backdrop-tex:{}", bd.texture)) {
                 warn!(
@@ -329,12 +363,19 @@ fn push_backdrops(
             continue;
         }
 
-        for (x, y) in parallax_tiles(bd, camera_pos.to_f32s(), (w, h), screen) {
+        // `Position` for this slot: parsed `x`/`y` plus the `Speed` drift accumulated
+        // since the map loaded (`Parallax.Update`, `112149-112151`).
+        let drift = drifts.get(i).copied().unwrap_or(Vec2::ZERO);
+        let position = (bd.x + drift.x.to_f32(), bd.y + drift.y.to_f32());
+        let (flip_x, flip_y, additive) = parallax_flags(bd);
+        for (x, y) in parallax_tiles(bd, position, camera_pos.to_f32s(), (w, h), screen) {
             out.push(
                 SpriteDraw::new(atlas_id, Vec2::from_f32s(x, y), Vec2::from_f32s(w, h), uv)
                     .with_layer(layer)
                     .with_color(tint)
-                    .with_flip_x(bd.flip_x),
+                    .with_flip_x(flip_x)
+                    .with_flip_y(flip_y)
+                    .with_additive(additive),
             );
         }
     }
@@ -382,6 +423,13 @@ pub struct Session {
     /// order. `None` means the slot is a static `parallax` image (or a kind that is still
     /// unimplemented), so this costs nothing per frame for normal maps.
     backdrop_effects: RefCell<Vec<Option<crate::backdrop::Effect>>>,
+    /// Per-backdrop `Speed * dt` accumulation since the map loaded. Vanilla starts
+    /// `Backdrop.Position` at the parsed `x`/`y` (`109366`) and `Parallax.Update` adds
+    /// `Speed * dt` every tick (`112149-112151`), so the render position is
+    /// `(x, y) + drift`; keeping only the drift means a hot reload that rewrites `x`/`y`
+    /// applies immediately instead of restarting the scroll. Index = backgrounds +
+    /// foregrounds concatenated in order, parallel to [`Session::backdrop_visible`].
+    backdrop_drift: RefCell<Vec<Vec2>>,
     /// Keys that warn only once, to avoid spamming every frame.
     warned: RefCell<HashSet<String>>,
 }
@@ -431,6 +479,31 @@ impl Session {
         }
     }
 
+    /// Accumulate every `parallax` backdrop's `Speed * dt` drift for this tick
+    /// (vanilla `Parallax.Update`, `112149-112151`).
+    ///
+    /// A pure accumulator, so a hot reload that rewrites `<bg x=... speedx=...>` takes
+    /// effect on the next frame; slots are matched positionally and the vector is only
+    /// resized, never reset, when the style grows or shrinks.
+    fn advance_backdrop_drift(&self, dt: Fx) {
+        let total = self.doc.style.backgrounds.len() + self.doc.style.foregrounds.len();
+        let mut drift = self.backdrop_drift.borrow_mut();
+        if drift.len() != total {
+            drift.resize(total, Vec2::ZERO);
+        }
+        for (slot, bd) in self
+            .doc
+            .style
+            .backgrounds
+            .iter()
+            .chain(&self.doc.style.foregrounds)
+            .enumerate()
+        {
+            drift[slot].x += Fx::from_f32(bd.speed_x) * dt;
+            drift[slot].y += Fx::from_f32(bd.speed_y) * dt;
+        }
+    }
+
     /// Advance the self-animating backdrop effects by one tick (vanilla
     /// `BackdropRenderer.Update` -> `Backdrop.Update`, `109468-109489` and
     /// `Snow.Update`).
@@ -440,6 +513,11 @@ impl Session {
     /// changed (a hot reload rewriting a `<bg>`/`<fg>` element) are rebuilt, so a map
     /// edit can add or drop snow without a restart.
     pub fn update_backdrop_effects(&self, dt: Fx) {
+        // `Parallax.Update` drifts the whole position every tick, regardless of
+        // visibility (`112149-112151`): `Position += Speed * Engine.DeltaTime`, then
+        // `Position += WindMultiplier * Level.Wind * Engine.DeltaTime` (`112153-112157`,
+        // still unported because `Level.Wind` is not modelled).
+        self.advance_backdrop_drift(dt);
         let kinds: Vec<&str> = self
             .doc
             .style
@@ -569,6 +647,7 @@ impl Session {
             spawn_room,
             backdrop_visible: RefCell::default(),
             backdrop_effects: RefCell::default(),
+            backdrop_drift: RefCell::default(),
             warned: RefCell::default(),
         })
     }
@@ -611,7 +690,34 @@ impl Session {
         // `<skin>\characters\player\...` resolves, and remember the pack's
         // `Character_ID` so its animation set can be aliased to `player` below. A skin
         // this build has no atlas for is not an error -- the player falls back to vanilla.
+        // Vanilla resolves a backdrop texture declared as `atlas="game"` through Game
+        // first and then through **Misc** (`MapData.cs:345-362`), which is how the
+        // `purplesunset` / `mist` / `darkswamp` / `vignette` backdrops in the original
+        // maps draw at all: they are not in Gameplay. Appending Misc as a second layer
+        // reproduces that fallback, and it is appended BEFORE the skin so a reskin's own
+        // groups still win over vanilla names.
         let mut atlas = atlas;
+        let misc_path = paths.atlas(MISC_ATLAS);
+        if misc_path.is_file() {
+            match SpriteAtlas::load(&misc_path, paths.atlas_dir()) {
+                Ok(misc) => {
+                    let groups = misc.descriptor().textures.len();
+                    atlas.append(misc.descriptor());
+                    debug!(groups, "appended the Misc atlas as the backdrop fallback");
+                }
+                Err(e) => warn!(
+                    path = %misc_path.display(),
+                    error = %e,
+                    "Misc atlas failed to load; backdrop textures outside Gameplay stay missing"
+                ),
+            }
+        } else {
+            warn!(
+                path = %misc_path.display(),
+                "Misc atlas is missing; run the content pipeline to convert it"
+            );
+        }
+
         let mut skin_character: Option<String> = None;
         if let Some(skin) = skin.filter(|s| !s.is_empty()) {
             let skin_path = paths.atlas(skin);
@@ -678,6 +784,7 @@ impl Session {
             spawn_room,
             backdrop_visible: RefCell::default(),
             backdrop_effects: RefCell::default(),
+            backdrop_drift: RefCell::default(),
             warned: RefCell::default(),
         }
     }
@@ -783,24 +890,31 @@ impl Session {
     /// layering of vanilla `Backdrop`.
     pub fn backdrop_draws(&self, gpu: &GpuRenderer, camera_pos: Vec2) -> Vec<SpriteDraw> {
         let vis = self.backdrop_visible.borrow();
+        let drift = self.backdrop_drift.borrow();
         let mut out = Vec::new();
         push_backdrops(
             &mut out,
             &self.doc.style.backgrounds,
-            camera_pos,
             Layer::Background.value(),
-            &vis,
-            self,
-            gpu,
+            BackdropCtx {
+                drifts: &drift,
+                camera_pos,
+                visibility: &vis,
+                session: self,
+                gpu,
+            },
         );
         push_backdrops(
             &mut out,
             &self.doc.style.foregrounds,
-            camera_pos,
             Layer::Foreground.value(),
-            &vis,
-            self,
-            gpu,
+            BackdropCtx {
+                drifts: &drift,
+                camera_pos,
+                visibility: &vis,
+                session: self,
+                gpu,
+            },
         );
         // Self-animating backdrops (snow) draw one 1x1 quad per particle, layered exactly
         // where their static siblings sit: the background pass under the tiles and the
@@ -1651,6 +1765,7 @@ mod tests {
             spawn_room: "lvl_-1".into(),
             backdrop_visible: RefCell::default(),
             backdrop_effects: RefCell::default(),
+            backdrop_drift: RefCell::default(),
             warned: RefCell::default(),
         }
     }
@@ -1810,7 +1925,13 @@ mod tests {
     #[test]
     fn parallax_loop_x_without_loop_y_tiles_one_row() {
         let bd = parallax_bd(-24.0, -64.0, (0.15, 0.05), (true, false));
-        let tiles = parallax_tiles(&bd, (176.9, 92.2), (320.0, 137.0), (320.0, 180.0));
+        let tiles = parallax_tiles(
+            &bd,
+            (bd.x, bd.y),
+            (176.9, 92.2),
+            (320.0, 137.0),
+            (320.0, 180.0),
+        );
 
         // Floor(cam) = (176, 92) -> px = Floor(-24 - 26.4) = -51 and
         // py = Floor(-64 - 4.6) = -69; the loopx fold is vanilla's two while loops
@@ -1836,7 +1957,13 @@ mod tests {
     #[test]
     fn parallax_double_loop_covers_the_whole_screen() {
         let bd = parallax_bd(0.0, 0.0, (0.5, 0.5), (true, true));
-        let tiles = parallax_tiles(&bd, (320.0, 180.0), (160.0, 90.0), (320.0, 180.0));
+        let tiles = parallax_tiles(
+            &bd,
+            (bd.x, bd.y),
+            (320.0, 180.0),
+            (160.0, 90.0),
+            (320.0, 180.0),
+        );
 
         // Floor(0 - 160*0.5) = -160 -> folds back to 0; likewise for y -> the grid
         // starts at (0,0)/(160,90).
@@ -1855,15 +1982,106 @@ mod tests {
     fn parallax_start_off_screen_draws_nothing() {
         let off = parallax_bd(400.0, 10.0, (1.0, 1.0), (false, false));
         assert!(
-            parallax_tiles(&off, (0.0, 0.0), (320.0, 180.0), (320.0, 180.0)).is_empty(),
+            parallax_tiles(
+                &off,
+                (off.x, off.y),
+                (0.0, 0.0),
+                (320.0, 180.0),
+                (320.0, 180.0)
+            )
+            .is_empty(),
             "p.X = 400 >= 320: vanilla's for-condition never enters the loop"
         );
 
         let one = parallax_bd(10.0, 10.0, (1.0, 1.0), (false, false));
         assert_eq!(
-            parallax_tiles(&one, (0.0, 0.0), (320.0, 180.0), (320.0, 180.0)),
+            parallax_tiles(
+                &one,
+                (one.x, one.y),
+                (0.0, 0.0),
+                (320.0, 180.0),
+                (320.0, 180.0)
+            ),
             vec![(10.0, 10.0)],
             "!LoopX && !LoopY draws exactly one tile"
+        );
+    }
+
+    /// `ParseBackdrop` lowercases `blendmode` and only then compares it with
+    /// `"additive"` (`112658-112673`); both flip bits travel independently
+    /// (`112208-112218`).
+    #[test]
+    fn backdrop_flags_follow_parse_backdrop() {
+        let mut bd = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
+        assert_eq!(parallax_flags(&bd), (false, false, false));
+
+        bd.blend = "Additive".to_string();
+        assert_eq!(
+            parallax_flags(&bd),
+            (false, false, true),
+            "the blend mode is matched case-insensitively"
+        );
+
+        bd.blend = "alphablend".to_string();
+        bd.flip_x = true;
+        bd.flip_y = true;
+        assert_eq!(
+            parallax_flags(&bd),
+            (true, true, false),
+            "both flips survive together (vanilla's SpriteEffects.Both)"
+        );
+    }
+
+    /// `Parallax.Update` drifts `Position` by `Speed * dt` every tick
+    /// (`112149-112151`), independently of visibility, and a hot reload that rewrites
+    /// `speedx` takes effect on the next tick.
+    #[test]
+    fn parallax_speed_drifts_the_position_each_tick() {
+        let dt = Fx::from_bits(Fx::DT_ONE_SIXTIETH);
+
+        let mut session = seam_session();
+        let mut bd = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
+        bd.speed_x = -32.0;
+        session.doc.style.backgrounds = vec![bd];
+        session.doc.style.foregrounds = Vec::new();
+
+        session.update_backdrop_effects(dt);
+        {
+            let drift = session.backdrop_drift.borrow();
+            assert_eq!(drift.len(), 1);
+            // One tick of -32 px/s at 1/60 s = -32/60 px, rounded by the fixed-point
+            // accumulator to within one 1/65536 step.
+            let x = drift[0].x.to_f32();
+            assert!(
+                (x - (-32.0 / 60.0)).abs() < 0.001,
+                "one tick drifts by Speed*dt, got {x}"
+            );
+            assert_eq!(drift[0].y.to_f32(), 0.0, "speedy is 0 here");
+        }
+
+        for _ in 0..59 {
+            session.update_backdrop_effects(dt);
+        }
+        {
+            let drift = session.backdrop_drift.borrow();
+            let x = drift[0].x.to_f32();
+            assert!(
+                (x - -32.0).abs() < 0.01,
+                "60 ticks of -32 px/s drift the backdrop by -32px, got {x}"
+            );
+        }
+
+        // Hot reload rewriting the speed keeps the accumulated drift and applies the new
+        // rate from the next tick on.
+        let mut faster = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
+        faster.speed_x = -64.0;
+        session.doc.style.backgrounds = vec![faster];
+        session.update_backdrop_effects(dt);
+        let drift = session.backdrop_drift.borrow();
+        let x = drift[0].x.to_f32();
+        assert!(
+            (x - (-32.0 - 64.0 / 60.0)).abs() < 0.02,
+            "drift accumulates across the edit, got {x}"
         );
     }
 
