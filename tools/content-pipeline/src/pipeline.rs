@@ -228,10 +228,15 @@ impl Pipeline {
 
         // Write the pixels out as PNG first, then write the descriptor: the `kind` / `source` in the descriptor must point at
         // a real engine-format file, not the conversion input.
+        //
+        // One input group may become several output groups: a PackerNoAtlas page is a directory of
+        // full-image payloads with no shared page, so each sprite gets its own single-sprite PNG group.
         let mut build = build.clone();
-        for tex in &mut build.textures {
-            self.write_texture_payload(&stem, tex)?;
+        let mut textures = Vec::with_capacity(build.textures.len());
+        for tex in std::mem::take(&mut build.textures) {
+            textures.extend(self.write_texture_payload(&stem, tex)?);
         }
+        build.textures = textures;
 
         // Descriptor file (our .atlas = TOML)
         let descriptor = self.atlas_descriptor(&stem, &build)?;
@@ -248,11 +253,15 @@ impl Pipeline {
     ///
     /// After conversion every group is either a PNG copied verbatim or a PNG decoded by this tool,
     /// so [`Self::atlas_descriptor`] only needs to handle `kind = "png"`.
+    ///
+    /// A PackerNoAtlas page (`per_sprite_crunch`) has no shared page: its payloads are whole,
+    /// independent images, so it expands into one single-sprite `png` group per sprite. That keeps
+    /// the runtime contract (one payload file per texture group) without a multi-page packer.
     fn write_texture_payload(
         &mut self,
         stem: &str,
-        tex: &mut AtlasTexture,
-    ) -> Result<(), PipelineError> {
+        mut tex: AtlasTexture,
+    ) -> Result<Vec<AtlasTexture>, PipelineError> {
         let source = tex.source.clone();
         match source {
             // Standalone PNG: copy verbatim; `kind` is already `png`.
@@ -268,21 +277,55 @@ impl Pipeline {
                     ));
                 }
                 tex.source = TextureSource::Png(PathBuf::from(&rel));
+                Ok(vec![tex])
             }
 
-            // PackerNoAtlas: one `.data` per sprite.
-            // These pages are independent and have no usable layout (the rectangles in `.meta` overlap;
-            // they are animation frame offsets), so combining them into a single page needs paging + runtime per-sprite texture binding;
-            // for now we copy verbatim and keep the original kind (AGENTS.md 13).
+            // PackerNoAtlas: one `.data` per sprite, each a whole image.
+            //
+            // The rectangles in `.meta` all start at (0, 0), so the page cannot be recomposed;
+            // decoding each payload into its own PNG group needs no packing at all.
             TextureSource::PerSpriteDir(_) => {
+                let mut groups = Vec::with_capacity(tex.sprites.len());
                 for sprite in &tex.sprites {
-                    let src = source.file_for_sprite(&sprite.name);
+                    // Sprite names carry the source subdirectory as a `\\` separator
+                    // (`credits\\a` for `Portraits/credits/a.data`), so resolve it as a real path.
+                    let file_name = sprite.name.replace('\\', "/");
+                    let src = source.file_for_sprite(&file_name);
                     if !src.is_file() {
+                        self.report.warn(format!(
+                            "atlas `{}`: sprite `{}` has no payload at {}",
+                            tex.name,
+                            sprite.name,
+                            src.display()
+                        ));
                         continue;
                     }
-                    self.report.pending_textures += 1;
-                    self.copy_exact(&src, &sprite_out_rel(stem, &tex.name, &sprite.name))?;
+                    let decoded = data::decode_file(&src)?;
+                    let rel = sprite_out_rel(stem, &tex.name, &sprite.name, "png");
+                    write_png(&self.safe_out(Path::new(&rel))?, &decoded)?;
+                    self.report.decoded_textures += 1;
+
+                    // Named after the atlas and sprite, so the group id is stable across runs.
+                    let group = format!("{}__{}", tex.name, file_name.replace('/', "_"));
+                    groups.push(AtlasTexture {
+                        name: group,
+                        source: TextureSource::Png(PathBuf::from(&rel)),
+                        sprites: vec![crate::atlas::SpriteRegion {
+                            name: sprite.name.clone(),
+                            x: 0,
+                            y: 0,
+                            w: decoded.width as i16,
+                            h: decoded.height as i16,
+                            origin_x: sprite.origin_x,
+                            origin_y: sprite.origin_y,
+                            frame_w: sprite.frame_w,
+                            frame_h: sprite.frame_h,
+                        }],
+                        width: Some(decoded.width as i32),
+                        height: Some(decoded.height as i32),
+                    });
                 }
+                Ok(groups)
             }
 
             // Packer / PackerNoAtlas single page: decode to PNG.
@@ -293,9 +336,9 @@ impl Pipeline {
                 write_png(&self.safe_out(Path::new(&rel))?, &decoded)?;
                 self.report.decoded_textures += 1;
                 tex.source = TextureSource::Png(PathBuf::from(&rel));
+                Ok(vec![tex])
             }
         }
-        Ok(())
     }
 
     fn atlas_descriptor(&self, name: &str, build: &AtlasBuild) -> Result<String, PipelineError> {
@@ -313,17 +356,14 @@ impl Pipeline {
             origin_y: i16,
             frame_w: i16,
             frame_h: i16,
-            /// Only used by `per_sprite_crunch`: this sprite's own payload path.
-            #[serde(skip_serializing_if = "Option::is_none")]
-            source: Option<String>,
         }
 
         #[derive(Serialize)]
         struct TextureOut<'a> {
             name: &'a str,
-            /// `png` | `crunch` | `packed_crunch` | `per_sprite_crunch`
+            /// Always `png`: every payload is decoded or copied to PNG by this tool.
             kind: &'static str,
-            /// Group-level payload path (the group directory for `per_sprite_crunch`).
+            /// Group-level payload path.
             source: String,
             #[serde(skip_serializing_if = "Option::is_none")]
             width: Option<i32>,
@@ -344,38 +384,28 @@ impl Pipeline {
         let textures = build
             .textures
             .iter()
-            .map(|t| {
-                let per_sprite = matches!(t.source, TextureSource::PerSpriteDir(_));
-                let source = if per_sprite {
-                    // Group directory (one .data per sprite)
-                    format!("atlas/{name}/{}", t.name)
-                } else {
-                    group_out_rel(name, &t.name, t.source.payload_ext())
-                };
-
-                TextureOut {
-                    name: &t.name,
-                    kind: t.source.kind(),
-                    source,
-                    width: t.width,
-                    height: t.height,
-                    sprites: t
-                        .sprites
-                        .iter()
-                        .map(|s| SpriteOut {
-                            name: &s.name,
-                            x: s.x,
-                            y: s.y,
-                            w: s.w,
-                            h: s.h,
-                            origin_x: -s.origin_x,
-                            origin_y: -s.origin_y,
-                            frame_w: s.frame_w,
-                            frame_h: s.frame_h,
-                            source: per_sprite.then(|| sprite_out_rel(name, &t.name, &s.name)),
-                        })
-                        .collect(),
-                }
+            .map(|t| TextureOut {
+                name: &t.name,
+                kind: t.source.kind(),
+                // Always the payload this tool wrote (or copied) for the group.
+                source: t.source.path().to_string_lossy().replace('\\', "/"),
+                width: t.width,
+                height: t.height,
+                sprites: t
+                    .sprites
+                    .iter()
+                    .map(|s| SpriteOut {
+                        name: &s.name,
+                        x: s.x,
+                        y: s.y,
+                        w: s.w,
+                        h: s.h,
+                        origin_x: -s.origin_x,
+                        origin_y: -s.origin_y,
+                        frame_w: s.frame_w,
+                        frame_h: s.frame_h,
+                    })
+                    .collect(),
             })
             .collect();
 
@@ -744,9 +774,13 @@ fn write_png(to: &Path, tex: &DecodedTexture) -> Result<(), PipelineError> {
         })
 }
 
-/// Relative path of a `per_sprite_crunch` single-sprite payload.
-fn sprite_out_rel(stem: &str, group: &str, sprite: &str) -> String {
-    format!("atlas/{stem}/{group}/{sprite}.data")
+/// Relative path of one sprite's own payload inside a PackerNoAtlas group directory.
+///
+/// Sprite names use `\\` for the source subdirectory (`credits\\a`), so the separator is turned back
+/// into a real path component here.
+fn sprite_out_rel(stem: &str, group: &str, sprite: &str, ext: &str) -> String {
+    let sprite = sprite.replace('\\', "/");
+    format!("atlas/{stem}/{group}/{sprite}.{ext}")
 }
 
 /// Celeste tile alphabet: `0` is empty, everything else is tile index + 1.
