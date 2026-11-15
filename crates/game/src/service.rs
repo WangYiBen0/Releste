@@ -124,6 +124,10 @@ pub struct GameService {
     reloads: u64,
     /// Last reported room name (under `-v` a room switch logs a line only when this changes).
     reported_room: String,
+    /// `~` debug overlay: player hitbox plus a text readout (see `crate::overlay`).
+    ///
+    /// It is a pure render flag owned by the host, so it never touches the simulation.
+    pub debug_open: bool,
 }
 
 impl GameService {
@@ -181,6 +185,7 @@ impl GameService {
             reloads: 0,
             reported_room: spawn_room,
             skin: crate::skin::PlayerHairSkin::VANILLA,
+            debug_open: false,
         }
     }
 
@@ -300,6 +305,19 @@ impl GameService {
             if batch.push(draw).is_err() && !self.overflow_warned {
                 self.overflow_warned = true;
                 warn!("sprite batch full; player draw dropped");
+            }
+        }
+        // The debug overlay sits at `Layer::Ui`, above every game layer, and is rebuilt
+        // from the interpolated camera each frame so the readout tracks the drawn frame.
+        if self.debug_open {
+            let camera = Camera::at(self.camera_pos(alpha));
+            let mut overlay = Vec::new();
+            crate::overlay::push_overlay(&mut overlay, self, gpu, &camera, alpha);
+            for draw in overlay {
+                if batch.push(draw).is_err() && !self.overflow_warned {
+                    self.overflow_warned = true;
+                    warn!("sprite batch full; debug overlay draw dropped");
+                }
             }
         }
         batch.sort();

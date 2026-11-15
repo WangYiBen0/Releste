@@ -11,6 +11,7 @@ mod app;
 mod devtools;
 mod filmstrip;
 use releste_kernel::log as logging;
+mod overlay;
 mod paths;
 mod player;
 mod service;
@@ -71,6 +72,12 @@ struct Args {
     /// Do not scan `plugins/`.
     #[arg(long)]
     no_plugins: bool,
+
+    /// Start with the `~` debug overlay (player hitbox + text readout) enabled.
+    ///
+    /// `~` toggles it at runtime; this flag exists so a `--screenshot` run can capture it.
+    #[arg(long)]
+    debug_overlay: bool,
 
     /// Simulate without a window, print a frame report, and exit.
     #[arg(long)]
@@ -309,7 +316,8 @@ fn run(args: &Args) -> anyhow::Result<()> {
         args.frame_count(),
         config,
         args.skin.clone(),
-    );
+    )
+    .with_debug_overlay(args.debug_overlay);
     app.run()
 }
 
@@ -330,6 +338,7 @@ fn run_headless(
     if let Some(prefix) = skin {
         service.skin = crate::skin::PlayerHairSkin::from_prefix(prefix.to_string());
     }
+    service.debug_open = args.debug_overlay;
 
     let mut kernel = Kernel::new().with(service);
     let mut trace = match &args.trace {

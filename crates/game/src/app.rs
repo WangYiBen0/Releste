@@ -70,6 +70,8 @@ pub struct GameApp {
     screenshot_after: u64,
     screenshot_saved: bool,
     rendered: u64,
+    /// Open the `~` debug overlay as soon as the service exists (`--debug-overlay`).
+    debug_overlay_at_boot: bool,
     /// A fatal error accumulated during asynchronous phases such as screenshots; propagated by `run` after the event loop ends.
     fatal: Option<anyhow::Error>,
 }
@@ -116,8 +118,15 @@ impl GameApp {
             screenshot_after,
             screenshot_saved: false,
             rendered: 0,
+            debug_overlay_at_boot: false,
             fatal: None,
         }
+    }
+
+    /// Start with the debug overlay already open (see `--debug-overlay`).
+    pub fn with_debug_overlay(mut self, open: bool) -> Self {
+        self.debug_overlay_at_boot = open;
+        self
     }
 
     /// Enter the event loop; on return the service has already been shut down.
@@ -190,6 +199,7 @@ impl GameApp {
 
         let mut service = GameService::new(session, host, self.watcher.take(), Some(&gpu));
         service.skin = self.skin.clone();
+        service.debug_open = self.debug_overlay_at_boot;
         self.kernel = Some(Kernel::new().with(service));
         self.gpu = Some(gpu);
         self.window = Some(window);
@@ -234,6 +244,15 @@ impl GameApp {
             }
             return;
         }
+        // `~` toggles the debug overlay: player hitbox + a text readout. Vanilla opens its
+        // console on OemTilde/Oem8 and draws the hitbox pass only while it is open, so one
+        // key covers both halves here too.
+        if code == KeyCode::Backquote {
+            if down {
+                self.toggle_overlay();
+            }
+            return;
+        }
         if self.settings.keys.left.contains(&code) {
             self.keys.left = down;
         }
@@ -269,6 +288,22 @@ impl GameApp {
             info!("paused");
         } else {
             info!("resumed");
+        }
+    }
+
+    /// Toggle the `~` debug overlay (hitboxes + readout; a pure render flag).
+    fn toggle_overlay(&mut self) {
+        let Some(kernel) = self.kernel.as_mut() else {
+            return;
+        };
+        let Some(service) = kernel.resolve_mut::<GameService>() else {
+            return;
+        };
+        service.debug_open = !service.debug_open;
+        if service.debug_open {
+            info!("debug overlay on");
+        } else {
+            info!("debug overlay off");
         }
     }
 

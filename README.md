@@ -116,6 +116,9 @@ cargo run --bin releste -- --script crates/game/tests/scenarios/walk_and_stop.to
 # What the runtime actually parsed (spawn, atlas, tile rows, entities)
 cargo run --bin releste -- --dump-map .devtmp/map.json
 
+# Player hitbox + live readout overlay (press `~` in game to toggle)
+cargo run --bin releste -- --debug-overlay --screenshot .devtmp/overlay.png --frames 3
+
 # Verify every `pureCeleste.cs:LINE` citation (range + optional snippet)
 cargo run -p releste-game --example citation_audit -- --coverage
 cargo run -p releste-game --example citation_audit -- --find "private void ClimbHop"

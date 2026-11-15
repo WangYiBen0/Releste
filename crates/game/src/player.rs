@@ -1854,7 +1854,7 @@ impl Player {
     /// Current hitbox size: while ducking 8x6 with the top-left moved down 5px (its
     /// bottom edge aligns with the normal 8x11; `duckHitbox = new Hitbox(8f, 6f, -4f,
     /// -6f)`, 118858).
-    fn box_dims(&self) -> (i32, i32, i32) {
+    pub(crate) fn box_dims(&self) -> (i32, i32, i32) {
         if self.ducking {
             (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF)
         } else {
