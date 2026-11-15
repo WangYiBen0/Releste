@@ -375,7 +375,11 @@ fn push_backdrops(
                     .with_color(tint)
                     .with_flip_x(flip_x)
                     .with_flip_y(flip_y)
-                    .with_additive(additive),
+                    .with_additive(additive)
+                    // Vanilla draws backdrops with an identity view matrix
+                    // (`BackdropRenderer.Matrix = Matrix.Identity`), so `parallax_tiles`
+                    // already baked the camera in: do not project them a second time.
+                    .with_screen(true),
             );
         }
     }

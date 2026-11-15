@@ -118,14 +118,23 @@ impl Camera {
         self.base_to_ndc(self.world_to_screen(world), viewport)
     }
 
-    /// Size scale from world units -> NDC (used to compute a sprite's NDC width/height).
-    pub fn world_size_to_ndc(&self, size: Vec2, viewport: (u32, u32)) -> (f32, f32) {
+    /// Base (320x180) pixel size -> NDC size, without any camera zoom.
+    ///
+    /// Used by screen-space draws (vanilla backdrops: `BackdropRenderer.Matrix = Identity`,
+    /// `Celeste/BackdropRenderer.cs`), which are placed in base pixels and must not be
+    /// scaled by a world-space camera zoom.
+    pub fn base_size_to_ndc(&self, size: Vec2, viewport: (u32, u32)) -> (f32, f32) {
         let vw = viewport.0.max(1) as f32;
         let vh = viewport.1.max(1) as f32;
         let scale = (vw / self.base_size.0).min(vh / self.base_size.1);
-        let sx = (size.x * self.zoom).to_f32() * scale / vw * 2.0;
-        let sy = (size.y * self.zoom).to_f32() * scale / vh * 2.0;
+        let sx = size.x.to_f32() * scale / vw * 2.0;
+        let sy = size.y.to_f32() * scale / vh * 2.0;
         (sx, sy)
+    }
+
+    /// Size scale from world units -> NDC (used to compute a sprite's NDC width/height).
+    pub fn world_size_to_ndc(&self, size: Vec2, viewport: (u32, u32)) -> (f32, f32) {
+        self.base_size_to_ndc(size * self.zoom, viewport)
     }
 }
 

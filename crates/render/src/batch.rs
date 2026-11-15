@@ -39,6 +39,12 @@ pub struct SpriteDraw {
     pub flip_y: bool,
     /// Draw with additive blending (`src + dst`) instead of premultiplied alpha.
     pub additive: bool,
+    /// Whether `position`/`size` are base screen pixels rather than world units.
+    ///
+    /// Vanilla draws backdrops through `BackdropRenderer.Matrix = Matrix.Identity`
+    /// (`Celeste/BackdropRenderer.cs`), so `Parallax.Render` bakes the camera into the
+    /// tile origins itself and the sprite batch must not project them again.
+    pub screen: bool,
     /// Rotation in radians about `position` (the top-left corner); `0.0` = axis-aligned (fast path).
     ///
     /// Semantically matches XNA `SpriteBatch.Draw(..., rotation, origin: Vector2.Zero,
@@ -61,6 +67,7 @@ impl SpriteDraw {
             flip_x: false,
             flip_y: false,
             additive: false,
+            screen: false,
             rotation: 0.0,
         }
     }
@@ -92,6 +99,12 @@ impl SpriteDraw {
     /// Uses additive blending (`src + dst`) instead of premultiplied alpha.
     pub fn with_additive(mut self, additive: bool) -> Self {
         self.additive = additive;
+        self
+    }
+
+    /// Draws in base screen pixels instead of world units (see [`SpriteDraw::screen`]).
+    pub fn with_screen(mut self, screen: bool) -> Self {
+        self.screen = screen;
         self
     }
 
@@ -259,9 +272,23 @@ impl SpriteBatch {
                 std::mem::swap(&mut v0, &mut v1);
             }
 
+            // Screen-space draws (`SpriteDraw::screen`) are already in base pixels, so the
+            // camera translation/zoom must not be applied again -- only the letterbox.
+            let point_to_ndc = |p: Vec2| -> (f32, f32) {
+                if d.screen {
+                    camera.base_to_ndc(p, viewport)
+                } else {
+                    camera.world_to_ndc(p, viewport)
+                }
+            };
+
             let [bl, br, tl, tr] = if d.rotation == 0.0 {
-                let (px, py) = camera.world_to_ndc(d.position, viewport);
-                let (sx, sy) = camera.world_size_to_ndc(d.size, viewport);
+                let (px, py) = point_to_ndc(d.position);
+                let (sx, sy) = if d.screen {
+                    camera.base_size_to_ndc(d.size, viewport)
+                } else {
+                    camera.world_size_to_ndc(d.size, viewport)
+                };
 
                 // NDC has y up, so the "top" is py and the bottom is py - sy.
                 let left = px;
@@ -301,8 +328,7 @@ impl SpriteBatch {
                 let h = d.size.y.to_f32();
                 let corner = |lx: f32, ly: f32| -> SpriteVertex {
                     let (rx, ry) = (lx * cos - ly * sin, lx * sin + ly * cos);
-                    let (x, y) =
-                        camera.world_to_ndc(d.position + Vec2::from_f32s(rx, ry), viewport);
+                    let (x, y) = point_to_ndc(d.position + Vec2::from_f32s(rx, ry));
                     SpriteVertex {
                         position: [x, y],
                         uv: [u0, v0],
@@ -475,6 +501,46 @@ mod tests {
         assert!((top - 0.0).abs() < 1e-5, "top={top}");
         assert!((right - 0.05).abs() < 1e-4, "right={right}");
         assert!(bottom < top, "bottom must be below top in NDC");
+    }
+
+    #[test]
+    fn screen_space_draws_ignore_the_camera_transform() {
+        // Vanilla backdrops live in screen space (`BackdropRenderer.Matrix = Identity`),
+        // so the camera position and zoom must not move or scale them again.
+        let mut b = SpriteBatch::new(8);
+        b.begin();
+        let mut d = draw(0, 0);
+        d.position = Vec2::from_f32s(10.0, 20.0);
+        b.push(d.with_screen(true)).unwrap();
+
+        let near = b.vertices(&Camera::new(), (320, 180));
+        let far = b.vertices(&Camera::at(Vec2::from_f32s(200.0, 90.0)), (320, 180));
+        let zoomed = b.vertices(
+            &Camera::at(Vec2::from_f32s(200.0, 90.0)).with_zoom(releste_math::Fx::from_int(2)),
+            (320, 180),
+        );
+        assert_eq!(near, far, "the camera position must not move a screen draw");
+        assert_eq!(near, zoomed, "the camera zoom must not scale a screen draw");
+
+        // Base pixel (10,20) on a 320x180 viewport -> NDC x = 10/320*2-1, y = 1-20/180*2.
+        let expected_left = (10.0 / 320.0) * 2.0 - 1.0;
+        let expected_top = 1.0 - (20.0 / 180.0) * 2.0;
+        let expected_right = (18.0 / 320.0) * 2.0 - 1.0;
+        assert!(
+            (near[0].position[0] - expected_left).abs() < 1e-5,
+            "left={}",
+            near[0].position[0]
+        );
+        assert!(
+            (near[2].position[1] - expected_top).abs() < 1e-5,
+            "top={}",
+            near[2].position[1]
+        );
+        assert!(
+            (near[1].position[0] - expected_right).abs() < 1e-5,
+            "right={}",
+            near[1].position[0]
+        );
     }
 
     #[test]

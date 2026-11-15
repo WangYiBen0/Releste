@@ -151,7 +151,10 @@ impl Snow {
             out.push(
                 SpriteDraw::new(atlas_id, Vec2::from_f32s(x, y), Vec2::ONE, uv)
                     .with_layer(layer)
-                    .with_color(self.colour(p.colour)),
+                    .with_color(self.colour(p.colour))
+                    // The camera is already subtracted above, matching vanilla's
+                    // `BackdropRenderer.Matrix = Identity`.
+                    .with_screen(true),
             );
         }
     }
