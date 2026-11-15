@@ -283,9 +283,12 @@ struct BackdropCtx<'a> {
 /// [`SpriteDraw`].
 ///
 /// Engine differences (on record, not behavior deviations):
-/// - An origin of `Vector2.Zero` into the cropped sub-image means top-left alignment,
-///   so this uses `sprite.w/h` and `uv_for_sprite` directly and does not go through
-///   [`sprites::origin_in_trim`] (which is for sprites that have an in-frame origin).
+/// - `Texture.Draw(pos, Vector2.Zero, ...)` passes a rotation origin of zero, which the
+///   spritebatch turns into `origin - DrawOffset`; because the packer stores
+///   `DrawOffset = (-origin_x, -origin_y)` for a trimmed sub-image, the piece lands at
+///   `pos - (origin_x, origin_y)`. The tiling geometry itself ([`parallax_tiles`]) works
+///   in frame coordinates, and this function applies that trim offset when it builds the
+///   [`SpriteDraw`] (`MTexture`, `109722-109790`).
 /// - `blendmode="additive"` selects the backend's second pipeline
 ///   (`SpriteDraw::additive` -> `wgpu` `src + dst`), matching `BlendState.Additive`
 ///   (`112658-112673`). `FlipX`/`FlipY` map to `SpriteDraw::with_flip_x`/`...
@@ -368,18 +371,32 @@ fn push_backdrops(
         let drift = drifts.get(i).copied().unwrap_or(Vec2::ZERO);
         let position = (bd.x + drift.x.to_f32(), bd.y + drift.y.to_f32());
         let (flip_x, flip_y, additive) = parallax_flags(bd);
+        // Vanilla passes `Vector2.Zero` as the origin and the spritebatch turns that into
+        // `origin - DrawOffset`; for a trimmed sub-image the packer stored
+        // `DrawOffset = (origin_x, origin_y)`, so the piece is drawn with the crop offset
+        // *added* to the tile origin, i.e. the untrimmed frame sits at the tile origin
+        // (`MTexture`, `109722-109790`). Releste used to skip the offset entirely, which
+        // drew every trimmed `bgs/00/bg*` sheet `origin_y` pixels (23/3/45/29) too high
+        // and left the bottom of the viewport unpainted. Flipping mirrors the art inside
+        // the same box (`SpriteDraw` swaps the UVs), so the offset does not change.
+        let (origin_x, origin_y) = sprite.origin();
         for (x, y) in parallax_tiles(bd, position, camera_pos.to_f32s(), (w, h), screen) {
             out.push(
-                SpriteDraw::new(atlas_id, Vec2::from_f32s(x, y), Vec2::from_f32s(w, h), uv)
-                    .with_layer(layer)
-                    .with_color(tint)
-                    .with_flip_x(flip_x)
-                    .with_flip_y(flip_y)
-                    .with_additive(additive)
-                    // Vanilla draws backdrops with an identity view matrix
-                    // (`BackdropRenderer.Matrix = Matrix.Identity`), so `parallax_tiles`
-                    // already baked the camera in: do not project them a second time.
-                    .with_screen(true),
+                SpriteDraw::new(
+                    atlas_id,
+                    Vec2::from_f32s(x + origin_x, y + origin_y),
+                    Vec2::from_f32s(w, h),
+                    uv,
+                )
+                .with_layer(layer)
+                .with_color(tint)
+                .with_flip_x(flip_x)
+                .with_flip_y(flip_y)
+                .with_additive(additive)
+                // Vanilla draws backdrops with an identity view matrix
+                // (`BackdropRenderer.Matrix = Matrix.Identity`), so `parallax_tiles`
+                // already baked the camera in: do not project them a second time.
+                .with_screen(true),
             );
         }
     }
