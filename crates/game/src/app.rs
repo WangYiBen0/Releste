@@ -47,6 +47,8 @@ pub struct GameApp {
     /// User key bindings, loaded from the resolved config file (absent = vanilla
     /// defaults; see `crate::settings` for the path rules).
     bindings: crate::settings::KeyBindings,
+    /// Hair skin selected by `--skin` (applied to the service on window settle).
+    skin: crate::skin::PlayerHairSkin,
     accumulator: Duration,
     last: Instant,
     alpha: f32,
@@ -72,6 +74,7 @@ impl GameApp {
         screenshot: Option<PathBuf>,
         screenshot_after: u64,
         config: crate::settings::ConfigLocation,
+        skin: crate::skin::PlayerHairSkin,
     ) -> Self {
         let bindings = crate::settings::KeyBindings::load_resolved(&config, paths.root());
         let watcher = watch_maps(&paths);
@@ -87,6 +90,7 @@ impl GameApp {
             batch: SpriteBatch::default(),
             keys: Input::default(),
             bindings,
+            skin,
             accumulator: Duration::ZERO,
             last: now,
             alpha: 0.0,
@@ -170,7 +174,8 @@ impl GameApp {
             None
         };
 
-        let service = GameService::new(session, host, self.watcher.take(), Some(&gpu));
+        let mut service = GameService::new(session, host, self.watcher.take(), Some(&gpu));
+        service.skin = self.skin.clone();
         self.kernel = Some(Kernel::new().with(service));
         self.gpu = Some(gpu);
         self.window = Some(window);

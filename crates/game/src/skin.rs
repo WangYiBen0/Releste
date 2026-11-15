@@ -36,27 +36,30 @@ const VANILLA_BANGS: [&str; 3] = [
 
 /// A selectable player hair skin: an atlas sub-namespace prepended to the vanilla
 /// `characters/player/...` hair names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerHairSkin {
     /// Atlas path prefix inserted before `characters\...` (a `Gameplay/<skin>/` atlas
     /// group). The vanilla player uses the empty string.
-    prefix: &'static str,
+    prefix: Cow<'static, str>,
 }
 
 impl PlayerHairSkin {
     /// The vanilla player character: no prefix, so names match the existing constants.
-    pub const VANILLA: Self = Self { prefix: "" };
+    pub const VANILLA: Self = Self {
+        prefix: Cow::Borrowed(""),
+    };
 
-    /// A skin whose hair lives under the given atlas sub-namespace prefix
-    /// (e.g. `"Foxeline"` for `Gameplay/Foxeline/`).
-    ///
-    /// Unused in the running binary because no skin is selectable yet (the atlas ships
-    /// no alt-hair group, and skin selection is the next step); it is the constructor a
-    /// future `settings.toml` `skin.prefix` wiring will call, and is exercised by the
-    /// unit tests below. AGENTS.md 5.1 allows a scoped `#[allow]` with a clear reason.
-    #[allow(dead_code)]
-    pub const fn with_prefix(prefix: &'static str) -> Self {
-        Self { prefix }
+    /// Build a skin from a runtime-provided prefix (e.g. a CLI `--skin` argument, or a
+    /// future `settings.toml` value), so the selection does not have to be a
+    /// compile-time constant. An empty prefix is the vanilla skin.
+    pub fn from_prefix(prefix: String) -> Self {
+        Self {
+            prefix: if prefix.is_empty() {
+                Cow::Borrowed("")
+            } else {
+                Cow::Owned(prefix)
+            },
+        }
     }
 
     /// The resolved hair-tail texture name for this skin. The vanilla skin returns the
@@ -66,7 +69,10 @@ impl PlayerHairSkin {
         if self.prefix.is_empty() {
             Cow::Borrowed(VANILLA_HAIR)
         } else {
-            Cow::Owned(format!("{}\\characters\\player\\hair00", self.prefix,))
+            Cow::Owned(format!(
+                "{}\\characters\\player\\hair00",
+                self.prefix.as_ref(),
+            ))
         }
     }
 
@@ -79,7 +85,8 @@ impl PlayerHairSkin {
         } else {
             Cow::Owned(format!(
                 "{}\\characters\\player\\bangs0{}",
-                self.prefix, idx,
+                self.prefix.as_ref(),
+                idx,
             ))
         }
     }
@@ -100,7 +107,7 @@ mod tests {
 
     #[test]
     fn prefixed_skin_prepends_the_prefix_to_every_hair_name() {
-        let fox = PlayerHairSkin::with_prefix("Foxeline");
+        let fox = PlayerHairSkin::from_prefix("Foxeline".to_owned());
         assert_eq!(fox.hair(), "Foxeline\\characters\\player\\hair00");
         assert_eq!(fox.bangs(0), "Foxeline\\characters\\player\\bangs00");
         assert_eq!(fox.bangs(1), "Foxeline\\characters\\player\\bangs01");

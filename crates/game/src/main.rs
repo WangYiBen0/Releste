@@ -62,6 +62,11 @@ struct Args {
     #[arg(long)]
     write_config: bool,
 
+    /// Reskin the player's hair with an atlas sub-namespace prefix (e.g. `Foxeline`).
+    /// Defaults to the vanilla player (no prefix).
+    #[arg(long, value_name = "SKIN")]
+    skin: Option<String>,
+
     /// Do not scan `plugins/`.
     #[arg(long)]
     no_plugins: bool,
@@ -282,6 +287,12 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     let plugins = !args.no_plugins;
+    let skin = args
+        .skin
+        .as_deref()
+        .map(str::to_owned)
+        .map(crate::skin::PlayerHairSkin::from_prefix)
+        .unwrap_or(crate::skin::PlayerHairSkin::VANILLA);
     let app = GameApp::new(
         paths,
         session,
@@ -289,6 +300,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
         args.screenshot.clone(),
         args.frame_count(),
         config,
+        skin,
     );
     app.run()
 }
@@ -301,7 +313,10 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
         boot_plugins(paths)
     };
     let watcher = watch_maps(paths);
-    let service = GameService::new(session, host, watcher, None);
+    let mut service = GameService::new(session, host, watcher, None);
+    if let Some(prefix) = &args.skin {
+        service.skin = crate::skin::PlayerHairSkin::from_prefix(prefix.clone());
+    }
 
     let mut kernel = Kernel::new().with(service);
     let mut trace = match &args.trace {

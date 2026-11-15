@@ -110,6 +110,13 @@ pub struct GameService {
     /// Current room (vanilla `Session.Level` semantics: it switches to the new room as the transition starts,
     /// and camera clamping, room filtering and EnforceBounds all follow it).
     current_room: String,
+    /// The player's current hair skin.
+    ///
+    /// This is a rendering/config-layer selection, so it is deliberately separate from
+    /// the simulation: hot reload must preserve player state (4.3), and a skin swap is
+    /// a pure re-render concern (it only changes which atlas names the hair resolves
+    /// to, matching SkinModHelper's `GetHairTexture` override).
+    pub skin: crate::skin::PlayerHairSkin,
     /// In-progress room transition; while `Some`, entities are frozen and only the player glide and camera pan run
     /// (vanilla `Level.Update`'s Transitioning branch, 115659-115668).
     transition: Option<RoomTransition>,
@@ -173,6 +180,7 @@ impl GameService {
             overflow_warned: false,
             reloads: 0,
             reported_room: spawn_room,
+            skin: crate::skin::PlayerHairSkin::VANILLA,
         }
     }
 
@@ -312,7 +320,7 @@ impl GameService {
                 .as_deref(),
             self.player.anim_frame_hair(&self.session.anims),
             self.player.hair_nodes(),
-            crate::skin::PlayerHairSkin::VANILLA,
+            self.skin.clone(),
         )
     }
 
