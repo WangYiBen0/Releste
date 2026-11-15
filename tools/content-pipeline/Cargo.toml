@@ -3,6 +3,10 @@ name = "releste-content-pipeline"
 version.workspace = true
 edition.workspace = true
 
+# Two binaries now, so `cargo run -p releste-content-pipeline` must keep picking the
+# original pipeline (README/AGENTS/ROADMAP snippets rely on it).
+default-run = "releste-content-pipeline"
+
 [[bin]]
 name = "releste-content-pipeline"
 path = "src/main.rs"

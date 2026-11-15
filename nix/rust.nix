@@ -328,7 +328,7 @@
           pname = "releste-content-pipeline-smoke";
           # Exercise the parse/serialise path over a minimal .map.
           buildPhaseCargoCommand = ''
-            cargo run --release -p releste-content-pipeline -- --help >/dev/null
+            cargo run --release -p releste-content-pipeline --bin releste-content-pipeline -- --help >/dev/null
             cargo run --release -p releste-net-server -- --selftest
           '';
           doInstallCargoArtifacts = false;
