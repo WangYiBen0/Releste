@@ -448,6 +448,13 @@ impl GpuRenderer {
     ///
     /// The texture is `Rgba8Unorm`, never `Rgba8UnormSrgb`: the bytes are sRGB-encoded art and
     /// the shader multiplies them in gamma space the way FNA does (`SPRITE_WGSL`).
+    ///
+    /// Straight-alpha payloads are premultiplied here (see
+    /// [`premultiply_if_straight`]): the sprite pipeline blends with
+    /// `PREMULTIPLIED_ALPHA_BLENDING`, which is what FNA's `BlendState.AlphaBlend` amounts to
+    /// once the source is premultiplied. Vanilla's own pages already are, but mod packs ship
+    /// PNGs that keep the RGB of fully transparent pixels (`(255,255,255,0)`), and those paint
+    /// a solid block under a premultiplied blend.
     pub fn upload_rgba(
         &mut self,
         atlas_id: u32,
@@ -455,6 +462,9 @@ impl GpuRenderer {
         height: u32,
         pixels: &[u8],
     ) -> Result<(), RenderError> {
+        // Normalise on the way in, so every draw can keep the premultiplied pipeline.
+        let normalized = premultiply_if_straight(pixels);
+        let pixels = normalized.as_deref().unwrap_or(pixels);
         let size = wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -831,6 +841,33 @@ impl FrameCapture {
     }
 }
 
+/// Premultiplies a straight-alpha RGBA8 payload, or returns `None` when it already is.
+///
+/// Vanilla's packed pages store premultiplied pixels: `Gameplay0.png` has 157475
+/// semi-transparent pixels and not one of them has a colour channel above its alpha.
+/// Mod packs are not that careful - Niko's `img294.png` keeps `(255,255,255)` on all 833 of
+/// its fully transparent pixels - and under `PREMULTIPLIED_ALPHA_BLENDING` those pixels add
+/// full white while leaving the destination untouched, which paints a solid block.
+///
+/// Detecting straight alpha is exact rather than heuristic: after a correct premultiply no
+/// channel can exceed alpha, so a single `rgb > a` pixel means the payload was never
+/// premultiplied. The `None` fast path keeps vanilla art on the zero-copy upload path, and a
+/// trailing partial pixel is ignored the same way `unpack_rows` ignores it.
+fn premultiply_if_straight(pixels: &[u8]) -> Option<Vec<u8>> {
+    let px = pixels.as_chunks::<4>().0;
+    if !px.iter().any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(px.len() * 4);
+    for p in px {
+        let a = u32::from(p[3]);
+        // `+ 127` rounds to nearest instead of truncating.
+        let scale = |c: u8| -> u8 { ((u32::from(c) * a + 127) / 255) as u8 };
+        out.extend_from_slice(&[scale(p[0]), scale(p[1]), scale(p[2]), p[3]]);
+    }
+    Some(out)
+}
+
 /// Converts padded frame-buffer rows into compact RGBA8; `swap_rb` handles BGRA surface formats.
 fn unpack_rows(
     padded: &[u8],
@@ -879,6 +916,25 @@ mod tests {
             unpack_rows(&padded, 2, 2, 16, false),
             vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
+    }
+
+    #[test]
+    fn straight_alpha_payloads_are_premultiplied() {
+        // A fully transparent pixel keeps its white RGB in mod-pack PNGs; premultiplying it
+        // must zero the colour so the premultiplied pipeline stops painting a white block.
+        let straight = [255u8, 255, 255, 0, 200, 100, 50, 128, 255, 255, 255, 255];
+        let out = premultiply_if_straight(&straight).expect("straight alpha is detected");
+        assert_eq!(&out[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&out[4..8], &[100, 50, 25, 128]);
+        assert_eq!(&out[8..12], &[255, 255, 255, 255]);
+
+        // Already premultiplied input (`rgb <= a` everywhere) takes the zero-copy path.
+        let premultiplied = [0u8, 0, 0, 0, 60, 30, 15, 128, 255, 255, 255, 255];
+        assert!(premultiply_if_straight(&premultiplied).is_none());
+
+        // Empty and partial pixels are handled without panicking.
+        assert!(premultiply_if_straight(&[]).is_none());
+        assert!(premultiply_if_straight(&[255, 255]).is_none());
     }
 
     #[test]
