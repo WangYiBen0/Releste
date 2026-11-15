@@ -596,6 +596,11 @@ impl Player {
         }
         self.update_animation(table);
         self.update_sprite(table, input, rooms);
+        // `Player.UpdateHair(applyGravity: true)` arms the chain again every normal tick
+        // (pureCeleste.cs:120062-120064, which sets `Hair.SimulateMotion = applyGravity` at
+        // 120296). Without this the flag would stay false after a transition and the hair
+        // would never chase its target again.
+        self.simulate_motion = true;
         self.update_hair(table);
     }
 
@@ -4341,6 +4346,28 @@ mod tests {
                 "node {i} settled at {got:?}, want {want:?}"
             );
         }
+    }
+
+    /// A room transition freezes the chain (`TransitionTo` -> `UpdateHair(false)`,
+    /// 119605-119608 / 120294-120296), but the very next normal tick arms it again
+    /// (`Player.UpdateHair(applyGravity: true)`, 120062-120064). Without the re-arm the
+    /// flag stays false forever and the hair hangs mid-air as soon as the player crosses
+    /// a room seam.
+    #[test]
+    fn update_visuals_rearms_the_hair_after_a_transition() {
+        let room = wide_room();
+        let table = hair_table((0, -2));
+        let mut p = settled(&room, 40.0);
+        p.update_hair_rigid(&table);
+        assert!(
+            !p.simulate_motion,
+            "a transition freezes the chain (120294-120296)"
+        );
+        p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
+        assert!(
+            p.simulate_motion,
+            "a normal tick re-arms the chain (120062-120064)"
+        );
     }
 
     /// Running stretches the tail: each node eases toward a target one step behind its
