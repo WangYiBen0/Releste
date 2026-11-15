@@ -440,6 +440,16 @@ pub struct Player {
     /// Climb jump boost (`wallBoostDir`/`wallBoostTimer`, 119119-119820).
     wall_boost_dir: i32,
     wall_boost_ticks: u16,
+    /// Solid still beside the player at `ClimbHop()` time (vanilla `climbHopSolid`,
+    /// 122381-122386). While set, the horizontal push is deferred to `hopWaitX` /
+    /// `hopWaitXSpeed` instead of being applied immediately.
+    climb_hop_solid: bool,
+    /// Pending horizontal push direction (vanilla `hopWaitX`, 122383/122386: the
+    /// facing sign, or 0 when no solid was found).
+    hop_wait_x: i32,
+    /// Pending horizontal push speed (vanilla `hopWaitXSpeed`, 122384:
+    /// `Facing * 100f`).
+    hop_wait_x_speed: Fx,
 }
 
 /// Fx version of `Math.Sign(before.X) == Math.Sign(speed.X)` (122770).
@@ -511,6 +521,9 @@ impl Player {
             wall_slide_ticks: WALLSLIDE_TICKS,
             wall_boost_dir: 0,
             wall_boost_ticks: 0,
+            climb_hop_solid: false,
+            hop_wait_x: 0,
+            hop_wait_x_speed: Fx::zero(),
         }
     }
 
@@ -568,7 +581,7 @@ impl Player {
         // `Player.Update`), so the buffered-input edges belong here rather than in the
         // state-specific updates -- `ClimbUpdate` reads the same buffers.
         self.sample_input_edges(input);
-        self.update_head(input);
+        self.update_head(input, rooms);
         match self.state {
             1 => self.climb_update(input, rooms),
             2 => self.dash_update(input, rooms),
@@ -763,8 +776,9 @@ impl Player {
     }
 
     /// The shared timers and refill at the head of vanilla `Player.Update`
-    /// (119827-119921).
-    fn update_head(&mut self, input: &Input) {
+    /// (119827-119921), plus the `forceMoveX` / `climbHopSolid` / `hopWaitX` timers
+    /// (119883-119920).
+    fn update_head(&mut self, input: &Input, rooms: &[Room]) {
         // dashAttackTimer -= dt (119827-119830).
         self.dash_attack = self.dash_attack.saturating_sub(1);
         // Ground refill (119855-119863): the state 3 (swim) branch does not apply;
@@ -815,13 +829,32 @@ impl Player {
             self.wall_slide_ticks = WALLSLIDE_TICKS;
         }
         // moveX: the forceMoveX override window (119883-119891), otherwise read input.
+        // The `else` branch also drops the remembered hop solid (119889-119891), so a
+        // deferred `ClimbHop` push is forgotten once the forced-move window closes.
         let move_x = if self.force_move_x_ticks > 0 {
             self.force_move_x_ticks -= 1;
             Fx::from_int(self.force_move_x)
         } else {
+            self.climb_hop_solid = false;
             input.axis_x()
         };
         self.move_x = move_x;
+        // A deferred `ClimbHop` push resolves as soon as the solid beside the player is
+        // gone (119915-119920): `hopWaitX` is dropped when the player already moves the
+        // other way or starts falling, otherwise `Speed.X` is set to the saved speed.
+        if self.hop_wait_x != 0 {
+            let wants_out = self.vel.x != Fx::zero() && self.vel.x.signum() == -self.hop_wait_x;
+            if wants_out || self.vel.y > Fx::zero() {
+                self.hop_wait_x = 0;
+            } else if !self.hits(
+                rooms,
+                self.pos.x + Fx::from_int(self.hop_wait_x),
+                self.pos.y,
+            ) {
+                self.vel.x = self.hop_wait_x_speed;
+                self.hop_wait_x = 0;
+            }
+        }
         // Facing follows input (119908-119917).
         if move_x != Fx::zero() {
             self.facing = move_x.signum();
@@ -999,11 +1032,26 @@ impl Player {
         }
     }
 
-    /// Vanilla `ClimbHop()` (pureCeleste.cs:122380-122402, no moving-platform branch):
-    /// hop away from the wall at 100 px/s, clamp vertical to <= -120 px/s, clear
-    /// forceMoveX.
-    fn climb_hop(&mut self) {
-        self.vel.x = CLIMB_HOP_X * Fx::from_int(self.facing);
+    /// Vanilla `ClimbHop()` (pureCeleste.cs:122380-122402): hop away from the wall, but
+    /// only push horizontally right away when nothing solid is left beside the player
+    /// (122381-122388). Over the top of a wall, where the wall is still there for one
+    /// more frame, vanilla saves `hopWaitX`/`hopWaitXSpeed` and applies the push in the
+    /// next `Player.Update` once the solid clears (119915-119920).
+    ///
+    /// Deliberately not ported (no counterpart in this engine, each with a note):
+    /// `playFootstepOnLand = 0.5f` (footstep sfx), `lowFrictionStopTimer = 0.15f` (the
+    /// LowFriction assist, 121494-121500), `noWindTimer = 0.3f` (no wind model), and
+    /// `climbHopSolidPosition` / `MoveHExact` (moving-platform ride, 122392-122400 --
+    /// this engine has no moving solids).
+    fn climb_hop(&mut self, rooms: &[Room]) {
+        self.climb_hop_solid = self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y);
+        if self.climb_hop_solid {
+            self.hop_wait_x = self.facing;
+            self.hop_wait_x_speed = CLIMB_HOP_X * Fx::from_int(self.facing);
+        } else {
+            self.hop_wait_x = 0;
+            self.vel.x = CLIMB_HOP_X * Fx::from_int(self.facing);
+        }
         self.vel.y = self.vel.y.min(CLIMB_HOP_Y);
         self.force_move_x = 0;
         self.force_move_x_ticks = 12; // 0.2s (122377)
@@ -1296,7 +1344,7 @@ impl Player {
         // let go.
         if !self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
             if self.vel.y < Fx::zero() {
-                self.climb_hop(); // 122226-122230 (wallBoosting is always false)
+                self.climb_hop(rooms); // 122226-122230 (wallBoosting is always false)
             }
             self.state = 0;
             return;
@@ -1319,7 +1367,7 @@ impl Player {
                         num = Fx::zero();
                         flag = true;
                     } else if self.slip_check(rooms, Fx::zero()) {
-                        self.climb_hop(); // 122232-122236: hop off the top of the wall
+                        self.climb_hop(rooms); // 122232-122236: hop off the top of the wall
                         self.state = 0;
                         return;
                     }
@@ -4367,6 +4415,84 @@ mod tests {
         assert!(
             p.simulate_motion,
             "a normal tick re-arms the chain (120062-120064)"
+        );
+    }
+
+    /// A 32-cell-wide room with a floor row at row 15, optionally with a wall column at
+    /// cell 8 (x = 64..72) running from the top down to the floor.
+    fn wall_room(with_wall: bool) -> Room {
+        let mut tiles = Tileset::new("Gameplay", 32, 16);
+        for x in 0..32 {
+            tiles.set(x, 15, 1);
+        }
+        if with_wall {
+            for y in 0..15 {
+                tiles.set(8, y, 1);
+            }
+        }
+        Room {
+            name: "w".into(),
+            bounds: RectDef {
+                x: 0.0,
+                y: 0.0,
+                w: 256.0,
+                h: 128.0,
+            },
+            tiles,
+            bg: Tileset::new("Gameplay", 32, 16),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            ..Default::default()
+        }
+    }
+
+    /// `ClimbHop()` over the top of a wall must NOT launch immediately: while the wall
+    /// is still beside the player vanilla stores `hopWaitX`/`hopWaitXSpeed` and only
+    /// applies the 100 px/s push once the solid clears (122381-122388 and
+    /// 119915-119920). Without the wall beside the player the push is immediate.
+    #[test]
+    fn climb_hop_defers_the_push_until_the_wall_is_clear() {
+        // Wall still beside the player -> the push is deferred, Speed.X untouched.
+        let walled = wall_room(true);
+        let mut p = settled(&walled, 56.0);
+        p.facing = 1;
+        assert!(p.hits(std::slice::from_ref(&walled), p.pos.x + Fx::one(), p.pos.y));
+        p.climb_hop(std::slice::from_ref(&walled));
+        assert!(p.climb_hop_solid, "the wall is still beside the player");
+        assert_eq!(p.hop_wait_x, 1, "hopWaitX = Facing (122383)");
+        assert_eq!(
+            p.hop_wait_x_speed, CLIMB_HOP_X,
+            "hopWaitXSpeed = Facing * 100 px/s (122384)"
+        );
+        assert_eq!(
+            p.vel.x,
+            Fx::zero(),
+            "the horizontal push waits for the solid to clear"
+        );
+
+        // The wall clears on a later tick -> `update_head` applies the saved speed. The
+        // rest of the tick then runs normal friction (as vanilla's NormalUpdate does),
+        // so only the sign and the magnitude band are asserted here.
+        let clear = wall_room(false);
+        p.step(&Input::default(), std::slice::from_ref(&clear));
+        assert_eq!(p.hop_wait_x, 0, "the deferred push resolves once clear");
+        assert!(
+            p.vel.x > Fx::from_int(1),
+            "the saved 100 px/s push is applied (122388), vx={:?}",
+            p.vel.x
+        );
+
+        // No solid beside the player -> the push applies immediately.
+        let open = wall_room(false);
+        let mut q = settled(&open, 56.0);
+        q.facing = 1;
+        q.climb_hop(std::slice::from_ref(&open));
+        assert!(!q.climb_hop_solid);
+        assert_eq!(q.hop_wait_x, 0);
+        assert_eq!(
+            q.vel.x, CLIMB_HOP_X,
+            "an open ledge hops at 100 px/s at once"
         );
     }
 
