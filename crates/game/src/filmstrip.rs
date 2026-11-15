@@ -289,6 +289,7 @@ impl Recorder {
             body.as_deref(),
             hair,
             player.hair_nodes(),
+            crate::skin::PlayerHairSkin::VANILLA,
         );
         // Centre the canvas on the hitbox centre so every frame is comparable, but keep
         // the two anchors distinct: `Player.Position` is the hitbox bottom centre (the feet,

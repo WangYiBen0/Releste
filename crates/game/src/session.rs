@@ -3,6 +3,7 @@
 //! Maps are data (AGENTS.md 4.2): here we only turn tiles and entities into
 //! [`SpriteDraw`], with no gameplay branching at all.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -372,24 +373,10 @@ pub struct Session {
     warned: RefCell<HashSet<String>>,
 }
 
-/// Bangs frame name: `bangs + animation frame index mod 3` (vanilla `HairFrame` reads
-/// frame metadata, `pureCeleste.cs:111351-111356`; this atlas does not store per-frame
-/// metadata, so taking the animation frame index modulo 3 is equivalent: idle's single
-/// frame -> bangs00, the walk loop -> three alternating frames).
-/// The bangs texture for a hair frame: vanilla `bangs[Sprite.HairFrame]`
-/// (111186, 111196), where `HairFrame` is the **metadata** frame of the current player
-/// frame (111351-111361), not the body frame index.
-///
-/// The atlas ships three `bangs` frames (`characters/player/bangs00..02`) and the
-/// metadata only ever uses 0..2, so the request is clamped defensively.
-fn bangs_frame(hair_frame: usize) -> &'static str {
-    match hair_frame.min(2) {
-        0 => sprites::PLAYER_BANGS_SPRITE,
-        1 => "characters\\player\\bangs01",
-        _ => "characters\\player\\bangs02",
-    }
-}
-
+/// Bangs are the hair-root texture: `bangs[Sprite.HairFrame]` (111186, 111196), where
+/// `HairFrame` is the **metadata** frame (111351-111361, clamped to 0..2). The resolved
+/// name now lives in [`crate::skin::PlayerHairSkin`], which also carries the vanilla
+/// fallback; see `skin.rs`.
 impl Session {
     /// Refresh backdrop visibility every frame (vanilla `Backdrop.Update`,
     /// `109468-109489`).
@@ -726,6 +713,7 @@ impl Session {
         body_sprite: Option<&str>,
         hair: sprites::HairFrame,
         nodes: &[Vec2],
+        skin: crate::skin::PlayerHairSkin,
     ) -> Vec<SpriteDraw> {
         let facing: f32 = if flip_x { -1.0 } else { 1.0 }; // Facings.Left = -1
         let anchor = pos + Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
@@ -741,16 +729,31 @@ impl Session {
 
         // Node 0 draws the bangs, the rest draw `hair00`; `Render` floors node 0
         // (111179) so the head piece snaps to whole pixels instead of drifting with the
-        // player's subpixel position.
-        let pieces: Vec<(&str, Vec2)> = nodes
+        // player's subpixel position. A reskinned player first tries its prefixed
+        // `<prefix>\characters\player\...` name and falls back to the vanilla name when
+        // that texture is absent, matching SkinModHelper's `GetHairTexture` override
+        // (references/SkinModHelper/.../SkinModHelperModule.cs:205-222 `if
+        // GFX.Game.Has(newHairPath)`).
+        let resolve = |frame: usize, vanilla: Cow<'static, str>| {
+            let wanted = match frame {
+                0 => skin.bangs(hair.frame),
+                _ => skin.hair(),
+            };
+            if self.atlas.sprite(&wanted).is_some() {
+                wanted
+            } else {
+                vanilla
+            }
+        };
+        let pieces: Vec<(Cow<'static, str>, Vec2)> = nodes
             .iter()
             .enumerate()
             .map(|(i, node)| {
                 (
                     if i == 0 {
-                        bangs_frame(hair.frame)
+                        resolve(0, skin.bangs(hair.frame))
                     } else {
-                        sprites::PLAYER_HAIR_SPRITE
+                        resolve(1, skin.hair())
                     },
                     if i == 0 { node.floor() } else { *node },
                 )
@@ -765,7 +768,7 @@ impl Session {
         // color from tail to head (111179-111197) -- two passes, not alternating per node.
         for (i, (name, node)) in pieces.iter().enumerate() {
             let scale = sprites::hair_scale(i, facing, count);
-            let Some(base) = self.hair_piece(tex_size, name, *node, scale, border) else {
+            let Some(base) = self.hair_piece(tex_size, name.as_ref(), *node, scale, border) else {
                 continue;
             };
             for (dx, dy) in outline_offsets {
@@ -776,7 +779,8 @@ impl Session {
         }
         for (i, (name, node)) in pieces.iter().enumerate().rev() {
             let scale = sprites::hair_scale(i, facing, count);
-            if let Some(mut d) = self.hair_piece(tex_size, name, *node, scale, hair_color) {
+            if let Some(mut d) = self.hair_piece(tex_size, name.as_ref(), *node, scale, hair_color)
+            {
                 d.layer = Layer::PlayerHair.value() + 1; // base color on top of the outline
                 out.push(d);
             }

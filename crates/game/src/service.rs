@@ -312,6 +312,7 @@ impl GameService {
                 .as_deref(),
             self.player.anim_frame_hair(&self.session.anims),
             self.player.hair_nodes(),
+            crate::skin::PlayerHairSkin::VANILLA,
         )
     }
 

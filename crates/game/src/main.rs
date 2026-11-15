@@ -16,6 +16,7 @@ mod player;
 mod service;
 mod session;
 mod settings;
+mod skin;
 mod sprites;
 
 use std::path::PathBuf;
