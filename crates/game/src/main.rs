@@ -8,6 +8,7 @@
 #![deny(warnings)]
 
 mod app;
+mod backdrop;
 mod devtools;
 mod filmstrip;
 use releste_kernel::log as logging;

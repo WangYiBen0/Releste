@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use anyhow::{bail, Context as _, Result};
 use releste_map::{Backdrop, MapDocument, Room};
-use releste_math::Vec2;
+use releste_math::{Fx, Vec2};
 use releste_render::atlas::SpriteAtlas;
 use releste_render::{GpuRenderer, Layer, SpriteDraw};
 use releste_world::{EntityData, FieldValue};
@@ -17,6 +17,9 @@ use tracing::{debug, warn};
 
 use crate::paths::Paths;
 use crate::sprites;
+
+/// Normalized texture rectangle (`uv_min`, `uv_max`) of an atlas sprite.
+type SpriteUv = ((f32, f32), (f32, f32));
 
 /// World pixels per tile (320 / 40 = 8px for `lvl_-1`).
 const TILE: f32 = sprites::TILE_PX as f32;
@@ -280,6 +283,11 @@ fn push_backdrops(
         if visibility.get(i).copied() != Some(true) {
             continue;
         }
+        // Animated kinds (`snowfg` / `snowbg`) are drawn by
+        // [`Session::update_backdrop_effects`]'s sibling pass, not from a static image.
+        if crate::backdrop::handles_kind(&bd.kind) {
+            continue;
+        }
         // Only `parallax` is supported: the other kinds (snowBg/snowFg/mirrorFg/
         // godrays...) are separate `Backdrop` subclasses with their own `Render`, not
         // ported yet.
@@ -369,6 +377,11 @@ pub struct Session {
     /// transition rules, `109468-109489`). Index = backgrounds + foregrounds
     /// concatenated in order.
     backdrop_visible: RefCell<Vec<bool>>,
+    /// Self-animating backdrop effects (`snowfg` / `snowbg`), parallel to
+    /// [`Session::backdrop_visible`]: index = backgrounds + foregrounds concatenated in
+    /// order. `None` means the slot is a static `parallax` image (or a kind that is still
+    /// unimplemented), so this costs nothing per frame for normal maps.
+    backdrop_effects: RefCell<Vec<Option<crate::backdrop::Effect>>>,
     /// Keys that warn only once, to avoid spamming every frame.
     warned: RefCell<HashSet<String>>,
 }
@@ -416,6 +429,59 @@ impl Session {
                 is_visible
             };
         }
+    }
+
+    /// Advance the self-animating backdrop effects by one tick (vanilla
+    /// `BackdropRenderer.Update` -> `Backdrop.Update`, `109468-109489` and
+    /// `Snow.Update`).
+    ///
+    /// Runs once per simulation tick and only while the game is unpaused, matching
+    /// `Scene.Update`'s `if (!Paused)` guard (`Monocle/Scene.cs:75-82`). Slots whose kind
+    /// changed (a hot reload rewriting a `<bg>`/`<fg>` element) are rebuilt, so a map
+    /// edit can add or drop snow without a restart.
+    pub fn update_backdrop_effects(&self, dt: Fx) {
+        let kinds: Vec<&str> = self
+            .doc
+            .style
+            .backgrounds
+            .iter()
+            .chain(&self.doc.style.foregrounds)
+            .map(|bd| bd.kind.as_str())
+            .collect();
+        {
+            let mut effects = self.backdrop_effects.borrow_mut();
+            if effects.len() != kinds.len() {
+                effects.resize_with(kinds.len(), || None);
+            }
+            for (slot, kind) in kinds.iter().enumerate() {
+                let stale = match effects[slot].as_ref() {
+                    Some(effect) => !effect.same_kind(kind),
+                    None => crate::backdrop::handles_kind(kind),
+                };
+                if stale {
+                    effects[slot] = crate::backdrop::Effect::from_kind(kind, slot);
+                }
+            }
+        }
+        let visible = self.backdrop_visible.borrow();
+        let mut effects = self.backdrop_effects.borrow_mut();
+        for (slot, effect) in effects.iter_mut().enumerate() {
+            let is_visible = visible.get(slot).copied().unwrap_or(true);
+            if let Some(effect) = effect {
+                effect.update(is_visible, dt);
+            }
+        }
+    }
+
+    /// The 1x1 opaque-white quad the animated effects are drawn with (vanilla
+    /// `Draw.Pixel`, `Monocle/Draw.cs:11,28-34`): the engine reuses Gameplay's
+    /// `util\pixel` sprite instead of a dedicated virtual texture.
+    fn pixel_quad(&self, gpu: &GpuRenderer) -> Option<(u32, SpriteUv)> {
+        let (group, sprite) = self.atlas.sprite(crate::backdrop::PIXEL_SPRITE)?;
+        let atlas_id = sprites::group_id(&self.atlas, group);
+        let (tw, th) = gpu.texture_size(atlas_id)?;
+        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+        Some((atlas_id, uv))
     }
 
     /// The room-filtering part of vanilla `Backdrop.IsVisible` (`109438-109466`):
@@ -502,6 +568,7 @@ impl Session {
             spawn,
             spawn_room,
             backdrop_visible: RefCell::default(),
+            backdrop_effects: RefCell::default(),
             warned: RefCell::default(),
         })
     }
@@ -610,6 +677,7 @@ impl Session {
             spawn,
             spawn_room,
             backdrop_visible: RefCell::default(),
+            backdrop_effects: RefCell::default(),
             warned: RefCell::default(),
         }
     }
@@ -734,6 +802,23 @@ impl Session {
             self,
             gpu,
         );
+        // Self-animating backdrops (snow) draw one 1x1 quad per particle, layered exactly
+        // where their static siblings sit: the background pass under the tiles and the
+        // foreground pass over the player.
+        if let Some((atlas_id, uv)) = self.pixel_quad(gpu) {
+            let camera = camera_pos.to_f32s();
+            let effects = self.backdrop_effects.borrow();
+            let bg = self.doc.style.backgrounds.len();
+            for (slot, effect) in effects.iter().enumerate() {
+                let Some(effect) = effect else { continue };
+                let layer = if slot < bg {
+                    Layer::Background.value()
+                } else {
+                    Layer::Foreground.value()
+                };
+                effect.push_draws(&mut out, camera, atlas_id, uv, layer);
+            }
+        }
         out
     }
 
@@ -1565,6 +1650,7 @@ mod tests {
             spawn: Vec2::from_f32s(-56.0, 136.0),
             spawn_room: "lvl_-1".into(),
             backdrop_visible: RefCell::default(),
+            backdrop_effects: RefCell::default(),
             warned: RefCell::default(),
         }
     }
@@ -1649,6 +1735,59 @@ mod tests {
         session.update_backdrop_visibility("lvl_-1", false);
         let vis = session.backdrop_visible.borrow();
         assert!(!vis[1], "after the transition IsVisible wins again");
+    }
+
+    /// A `snowbg` slot becomes a live effect, advances one tick per call, and follows
+    /// kind changes on hot reload (vanilla `BackdropRenderer.Update` + `Snow.Update`).
+    #[test]
+    fn snow_backdrops_get_an_effect_and_advance_each_tick() {
+        use crate::backdrop::Effect;
+        let dt = Fx::from_bits(Fx::DT_ONE_SIXTIETH);
+
+        let mut session = seam_session();
+        session.doc.style.backgrounds = vec![Backdrop::new("snowbg")];
+        session.doc.style.foregrounds = vec![Backdrop::new("snowfg")];
+        session.update_backdrop_visibility("lvl_-1", false);
+        session.update_backdrop_effects(dt);
+
+        {
+            let effects = session.backdrop_effects.borrow();
+            assert_eq!(effects.len(), 2, "one slot per backdrop, bg then fg");
+            let Effect::Snow(bg) = effects[0].as_ref().expect("snowbg is an effect");
+            let Effect::Snow(fg) = effects[1].as_ref().expect("snowfg is an effect");
+            assert!(!bg.is_foreground(), "slot 0 is the background variant");
+            assert!(fg.is_foreground(), "slot 1 is the foreground variant");
+        }
+
+        let before = {
+            let effects = session.backdrop_effects.borrow();
+            match effects[0].as_ref() {
+                Some(Effect::Snow(snow)) => snow.first_x(),
+                _ => unreachable!(),
+            }
+        };
+        session.update_backdrop_effects(dt);
+        let after = {
+            let effects = session.backdrop_effects.borrow();
+            match effects[0].as_ref() {
+                Some(Effect::Snow(snow)) => snow.first_x(),
+                _ => unreachable!(),
+            }
+        };
+        assert!(after < before, "a snow tick must drift the flakes left");
+
+        // A hot reload that rewrites the slot to a static image drops the effect again.
+        session.doc.style.backgrounds = vec![Backdrop::new("parallax")];
+        session.doc.style.foregrounds = vec![Backdrop::new("snowfg")];
+        session.update_backdrop_visibility("lvl_-1", false);
+        session.update_backdrop_effects(dt);
+        let effects = session.backdrop_effects.borrow();
+        assert!(
+            effects[0].is_none(),
+            "a parallax slot holds no effect state"
+        );
+        let Effect::Snow(fg) = effects[1].as_ref().expect("snowfg survives the edit");
+        assert!(fg.is_foreground());
     }
 
     /// Build a `parallax` backdrop.

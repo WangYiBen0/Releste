@@ -431,6 +431,12 @@ impl GameService {
         let room = self.current_room.clone();
         self.session
             .update_backdrop_visibility(&room, transitioning);
+        // Animated backdrops (snow) advance once per scene update, right after the
+        // visibility refresh -- vanilla drives both from `BackdropRenderer.Update` via
+        // `Scene.Update`, which is also skipped during a freeze and while paused
+        // (`Monocle/Engine.cs:264-273`, `Monocle/Scene.cs:75-82`).
+        self.session
+            .update_backdrop_effects(Fx::from_bits(Fx::DT_ONE_SIXTIETH));
 
         // Room identity changed: at `-v` and above log a line to debug "which room the player is actually standing in".
         if room != self.reported_room {
