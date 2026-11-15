@@ -742,7 +742,7 @@ mod tests {
     }
 
     /// Build a minimal resource root: `maps/<map>` + `assets/atlas/{Test.atlas,tilesets.toml}`.
-    /// Atlas with zero textures, tileset with zero definitions -- `Session::load` only requires that the files parse.
+    /// Atlas with zero textures, tileset with zero definitions -- `Session::load_with_skin` only requires that the files parse.
     fn fixture_root() -> anyhow::Result<Paths> {
         let root = std::env::temp_dir().join("releste-game-hot-reload");
         let _ = std::fs::remove_dir_all(&root);
@@ -767,7 +767,7 @@ mod tests {
         let paths = fixture_root().expect("fixture root");
         let map_path = paths.map("reload-fixture.map");
 
-        let session = Session::load("reload-fixture.map", None, &paths)
+        let session = Session::load_with_skin("reload-fixture.map", None, &paths)
             .expect("session from the fixture map");
         let spawn_before = session.spawn;
         let watcher = watch_maps(&paths).expect("watcher over the maps dir");

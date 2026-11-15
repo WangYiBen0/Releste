@@ -78,6 +78,7 @@ impl Pipeline {
         if self.wants("atlas") {
             self.convert_atlases()?;
             self.convert_sprites()?;
+            self.convert_skins()?;
         }
         if self.wants("tilesets") {
             self.convert_tilesets()?;
@@ -389,6 +390,248 @@ impl Pipeline {
             .map_err(|e| PipelineError::Serialize(format!("atlas toml: {e}")))
     }
 
+    /// Convert reskin (alt-hair) modpacks from `references/<skin>/...` into engine atlases.
+    ///
+    /// Everest skins ship standalone PNGs (`references/Foxeline/Graphics/Atlases/
+    /// Gameplay/<skin>/bangs/bangsNN.png`). Releste resolves a skin's hair through
+    /// `<prefix>\characters\player\bangs0N` names (see `crate::skin`), so each bangs
+    /// frame becomes its own single-sprite `png` texture group whose sprite name spells
+    /// exactly that path. The engine loads every decodable PNG group, so a small skin
+    /// needs no multi-page packer. Optional input: a missing `references/` tree or a
+    /// directory that is not a skin is skipped.
+    /// Convert Everest Skin Mod Helper packs under `<source>/../references` (and a
+    /// sibling `skins/`) into engine-native assets.
+    ///
+    /// A pack is any directory holding `SkinModHelperConfig.yaml`. Each entry becomes:
+    ///
+    /// - `atlas/<pack>.atlas`: the entry's `Graphics/Sprites.xml` frames, copied per
+    ///   sprite and named `<Character_ID or sprite id>\<frame>` so the existing atlas
+    ///   lookup finds them, plus the `OtherSprite_Path`/`OtherSprite_ExPath` sets;
+    /// - `skins/<pack>.skin.toml`: engine-native descriptor (character id + hair colours
+    ///   + per-sprite animation table) so the runtime never parses YAML/XML.
+    ///
+    /// Optional input: no packs simply produces nothing. Behaviour beyond textures and
+    /// colours (tails, colour algorithms) is a plugin concern, not an asset pack one.
+    fn convert_skins(&mut self) -> Result<(), PipelineError> {
+        let mut roots: Vec<PathBuf> = Vec::new();
+        if let Some(parent) = self.config.source.parent() {
+            roots.push(parent.join("skins"));
+            roots.push(parent.join("references"));
+        }
+
+        let mut packs: Vec<PathBuf> = Vec::new();
+        for root in roots {
+            crate::skin::find_skin_packs(&root, &mut packs);
+        }
+        packs.sort();
+        packs.dedup();
+
+        for pack_dir in packs {
+            let config_path = pack_dir.join("SkinModHelperConfig.yaml");
+            let config = crate::skin::SkinConfigFile::from_file(&config_path)?;
+            self.write_skin_pack(&pack_dir, &config)?;
+        }
+        Ok(())
+    }
+
+    /// Write one pack: an atlas holding every sprite it defines, and the engine-native
+    /// skin descriptor (character id + hair colours + animation table).
+    fn write_skin_pack(
+        &mut self,
+        pack_dir: &std::path::Path,
+        config: &crate::skin::SkinConfigFile,
+    ) -> Result<(), PipelineError> {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct SpriteOut {
+            name: String,
+            x: i16,
+            y: i16,
+            w: i16,
+            h: i16,
+            origin_x: i16,
+            origin_y: i16,
+            frame_w: i16,
+            frame_h: i16,
+        }
+        #[derive(Serialize)]
+        struct TextureOut {
+            name: String,
+            kind: &'static str,
+            source: String,
+            sprites: Vec<SpriteOut>,
+        }
+        #[derive(Serialize)]
+        struct AtlasOut {
+            name: String,
+            version: i32,
+            textures: Vec<TextureOut>,
+        }
+
+        let pack_id = pack_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "skin".into());
+        let atlas_dir = self.safe_out(std::path::Path::new("atlas"))?;
+        std::fs::create_dir_all(&atlas_dir)
+            .map_err(|e| PipelineError::io(atlas_dir.display(), e))?;
+
+        let mut textures: Vec<TextureOut> = Vec::new();
+        let mut group_index = 0usize;
+
+        // Every atlas image the pack ships is copied and named by its path relative to
+        // `Graphics/Atlases/`, so a sprite `characters/niko/idle00` keeps exactly that
+        // name. This is namespace-agnostic: <Character_ID> sprites and OtherSprite sets
+        // both come out in the same form.
+        let atlas_root = pack_dir.join("Graphics/Atlases");
+        if atlas_root.is_dir() {
+            let mut pngs: Vec<PathBuf> = Vec::new();
+            collect_files_with_ext(&atlas_root, "png", &mut pngs);
+            pngs.sort();
+            for png in pngs {
+                let Ok(rel) = png.strip_prefix(&atlas_root) else {
+                    continue;
+                };
+                // `rel` is `<atlas ns>/<sprite path>.png` (e.g. `Gameplay/characters/
+                // niko/idle00.png`). The namespace is a separate atlas in Celeste but this
+                // engine merges the pack into one atlas whose lookups drop the namespace,
+                // so strip the first component and keep `characters/niko/idle00`.
+                let rel = Path::new(rel);
+                let stripped: PathBuf = rel.components().skip(1).collect();
+                if stripped.as_os_str().is_empty() {
+                    continue;
+                }
+                let rel_str = stripped.to_string_lossy().replace('\\', "/");
+                let sprite_name = rel_str.trim_end_matches(".png").replace('/', "\\");
+                let out_rel = format!("atlas/{pack_id}/img{group_index}.png");
+                self.copy_exact(&png, &out_rel)?;
+
+                let img = image::open(&png)
+                    .map_err(|e| PipelineError::Png {
+                        path: png.display().to_string(),
+                        source: e,
+                    })?
+                    .to_rgba8();
+                let (w, h) = img.dimensions();
+                textures.push(TextureOut {
+                    name: format!("{pack_id}_{group_index}"),
+                    kind: "png",
+                    source: out_rel,
+                    sprites: vec![SpriteOut {
+                        name: sprite_name,
+                        x: 0,
+                        y: 0,
+                        w: w as i16,
+                        h: h as i16,
+                        // Full, untrimmed frames: the engine's per-sprite origin offset is
+                        // `HAIR_FRAME_ORIGIN - origin`, and a pack frame has no crop, so
+                        // `origin = (0,0)` keeps the maths identical to the vanilla
+                        // subimages (`pureCeleste.cs` `Sprite` origin handling).
+                        origin_x: 0,
+                        origin_y: 0,
+                        frame_w: w as i16,
+                        frame_h: h as i16,
+                    }],
+                });
+                group_index += 1;
+            }
+        }
+
+        let atlas = AtlasOut {
+            name: pack_id.clone(),
+            version: 5,
+            textures,
+        };
+        let atlas_text = toml::to_string_pretty(&atlas)
+            .map_err(|e| PipelineError::Serialize(format!("{pack_id} atlas toml: {e}")))?;
+        std::fs::write(atlas_dir.join(format!("{pack_id}.atlas")), atlas_text)
+            .map_err(|e| PipelineError::io(atlas_dir.display(), e))?;
+
+        // Animation tables: the pack ships `Graphics/Sprites.xml` (the player's
+        // `<Character_ID>` def) and per-namespace `Graphics/<ns>/Sprites.xml` (other
+        // scene sprites). Convert them all into one `atlas/<pack>.sprites.toml` so the
+        // runtime never parses XML (AGENTS.md 4.6). The player def keeps its original id
+        // (`niko`); the engine aliases it to `player` at load time per `Character_ID`.
+        let mut sprite_defs: Vec<crate::sprites_xml::SpriteDef> = Vec::new();
+        let mut xml_files: Vec<PathBuf> = Vec::new();
+        collect_files_with_ext(&pack_dir.join("Graphics"), "xml", &mut xml_files);
+        xml_files.sort();
+        for xml in xml_files {
+            // Only `Sprites.xml` spells out animations; `Portraits.xml` and other XML
+            // files use different elements.
+            if xml.file_name().map(|n| n != "Sprites.xml").unwrap_or(true) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&xml) else {
+                continue;
+            };
+            match crate::sprites_xml::parse_sprites(&text) {
+                Ok(defs) => sprite_defs.extend(defs),
+                Err(e) => self.report.warn(format!(
+                    "skin `{pack_id}`: could not parse {}: {e}",
+                    xml.display()
+                )),
+            }
+        }
+        if !sprite_defs.is_empty() {
+            let sprites_toml = SpritesToml {
+                sprite: sprite_defs,
+            };
+            let text = toml::to_string_pretty(&sprites_toml)
+                .map_err(|e| PipelineError::Serialize(format!("{pack_id} sprites toml: {e}")))?;
+            std::fs::write(atlas_dir.join(format!("{pack_id}.sprites.toml")), text)
+                .map_err(|e| PipelineError::io(atlas_dir.display(), e))?;
+        }
+
+        // Engine-native descriptor.
+        #[derive(Serialize)]
+        struct SkinOut {
+            pack: String,
+            entries: Vec<EntryOut>,
+        }
+        #[derive(Serialize)]
+        struct EntryOut {
+            skin_name: String,
+            character_id: Option<String>,
+            hair_colors: Vec<HairColorOut>,
+        }
+        #[derive(Serialize)]
+        struct HairColorOut {
+            dashes: u8,
+            rgb: [u8; 3],
+        }
+
+        let skins_dir = self.safe_out(std::path::Path::new("skins"))?;
+        std::fs::create_dir_all(&skins_dir)
+            .map_err(|e| PipelineError::io(skins_dir.display(), e))?;
+
+        let entries = config
+            .entries
+            .iter()
+            .map(|e| EntryOut {
+                skin_name: e.skin_name.clone(),
+                character_id: e.character_id.clone(),
+                hair_colors: crate::skin::default_hair_colors()
+                    .into_iter()
+                    .map(|(dashes, rgb)| HairColorOut { dashes, rgb })
+                    .collect(),
+            })
+            .collect();
+        let skin = SkinOut {
+            pack: pack_id.clone(),
+            entries,
+        };
+        let skin_text = toml::to_string_pretty(&skin)
+            .map_err(|e| PipelineError::Serialize(format!("{pack_id} skin toml: {e}")))?;
+        std::fs::write(skins_dir.join(format!("{pack_id}.skin.toml")), skin_text)
+            .map_err(|e| PipelineError::io(skins_dir.display(), e))?;
+
+        self.report.atlases += 1;
+        self.report.sprites += group_index;
+        Ok(())
+    }
+
     /// Copy a file into the output directory at the given relative path (including extension).
     fn copy_exact(&self, from: &Path, out_rel: &str) -> Result<(), PipelineError> {
         let to = self.safe_out(Path::new(out_rel))?;
@@ -655,6 +898,21 @@ fn area_id_of(area: &str) -> u32 {
 /// Shared by the descriptor file and the copy logic, to guarantee the `source` field points at a real file.
 fn group_out_rel(stem: &str, group: &str, ext: &str) -> String {
     format!("atlas/{stem}/{group}.{ext}")
+}
+
+/// Collect every file under `root` whose extension is `ext` (recursive).
+fn collect_files_with_ext(root: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_with_ext(&path, ext, out);
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
 }
 
 /// Write the decode result as a PNG (creating directories first if needed).

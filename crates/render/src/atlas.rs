@@ -264,6 +264,31 @@ impl SpriteAtlas {
             .iter()
             .flat_map(|t| t.sprites.iter().map(|s| s.name.as_str()))
     }
+
+    /// Appends every texture group of `other` to this atlas and re-indexes it.
+    ///
+    /// Used for optional asset layers loaded on top of the map's primary atlas (a
+    /// reskin's alt-hair textures, `atlas/<skin>.atlas`). Group indices are appended
+    /// after the existing ones, so every group keeps a unique id and
+    /// [`SpriteAtlas::descriptor`] stays the single source of texture order that the GPU
+    /// upload walks. A sprite name that already exists keeps pointing at the original
+    /// group (the primary atlas wins).
+    pub fn append(&mut self, other: &AtlasDescriptor) {
+        let base = self.descriptor.textures.len();
+        for (ti, tex) in other.textures.iter().enumerate() {
+            for (si, sprite) in tex.sprites.iter().enumerate() {
+                self.index
+                    .entry(sprite.name.to_lowercase())
+                    .or_insert((base + ti, si));
+            }
+            self.descriptor.textures.push(tex.clone());
+        }
+        for (k, v) in &other.links {
+            self.aliases
+                .entry(k.to_lowercase())
+                .or_insert_with(|| v.clone());
+        }
+    }
 }
 
 /// Resolves the texture of one animation frame exactly like Monocle's

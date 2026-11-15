@@ -244,7 +244,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
         "config file"
     );
 
-    let session = Session::load(&args.map, None, &paths)?;
+    let session = Session::load_with_skin(&args.map, args.skin.as_deref(), &paths)?;
 
     if let Some(out) = &args.dump_map {
         devtools::dump_session_json(&session, out)?;

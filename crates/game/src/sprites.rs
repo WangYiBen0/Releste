@@ -312,6 +312,26 @@ pub struct AnimationTable {
 }
 
 impl AnimationTable {
+    /// Merge `other` into this table, renaming one of its sprite defs to `player`.
+    ///
+    /// Used to bind a skin's player sprite: a pack ships its character animation set
+    /// under its `Character_ID` (`niko`), and the engine plays the player by looking up
+    /// `"player"` everywhere. Aliasing `niko -> player` (and merging the pack's other
+    /// sprite defs, e.g. retextured scene objects) is exactly Skin Mod Helper's
+    /// `GFX.SpriteBank.CreateOn(self, value.Character_ID)`
+    /// (`references/SkinModHelperPlus.../SkinsSystem`). A missing `character` is a no-op.
+    pub fn merge_skin_into(&mut self, other: AnimationTable, character: &str) {
+        let mut sprites = other.sprites;
+        if let Some(def) = sprites.remove(character) {
+            self.sprites.insert("player".to_string(), def);
+        }
+        // Pack sprites that are not the player (booster/lookout/...) are merged as-is so
+        // entity lookups by their original id keep working once those entities exist.
+        for (name, def) in sprites {
+            self.sprites.entry(name).or_insert(def);
+        }
+    }
+
     /// Read from `assets/atlas/<atlas>.sprites.toml`; missing file -> an empty table (callers
     /// use `is_empty()` to decide whether to fall back to a static frame, warning once). `atlas` is used to
     /// expand "default frames" into all frames (per-index probing, capped at 256 defensively).

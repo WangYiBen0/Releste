@@ -431,13 +431,15 @@ impl Session {
         }
         true
     }
-    /// Load from the map path resolved through `paths`.
+    /// Load from the map path resolved through `paths`, optionally overlaid with a
+    /// reskin atlas.
     ///
-    /// `tileset` is deprecated (real tilesets come from the definitions converted from
-    /// `ForegroundTiles.xml`, keyed by tile id); the parameter is kept for caller
-    /// compatibility and ignored.
-    pub fn load(map: &str, tileset: Option<&str>, paths: &Paths) -> Result<Self> {
-        let _ = tileset; // deprecated, see above
+    /// A non-empty `skin` loads `atlas/<skin>.atlas` (produced by the content pipeline
+    /// from a `references/<skin>/` mod) and appends its texture groups to this session's
+    /// atlas, so `<skin>\characters\player\...` names resolve. A missing skin atlas only
+    /// warns: the vanilla textures then still draw via the fallback in
+    /// [`Session::player_draws`].
+    pub fn load_with_skin(map: &str, skin: Option<&str>, paths: &Paths) -> Result<Self> {
         let map_path = paths.map(map);
         let doc = releste_map::load_map(&map_path)
             .with_context(|| format!("failed to load map {}", map_path.display()))?;
@@ -458,6 +460,30 @@ impl Session {
                 paths.atlas_dir().display()
             )
         })?;
+
+        // Optional reskin layer: append the selected skin's atlas so
+        // `<skin>\characters\player\...` resolves, and remember the pack's
+        // `Character_ID` so its animation set can be aliased to `player` below. A skin
+        // this build has no atlas for is not an error -- the player falls back to vanilla.
+        let mut atlas = atlas;
+        let mut skin_character: Option<String> = None;
+        if let Some(skin) = skin.filter(|s| !s.is_empty()) {
+            let skin_path = paths.atlas(skin);
+            match SpriteAtlas::load(&skin_path, paths.atlas_dir()) {
+                Ok(extra) => {
+                    let groups = extra.descriptor().textures.len();
+                    atlas.append(extra.descriptor());
+                    debug!(skin, groups, "appended skin atlas");
+                }
+                Err(e) => warn!(
+                    skin,
+                    path = %skin_path.display(),
+                    error = %e,
+                    "skin atlas not found; hair falls back to vanilla"
+                ),
+            }
+            skin_character = load_skin_character(paths, skin);
+        }
 
         let tilesets_path = paths.tilesets();
         let tilesets = releste_map::TilesetsDoc::from_file(&tilesets_path).with_context(|| {
@@ -503,6 +529,18 @@ impl Session {
                 crate::sprites::AnimationTable::default()
             }
         };
+        // Skin animation set: load the pack's `<skin>.sprites.toml` and alias its
+        // `Character_ID` def to `player` (Skin Mod Helper's `CreateOn(Character_ID)`).
+        let mut anims = anims;
+        if let (Some(skin), Some(character)) = (skin.filter(|s| !s.is_empty()), skin_character) {
+            match crate::sprites::AnimationTable::load(paths, skin, &atlas) {
+                Ok(extra) => {
+                    anims.merge_skin_into(extra, &character);
+                    debug!(skin, character, "merged skin animation set");
+                }
+                Err(e) => warn!(skin, error = %e, "skin animation table failed to parse"),
+            }
+        }
         Ok(Session {
             doc,
             atlas_name,
@@ -734,29 +772,28 @@ impl Session {
         // that texture is absent, matching SkinModHelper's `GetHairTexture` override
         // (references/SkinModHelper/.../SkinModHelperModule.cs:205-222 `if
         // GFX.Game.Has(newHairPath)`).
-        let resolve = |frame: usize, vanilla: Cow<'static, str>| {
-            let wanted = match frame {
-                0 => skin.bangs(hair.frame),
-                _ => skin.hair(),
-            };
+        // Node 0 (bangs) and the tail both try the skin's name first, then the vanilla
+        // name. The fallback is `PlayerHairSkin::VANILLA`'s name, not the prefixed one --
+        // passing the prefixed name as its own fallback would silently drop the piece
+        // when a skin atlas is absent.
+        let vanilla = crate::skin::PlayerHairSkin::VANILLA;
+        let resolve = |wanted: Cow<'static, str>, fallback: Cow<'static, str>| {
             if self.atlas.sprite(&wanted).is_some() {
                 wanted
             } else {
-                vanilla
+                fallback
             }
         };
         let pieces: Vec<(Cow<'static, str>, Vec2)> = nodes
             .iter()
             .enumerate()
             .map(|(i, node)| {
-                (
-                    if i == 0 {
-                        resolve(0, skin.bangs(hair.frame))
-                    } else {
-                        resolve(1, skin.hair())
-                    },
-                    if i == 0 { node.floor() } else { *node },
-                )
+                let name = if i == 0 {
+                    resolve(skin.bangs(hair.frame), vanilla.bangs(hair.frame))
+                } else {
+                    resolve(skin.hair(), vanilla.hair())
+                };
+                (name, if i == 0 { node.floor() } else { *node })
             })
             .collect();
         let count = pieces.len();
@@ -1359,6 +1396,31 @@ fn push_tiles(
 ///    `player::PLAYER_H_PX`).
 ///
 /// Returns `(anchor, room name)`; the service converts the anchor to a hitbox top-left.
+/// Read the `Character_ID` of the first entry in `skins/<skin>.skin.toml` (written by
+/// the content pipeline from `SkinModHelperConfig.yaml`). Missing file / no character
+/// -> `None`, so the caller keeps the vanilla player animation set.
+fn load_skin_character(paths: &Paths, skin: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        #[serde(default)]
+        character_id: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct SkinFile {
+        #[serde(default)]
+        entries: Vec<Entry>,
+    }
+
+    let path = paths.skins_dir().join(format!("{skin}.skin.toml"));
+    let text = std::fs::read_to_string(&path).ok()?;
+    let parsed: SkinFile = toml::from_str(&text).ok()?;
+    parsed
+        .entries
+        .into_iter()
+        .find_map(|e| e.character_id)
+        .filter(|c| !c.is_empty())
+}
+
 fn vanilla_start(doc: &MapDocument) -> (Vec2, String) {
     let origin = Vec2::from_f32s(0.0, 0.0);
     let room = doc

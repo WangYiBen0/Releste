@@ -98,6 +98,15 @@ impl Paths {
         &self.atlas
     }
 
+    /// `skins/` directory: engine-native skin descriptors written by the content
+    /// pipeline next to `atlas/`. A missing directory is fine (no skins installed).
+    pub fn skins_dir(&self) -> PathBuf {
+        self.atlas
+            .parent()
+            .map(|p| p.join("skins"))
+            .unwrap_or_else(|| PathBuf::from("skins"))
+    }
+
     /// `plugins/` directory.
     pub fn plugins(&self) -> &Path {
         &self.plugins
