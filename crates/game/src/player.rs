@@ -1512,12 +1512,19 @@ impl Player {
         approach(&mut self.sprite_scale[1], Fx::one(), SPRING_RATE);
         let dash_attacking = self.dash_attack > 0;
         if dash_attacking {
+            // 2097 `onGround && DashDir.Y == 0f && !Ducking && Speed.X != 0f &&
+            // moveX == -Sign(Speed.X)` -> skid; 2105 `else if (Ducking)` -> duck;
+            // 2111 otherwise -> dash. The engine previously missed the duck branch, so a
+            // grounded crouch-dash played the standing dash animation.
             if self.on_ground
                 && self.dash_dir.y == Fx::zero()
+                && !self.ducking
                 && self.vel.x != Fx::zero()
                 && self.move_x == Fx::from_int(-self.vel.x.signum())
             {
                 self.play(table, "skid");
+            } else if self.ducking {
+                self.play(table, "duck");
             } else {
                 self.play(table, "dash");
             }
@@ -1707,26 +1714,30 @@ impl Player {
         // else (no input, opposite braking, starting) uses the full 1000 rate. In the air
         // both are multiplied by 0.65.
         let move_x = self.move_x;
-        let mult = if self.on_ground { Fx::one() } else { AIR_MULT };
-        let target = move_x * RUN;
-        let overspeed = move_x != Fx::zero()
-            && self.vel.x.abs() > RUN
-            && self.vel.x.signum() == move_x.signum();
-        let rate = if overspeed {
-            RUN_REDUCE * mult
+        // Grounded ducking is a *separate* branch: `Speed.X = Approach(Speed.X, 0,
+        // 500*dt)` (Player.cs:3681-3684). The normal run acceleration is the `else`, so a
+        // crouched player decelerates to a stop and cannot run -- the engine previously
+        // ran both, so ducking still accelerated sideways.
+        if self.ducking && self.on_ground {
+            approach(&mut self.vel.x, Fx::zero(), DUCK_DECEL);
         } else {
-            RUN_ACCEL * mult
-        };
-        approach(&mut self.vel.x, target, rate);
+            let mult = if self.on_ground { Fx::one() } else { AIR_MULT };
+            let target = move_x * RUN;
+            let overspeed = move_x != Fx::zero()
+                && self.vel.x.abs() > RUN
+                && self.vel.x.signum() == move_x.signum();
+            let rate = if overspeed {
+                RUN_REDUCE * mult
+            } else {
+                RUN_ACCEL * mult
+            };
+            approach(&mut self.vel.x, target, rate);
+        }
         // Facing follows input, not speed (119908-119917): holding into a wall leaves
         // speed at 0, so facing must still point at the wall for the jump boost direction
         // to be right.
         if move_x != Fx::zero() {
             self.facing = move_x.signum();
-        }
-        // Grounded duck braking (122047-122049): `Approach(Speed.X, 0, 500*dt)`.
-        if self.ducking && self.on_ground {
-            approach(&mut self.vel.x, Fx::zero(), DUCK_DECEL);
         }
 
         // The fall-speed cap is an **eased state**: holding "down" while already
@@ -3528,6 +3539,71 @@ mod tests {
         assert!(p.on_ground, "duck hitbox keeps the bottom edge aligned");
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert!(!p.ducking, "release down to stand back up (121996-122003)");
+    }
+
+    /// A grounded crouch cannot run: vanilla's duck branch replaces the run
+    /// acceleration entirely (`Player.cs:3681-3684` `if (Ducking && onGround) Speed.X =
+    /// Approach(Speed.X, 0, 500*dt); else { ... }`), so holding a direction while
+    /// crouched only decelerates.
+    #[test]
+    fn crouching_does_not_allow_running() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        // Enter the crouch first.
+        let down = Input {
+            down: true,
+            ..Input::default()
+        };
+        p.step(&down, std::slice::from_ref(&room));
+        assert!(p.ducking);
+        // Now hold down + right for many ticks: speed must stay at rest, not reach RUN.
+        let down_right = Input {
+            down: true,
+            right: true,
+            ..Input::default()
+        };
+        for _ in 0..30 {
+            p.step(&down_right, std::slice::from_ref(&room));
+        }
+        assert!(
+            p.vel.x.abs() < Fx::from_ratio(1, 2),
+            "a crouched player must not run (Player.cs:3681-3684); vx={:?}",
+            p.vel.x
+        );
+    }
+
+    /// A grounded crouch-dash plays the `duck` animation, not the standing `dash`
+    /// (`Player.cs:2105-2107` `else if (Ducking) Sprite.Play("duck")`). The engine
+    /// previously fell through to `dash`.
+    #[test]
+    fn crouch_dash_uses_the_duck_animation() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let table = anim_table();
+        // Crouch, then press dash while holding down.
+        let down = Input {
+            down: true,
+            ..Input::default()
+        };
+        p.step(&down, std::slice::from_ref(&room));
+        assert!(p.ducking);
+        let down_dash = Input {
+            down: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&down_dash, std::slice::from_ref(&room));
+        // Advance into the dash-attack window so `update_sprite` runs its dash branch.
+        p.update_visuals(&table, &down_dash, std::slice::from_ref(&room));
+        assert!(
+            p.ducking,
+            "a grounded crouch-dash keeps Ducking (122566-122573)"
+        );
+        assert_eq!(
+            p.anim_id.to_ascii_lowercase(),
+            "duck",
+            "the crouch-dash must play `duck` (Player.cs:2105-2107)"
+        );
     }
 
     /// Climb: grab against a wall -> State 1; hanging drains stamina continuously (still
