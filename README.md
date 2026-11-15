@@ -72,10 +72,11 @@ cargo test --workspace             # 254 tests
 cargo run -p releste-editor
 cargo run -p releste-net-server -- --port 7777
 cargo run -p releste-content-pipeline -- --source references/Celeste/Content --output assets --verify
-# Repackage an Everest skin .zip into the shipped `resources/<namespace>/` layout
-# (ROADMAP Appendix C). `--namespace` is the id `--skin` selects; it defaults to the zip stem.
-cargo run -p releste-content-pipeline -- --skin-pack path/to/Skin.zip \
-    --resources-root resources --namespace MySkin
+# Repackage an Everest Skin Mod Helper skin into the shipped `resources/<namespace>/`
+# layout (ROADMAP Appendix C). Accepts a `.zip` or an extracted mod directory;
+# `--namespace` is the id `--skin` selects and defaults to the archive / folder name.
+cargo run -p releste-content-pipeline --bin smh2releste -- \
+    path/to/Skin.zip --resources-root resources --namespace MySkin
 cargo r -- --skin MySkin           # play with that skin
 ```
 

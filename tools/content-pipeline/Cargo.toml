@@ -7,6 +7,13 @@ edition.workspace = true
 name = "releste-content-pipeline"
 path = "src/main.rs"
 
+# One binary per input format. `smh2releste` repackages an Everest Skin Mod Helper
+# skin (zip or directory) into the `resources/<namespace>/` layout; future converters
+# (Aseprite tilesets, CelesteNet skins, ...) follow the same shape.
+[[bin]]
+name = "smh2releste"
+path = "src/bin/smh2releste.rs"
+
 [dependencies]
 releste-math = { path = "../../crates/math" }
 releste-world = { path = "../../crates/world" }

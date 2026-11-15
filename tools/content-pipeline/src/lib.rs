@@ -37,3 +37,4 @@ pub use mapbin::{MapBin, MapBinElement};
 pub use pipeline::{
     default_sync_rules, example_sync_rule, Pipeline, PipelineConfig, PipelineReport,
 };
+pub use skinpack::{convert_zip, PackStats};
