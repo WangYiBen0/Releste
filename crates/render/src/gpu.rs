@@ -90,6 +90,24 @@ struct Uniforms {
     _pad: [f32; 3],
 }
 
+/// Additive blend: `src + dst` for colour and `src + dst` for alpha.
+///
+/// XNA's `BlendState.Additive` is `ColorSourceBlend = One`, `ColorDestinationBlend = One`,
+/// `AlphaSourceBlend = One`, `AlphaDestinationBlend = One` -- the vanilla backdrops use it
+/// for light effects (`purplesunset`, `godrays`, `northernlights`, ...).
+const ADDITIVE_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// An uploaded texture.
 ///
 /// The `bind_group` holds a reference to the texture view internally, so the view does not need to be stored separately.
@@ -106,6 +124,9 @@ pub struct GpuRenderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    /// Second pipeline: identical except for the additive blend state (`src + dst`),
+    /// used by draws whose [`SpriteDraw::additive`](crate::SpriteDraw::additive) flag is set.
+    additive_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
@@ -268,57 +289,68 @@ impl GpuRenderer {
             push_constant_ranges: &[],
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sprite-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SpriteVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, // position
-                        1 => Float32x2, // uv
-                        2 => Float32x4  // color
-                    ],
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: config.msaa_samples.clamp(1, 4),
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                // `fs_main_encoded` keeps the visible colour equal to a gamma-space multiply when
-                // the swapchain is sRGB (see the format selection above).
-                entry_point: Some(if format.is_srgb() {
-                    "fs_main_encoded"
-                } else {
-                    "fs_main"
-                }),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None,
-            cache: None,
-        });
+        // Both pipelines share `shader` and `pipeline_layout`; only the colour-target
+        // blend state differs, so textures uploaded once bind to either.
+        let make_pipeline =
+            |label: &'static str, blend: wgpu::BlendState| -> wgpu::RenderPipeline {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<SpriteVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![
+                                0 => Float32x2, // position
+                                1 => Float32x2, // uv
+                                2 => Float32x4  // color
+                            ],
+                        }],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        unclipped_depth: false,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState {
+                        count: config.msaa_samples.clamp(1, 4),
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        // `fs_main_encoded` keeps the visible colour equal to a gamma-space
+                        // multiply when the swapchain is sRGB (see the format selection above).
+                        entry_point: Some(if format.is_srgb() {
+                            "fs_main_encoded"
+                        } else {
+                            "fs_main"
+                        }),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(blend),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview: None,
+                    cache: None,
+                })
+            };
+
+        let pipeline = make_pipeline(
+            "sprite-pipeline",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
+        let additive_pipeline = make_pipeline("sprite-pipeline-additive", ADDITIVE_BLEND);
 
         // Pixel look: nearest sampling.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -353,6 +385,7 @@ impl GpuRenderer {
             surface,
             config: surface_config,
             pipeline,
+            additive_pipeline,
             uniform_buffer,
             uniform_bind_group,
             vertex_buffer,
@@ -609,12 +642,22 @@ impl GpuRenderer {
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
-            // One run = one draw call.
+            // One run = one draw call; the run selects its blend pipeline, so only
+            // switch when it actually changes.
+            let mut additive_bound = false;
             for range in batch.ranges() {
                 let Some(tex) = self.textures.get(&range.atlas) else {
                     // A texture that was not uploaded (for example `.data` not yet converted): skip instead of rendering wrong content.
                     continue;
                 };
+                if range.additive != additive_bound {
+                    pass.set_pipeline(if range.additive {
+                        &self.additive_pipeline
+                    } else {
+                        &self.pipeline
+                    });
+                    additive_bound = range.additive;
+                }
                 pass.set_bind_group(1, &tex.bind_group, &[]);
                 let start = (range.start * 6) as u32;
                 let count = (range.len * 6) as u32;

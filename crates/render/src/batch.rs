@@ -35,6 +35,10 @@ pub struct SpriteDraw {
     pub layer: i32,
     /// Horizontal flip.
     pub flip_x: bool,
+    /// Vertical flip.
+    pub flip_y: bool,
+    /// Draw with additive blending (`src + dst`) instead of premultiplied alpha.
+    pub additive: bool,
     /// Rotation in radians about `position` (the top-left corner); `0.0` = axis-aligned (fast path).
     ///
     /// Semantically matches XNA `SpriteBatch.Draw(..., rotation, origin: Vector2.Zero,
@@ -55,6 +59,8 @@ impl SpriteDraw {
             color: [1.0; 4],
             layer: 0,
             flip_x: false,
+            flip_y: false,
+            additive: false,
             rotation: 0.0,
         }
     }
@@ -77,6 +83,18 @@ impl SpriteDraw {
         self
     }
 
+    /// Vertical flip.
+    pub fn with_flip_y(mut self, flip: bool) -> Self {
+        self.flip_y = flip;
+        self
+    }
+
+    /// Uses additive blending (`src + dst`) instead of premultiplied alpha.
+    pub fn with_additive(mut self, additive: bool) -> Self {
+        self.additive = additive;
+        self
+    }
+
     /// Rotates about `position` (radians; screen coordinates have y down, so positive is clockwise).
     pub fn with_rotation(mut self, rotation: f32) -> Self {
         self.rotation = rotation;
@@ -93,11 +111,13 @@ pub enum BatchError {
     NotBegun,
 }
 
-/// A run of consecutive draws sharing one texture.
+/// A run of consecutive draws sharing one texture and one blend mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchRange {
     /// Texture group.
     pub atlas: u32,
+    /// Whether the run draws with additive blending (selects the second pipeline).
+    pub additive: bool,
     /// Start index into `draws`.
     pub start: usize,
     /// Number of elements.
@@ -184,19 +204,20 @@ impl SpriteBatch {
         &self.draws
     }
 
-    /// Sorts by `(layer, atlas)`, clustering draws with the same layer and texture.
+    /// Sorts by `(layer, atlas, additive)`, clustering draws with the same layer,
+    /// texture and blend mode.
     ///
-    /// The sort is **stable**: within the same layer and texture, submission order is preserved (which determines occlusion).
+    /// The sort is **stable**: within the same key, submission order is preserved (which determines occlusion).
     pub fn sort(&mut self) {
         if !self.dirty {
             return;
         }
         // A stable sort preserves submission order among equal keys.
-        self.draws.sort_by_key(|d| (d.layer, d.atlas));
+        self.draws.sort_by_key(|d| (d.layer, d.atlas, d.additive));
         self.dirty = false;
     }
 
-    /// Runs of the same texture (one draw call per run).
+    /// Runs of the same texture and blend mode (one draw call per run).
     ///
     /// Call [`SpriteBatch::sort`] first.
     pub fn ranges(&self) -> Vec<BatchRange> {
@@ -204,12 +225,17 @@ impl SpriteBatch {
         let mut i = 0usize;
         while i < self.draws.len() {
             let atlas = self.draws[i].atlas;
+            let additive = self.draws[i].additive;
             let start = i;
-            while i < self.draws.len() && self.draws[i].atlas == atlas {
+            while i < self.draws.len()
+                && self.draws[i].atlas == atlas
+                && self.draws[i].additive == additive
+            {
                 i += 1;
             }
             out.push(BatchRange {
                 atlas,
+                additive,
                 start,
                 len: i - start,
             });
@@ -224,10 +250,13 @@ impl SpriteBatch {
         let mut out = Vec::with_capacity(self.draws.len() * 6);
 
         for d in &self.draws {
-            let (mut u0, v0) = d.uv_min;
-            let (mut u1, v1) = d.uv_max;
+            let (mut u0, mut v0) = d.uv_min;
+            let (mut u1, mut v1) = d.uv_max;
             if d.flip_x {
                 std::mem::swap(&mut u0, &mut u1);
+            }
+            if d.flip_y {
+                std::mem::swap(&mut v0, &mut v1);
             }
 
             let [bl, br, tl, tr] = if d.rotation == 0.0 {
@@ -394,11 +423,13 @@ mod tests {
             vec![
                 BatchRange {
                     atlas: 0,
+                    additive: false,
                     start: 0,
                     len: 3
                 },
                 BatchRange {
                     atlas: 1,
+                    additive: false,
                     start: 3,
                     len: 1
                 },
@@ -455,6 +486,41 @@ mod tests {
         let v = b.vertices(&cam, (320, 180));
         // The bottom-left corner should get uv_max.x
         assert!((v[0].uv[0] - 0.1).abs() < 1e-6, "uv u0={}", v[0].uv[0]);
+    }
+
+    #[test]
+    fn flip_y_swaps_v() {
+        let mut b = SpriteBatch::new(8);
+        b.begin();
+        b.push(draw(0, 0).with_flip_y(true)).unwrap();
+        let cam = Camera::new();
+        let v = b.vertices(&cam, (320, 180));
+        // Without a flip the bottom-left corner samples uv_min.y; with a vertical
+        // flip it must sample uv_max.y (and the top corner the opposite).
+        assert!((v[0].uv[1] - 0.0).abs() < 1e-6, "uv bl={}", v[0].uv[1]);
+        assert!((v[2].uv[1] - 0.1).abs() < 1e-6, "uv tl={}", v[2].uv[1]);
+    }
+
+    #[test]
+    fn ranges_split_on_blend_mode() {
+        let mut b = SpriteBatch::new(64);
+        b.begin();
+        b.push(draw(0, 0)).unwrap();
+        b.push(draw(0, 0).with_additive(true)).unwrap();
+        b.push(draw(0, 0)).unwrap();
+        b.push(draw(1, 0).with_additive(true)).unwrap();
+        b.sort();
+
+        let ranges = b.ranges();
+        // After sorting: 0 alpha, 0 alpha, 0 additive, 1 additive -> three runs
+        assert_eq!(ranges.len(), 3, "ranges={ranges:?}");
+        assert!(!ranges[0].additive);
+        assert_eq!(ranges[0].len, 2);
+        assert!(ranges[1].additive);
+        assert_eq!(ranges[1].atlas, 0);
+        assert_eq!(ranges[1].len, 1);
+        assert!(ranges[2].additive);
+        assert_eq!(ranges[2].atlas, 1);
     }
 
     #[test]
