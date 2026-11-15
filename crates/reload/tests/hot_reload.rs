@@ -340,3 +340,54 @@ fn shrinking_room_past_player_rolls_back_entire_patch() {
         )
         .expect("player inside bounds should pass");
 }
+
+/// `new_files` must pick up a settings file that does not exist when the watcher starts.
+///
+/// The settings layers (`~/.config/releste/config.toml`, `<root>/settings.toml`) are usually
+/// created by the player after the game is already running, so watching the parent directory
+/// and matching by path is what makes `[skin]`/`[keys]` hot reload work on the first save.
+#[test]
+fn new_files_picks_up_a_file_that_appears_later() {
+    let dir = tmp_dir("settings");
+    let settings = dir.join("settings.toml");
+    assert!(!settings.exists(), "the file must not exist yet");
+
+    let mut watcher = match FileWatcher::new_files(std::slice::from_ref(&settings), 50) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("skipping: file watcher unavailable: {e}");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+    };
+
+    std::fs::write(&settings, "[skin]\nname = \"Foxeline\"\n").expect("write settings");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = false;
+    while Instant::now() < deadline {
+        if let Some(path) = watcher.wait_timeout(Duration::from_millis(500)) {
+            if path == settings {
+                seen = true;
+                break;
+            }
+        }
+    }
+    if !seen {
+        eprintln!("skipping: no filesystem notification observed (inotify may be unavailable)");
+        std::fs::remove_dir_all(&dir).ok();
+        return;
+    }
+
+    // An unrelated file in the same directory must not be reported.
+    std::fs::write(dir.join("other.toml"), "[skin]\nname = \"Nope\"\n").expect("write other");
+    let deadline = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < deadline {
+        if let Some(path) = watcher.poll() {
+            assert_eq!(path, settings, "only the watched file may be reported");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}

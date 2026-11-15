@@ -438,7 +438,8 @@ impl Session {
     /// from a `references/<skin>/` mod) and appends its texture groups to this session's
     /// atlas, so `<skin>\characters\player\...` names resolve. A missing skin atlas only
     /// warns: the vanilla textures then still draw via the fallback in
-    /// [`Session::player_draws`].
+    /// [`Session::player_draws`]. Use [`Session::set_skin`] to swap the skin of an
+    /// already loaded session.
     pub fn load_with_skin(map: &str, skin: Option<&str>, paths: &Paths) -> Result<Self> {
         let map_path = paths.map(map);
         let doc = releste_map::load_map(&map_path)
@@ -452,38 +453,7 @@ impl Session {
             .first()
             .map(|r| r.tiles.atlas.clone())
             .unwrap_or_else(|| "Gameplay".to_string());
-        let atlas_path = paths.atlas(&atlas_name);
-        let atlas = SpriteAtlas::load(&atlas_path, paths.atlas_dir()).with_context(|| {
-            format!(
-                "failed to load atlas {} (root {})",
-                atlas_path.display(),
-                paths.atlas_dir().display()
-            )
-        })?;
-
-        // Optional reskin layer: append the selected skin's atlas so
-        // `<skin>\characters\player\...` resolves, and remember the pack's
-        // `Character_ID` so its animation set can be aliased to `player` below. A skin
-        // this build has no atlas for is not an error -- the player falls back to vanilla.
-        let mut atlas = atlas;
-        let mut skin_character: Option<String> = None;
-        if let Some(skin) = skin.filter(|s| !s.is_empty()) {
-            let skin_path = paths.atlas(skin);
-            match SpriteAtlas::load(&skin_path, paths.atlas_dir()) {
-                Ok(extra) => {
-                    let groups = extra.descriptor().textures.len();
-                    atlas.append(extra.descriptor());
-                    debug!(skin, groups, "appended skin atlas");
-                }
-                Err(e) => warn!(
-                    skin,
-                    path = %skin_path.display(),
-                    error = %e,
-                    "skin atlas not found; hair falls back to vanilla"
-                ),
-            }
-            skin_character = load_skin_character(paths, skin);
-        }
+        let (atlas, anims) = Self::atlas_and_anims(paths, &atlas_name, skin)?;
 
         let tilesets_path = paths.tilesets();
         let tilesets = releste_map::TilesetsDoc::from_file(&tilesets_path).with_context(|| {
@@ -522,7 +492,79 @@ impl Session {
             &spawn_room,
         );
 
-        let anims = match crate::sprites::AnimationTable::load(paths, &atlas_name, &atlas) {
+        Ok(Session {
+            doc,
+            atlas_name,
+            atlas,
+            anims,
+            tilesets,
+            bg_tilesets,
+            spawn,
+            spawn_room,
+            backdrop_visible: RefCell::default(),
+            warned: RefCell::default(),
+        })
+    }
+
+    /// Swaps the reskin overlay of an already loaded session, rebuilding the atlas and
+    /// the animation table from disk.
+    ///
+    /// A rebuild rather than an in-place edit on purpose: [`SpriteAtlas::append`] has no
+    /// inverse and [`crate::sprites::AnimationTable::merge_skin_into`] overwrites the
+    /// `player` definition, so appending a second skin would keep the first one's groups
+    /// and animation set forever. This is the hot-reload path for the `[skin]` setting
+    /// (see `crate::app`); `Ok` even when the skin has no atlas, which only warns and
+    /// leaves the vanilla textures in place.
+    pub fn set_skin(&mut self, skin: Option<&str>, paths: &Paths) -> Result<()> {
+        let (atlas, anims) = Self::atlas_and_anims(paths, &self.atlas_name, skin)?;
+        self.atlas = atlas;
+        self.anims = anims;
+        Ok(())
+    }
+
+    /// The base atlas plus the optional skin overlay, and the matching animation table.
+    ///
+    /// Shared by [`Session::load_with_skin`] and [`Session::set_skin`] so both resolve
+    /// skins the same way.
+    fn atlas_and_anims(
+        paths: &Paths,
+        atlas_name: &str,
+        skin: Option<&str>,
+    ) -> Result<(SpriteAtlas, crate::sprites::AnimationTable)> {
+        let atlas_path = paths.atlas(atlas_name);
+        let atlas = SpriteAtlas::load(&atlas_path, paths.atlas_dir()).with_context(|| {
+            format!(
+                "failed to load atlas {} (root {})",
+                atlas_path.display(),
+                paths.atlas_dir().display()
+            )
+        })?;
+
+        // Optional reskin layer: append the selected skin's atlas so
+        // `<skin>\characters\player\...` resolves, and remember the pack's
+        // `Character_ID` so its animation set can be aliased to `player` below. A skin
+        // this build has no atlas for is not an error -- the player falls back to vanilla.
+        let mut atlas = atlas;
+        let mut skin_character: Option<String> = None;
+        if let Some(skin) = skin.filter(|s| !s.is_empty()) {
+            let skin_path = paths.atlas(skin);
+            match SpriteAtlas::load(&skin_path, paths.atlas_dir()) {
+                Ok(extra) => {
+                    let groups = extra.descriptor().textures.len();
+                    atlas.append(extra.descriptor());
+                    debug!(skin, groups, "appended skin atlas");
+                }
+                Err(e) => warn!(
+                    skin,
+                    path = %skin_path.display(),
+                    error = %e,
+                    "skin atlas not found; hair falls back to vanilla"
+                ),
+            }
+            skin_character = load_skin_character(paths, skin);
+        }
+
+        let anims = match crate::sprites::AnimationTable::load(paths, atlas_name, &atlas) {
             Ok(t) => t,
             Err(e) => {
                 warn!(error = %e, "animation table failed to parse; falling back to static frames");
@@ -541,18 +583,7 @@ impl Session {
                 Err(e) => warn!(skin, error = %e, "skin animation table failed to parse"),
             }
         }
-        Ok(Session {
-            doc,
-            atlas_name,
-            atlas,
-            anims,
-            tilesets,
-            bg_tilesets,
-            spawn,
-            spawn_room,
-            backdrop_visible: RefCell::default(),
-            warned: RefCell::default(),
-        })
+        Ok((atlas, anims))
     }
 
     /// Test constructor: skips disk I/O and assembles directly from the document
@@ -1857,6 +1888,123 @@ mod tests {
         assert!(!hair.has_hair, "`x` means no hair on this frame");
         assert_eq!(hair.offset, (0, 0), "vanilla default offset is zero");
         assert_eq!(sprites::HairFrame::default().offset, (0, 0));
+    }
+
+    /// Swapping the skin rebuilds the atlas from disk instead of appending a second copy.
+    ///
+    /// `SpriteAtlas::append` has no inverse, so appending again on every `[skin]` edit would
+    /// grow the descriptor without bound and keep the first skin's groups alive forever
+    /// (which is also why `set_skin` reloads the base atlas each time).
+    #[test]
+    fn swapping_the_skin_rebuilds_the_atlas_instead_of_appending_it_again() {
+        let root = std::env::temp_dir().join("releste-session-set-skin");
+        let _ = std::fs::remove_dir_all(&root);
+        let atlas_dir = root.join("assets/atlas");
+        std::fs::create_dir_all(&atlas_dir).unwrap();
+        std::fs::write(
+            atlas_dir.join("Test.atlas"),
+            r#"name = "Test"
+version = 0
+[[textures]]
+name = "Test0"
+kind = "png"
+source = "atlas/Test/Test0.png"
+
+[[textures.sprites]]
+name = 'characters\player\idle00'
+x = 0
+y = 0
+w = 8
+h = 11
+origin_x = 4
+origin_y = 5
+frame_w = 8
+frame_h = 11
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            atlas_dir.join("Skin.atlas"),
+            r#"name = "Skin"
+version = 0
+[[textures]]
+name = "Skin0"
+kind = "png"
+source = "atlas/Skin/img0.png"
+
+[[textures.sprites]]
+name = 'Skin\characters\player\hair00'
+x = 0
+y = 0
+w = 8
+h = 9
+origin_x = 0
+origin_y = 0
+frame_w = 8
+frame_h = 9
+"#,
+        )
+        .unwrap();
+        let paths = Paths::resolve(Some(&root));
+        assert_eq!(paths.atlas_dir(), atlas_dir);
+
+        let doc = MapDocument {
+            area: "test".into(),
+            rooms: vec![Room {
+                name: "lvl_t".into(),
+                bounds: RectDef {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 64.0,
+                    h: 32.0,
+                },
+                tiles: Tileset::new("Test", 8, 4),
+                bg: Tileset::new("Test", 8, 4),
+                entities: Vec::new(),
+                triggers: Vec::new(),
+                script: None,
+                ..Default::default()
+            }],
+            sync_rules: Vec::new(),
+            ..Default::default()
+        };
+        let mut session = Session::from_doc(doc, "Test");
+
+        session.set_skin(None, &paths).unwrap();
+        assert_eq!(
+            session.atlas.descriptor().textures.len(),
+            1,
+            "the vanilla session is the base atlas alone"
+        );
+
+        session.set_skin(Some("Skin"), &paths).unwrap();
+        assert_eq!(session.atlas.descriptor().textures.len(), 2);
+        assert!(
+            session
+                .atlas
+                .sprite(r"Skin\characters\player\hair00")
+                .is_some(),
+            "the skin's hair must resolve after the swap"
+        );
+
+        session.set_skin(Some("Skin"), &paths).unwrap();
+        assert_eq!(
+            session.atlas.descriptor().textures.len(),
+            2,
+            "re-selecting the same skin must not append it a second time"
+        );
+
+        session.set_skin(None, &paths).unwrap();
+        assert_eq!(session.atlas.descriptor().textures.len(), 1);
+        assert!(
+            session
+                .atlas
+                .sprite(r"Skin\characters\player\hair00")
+                .is_none(),
+            "dropping the skin must drop its groups as well"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Left and right facing must be mirror images about `Player.Position`.

@@ -1,5 +1,11 @@
 //! File watching: trigger a reload event after debounce.
+//!
+//! The watcher is generic over *what* counts as a relevant write: the map watcher
+//! filters `.map` files, the settings watcher filters the exact config files it was
+//! given (they may not exist yet, so it watches their parent directories and matches
+//! by path).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -10,13 +16,13 @@ use tracing::{debug, warn};
 /// Watch event.
 #[derive(Debug, Clone)]
 pub enum WatchEvent {
-    /// A `.map` file was modified and needs a reload.
-    MapChanged(PathBuf),
+    /// A watched file was modified and needs a reload.
+    Changed(PathBuf),
     /// The watcher errored.
     Error(String),
 }
 
-/// `.map` file watcher (with debounce).
+/// File watcher (with debounce).
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
     rx: mpsc::Receiver<WatchEvent>,
@@ -38,19 +44,102 @@ pub enum WatcherError {
 }
 
 impl FileWatcher {
-    /// Create a watcher that watches `.map` files under `dir`.
+    /// Create a watcher that watches `.map` files anywhere under `dir`.
     ///
     /// `debounce_ms` defaults to 100ms.
     pub fn new(dir: &Path, debounce_ms: u64) -> Result<Self, WatcherError> {
+        Self::new_filtered(dir, debounce_ms, RecursiveMode::Recursive, |path: &Path| {
+            path.extension().map(|e| e == "map").unwrap_or(false)
+        })
+    }
+
+    /// Create a watcher for an explicit set of files.
+    ///
+    /// Every distinct parent directory is watched non-recursively, and an event only
+    /// counts when it names one of `files`. Watching the parent rather than the file
+    /// is deliberate: a settings file the user has not created yet must still be
+    /// picked up on its first save.
+    pub fn new_files(files: &[PathBuf], debounce_ms: u64) -> Result<Self, WatcherError> {
+        let wanted: HashSet<PathBuf> = files.iter().cloned().collect();
+        let mut parents: Vec<PathBuf> = Vec::new();
+        for file in &wanted {
+            let parent = match file.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            if !parents.contains(&parent) {
+                parents.push(parent);
+            }
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let event_tx = tx.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<Event>| match res {
+                Ok(event) => {
+                    if !Self::is_write(&event) {
+                        return;
+                    }
+                    for path in &event.paths {
+                        if wanted.contains(path) {
+                            let _ = event_tx.send(WatchEvent::Changed(path.clone()));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = event_tx.send(WatchEvent::Error(e.to_string()));
+                }
+            })?;
+
+        if parents.is_empty() {
+            return Err(WatcherError::Watch {
+                path: PathBuf::new(),
+                source: notify::Error::generic("no parent directory to watch"),
+            });
+        }
+        for parent in &parents {
+            watcher
+                .watch(parent, RecursiveMode::NonRecursive)
+                .map_err(|source| WatcherError::Watch {
+                    path: parent.clone(),
+                    source,
+                })?;
+        }
+
+        Ok(FileWatcher {
+            _watcher: watcher,
+            rx,
+            debounce: Duration::from_millis(debounce_ms),
+            pending: None,
+        })
+    }
+
+    /// Create a watcher with a caller-supplied relevance filter.
+    ///
+    /// `filter` decides whether a changed path matters; paths it rejects never reach
+    /// [`FileWatcher::poll`]. The filter runs on the notify thread, so it must be
+    /// cheap.
+    pub fn new_filtered<F>(
+        dir: &Path,
+        debounce_ms: u64,
+        mode: RecursiveMode,
+        filter: F,
+    ) -> Result<Self, WatcherError>
+    where
+        F: Fn(&Path) -> bool + Send + 'static,
+    {
         let (tx, rx) = mpsc::channel();
 
         let event_tx = tx.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<Event>| match res {
                 Ok(event) => {
-                    if Self::is_map_write(&event) {
-                        for path in &event.paths {
-                            let _ = event_tx.send(WatchEvent::MapChanged(path.clone()));
+                    if !Self::is_write(&event) {
+                        return;
+                    }
+                    for path in &event.paths {
+                        if filter(path) {
+                            let _ = event_tx.send(WatchEvent::Changed(path.clone()));
                         }
                     }
                 }
@@ -60,7 +149,7 @@ impl FileWatcher {
             })?;
 
         watcher
-            .watch(dir, RecursiveMode::Recursive)
+            .watch(dir, mode)
             .map_err(|source| WatcherError::Watch {
                 path: dir.to_path_buf(),
                 source,
@@ -74,14 +163,9 @@ impl FileWatcher {
         })
     }
 
-    /// Whether this is a write event for a `.map` file.
-    fn is_map_write(event: &Event) -> bool {
-        let is_write = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_));
-        is_write
-            && event
-                .paths
-                .iter()
-                .any(|p| p.extension().map(|e| e == "map").unwrap_or(false))
+    /// Whether this event is a create/modify (as opposed to a metadata-only touch).
+    fn is_write(event: &Event) -> bool {
+        matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
     }
 
     /// Non-blocking poll: return the change path confirmed after debounce.
@@ -92,7 +176,7 @@ impl FileWatcher {
         // First drain the channel and collect the latest events.
         loop {
             match self.rx.try_recv() {
-                Ok(WatchEvent::MapChanged(path)) => {
+                Ok(WatchEvent::Changed(path)) => {
                     let now = Instant::now();
                     match &self.pending {
                         Some((_, at)) if now.duration_since(*at) < self.debounce => {
@@ -121,7 +205,7 @@ impl FileWatcher {
             if at.elapsed() >= self.debounce {
                 let path = path.clone();
                 self.pending = None;
-                debug!(path = %path.display(), "map change debounced");
+                debug!(path = %path.display(), "file change debounced");
                 return Some(path);
             }
         }
@@ -151,7 +235,7 @@ impl FileWatcher {
             // Sleep for min(10ms, remaining time).
             let slice = (deadline - now).min(Duration::from_millis(10));
             match self.rx.recv_timeout(slice) {
-                Ok(WatchEvent::MapChanged(path)) => {
+                Ok(WatchEvent::Changed(path)) => {
                     self.pending = Some((path, Instant::now()));
                 }
                 Ok(WatchEvent::Error(e)) => {

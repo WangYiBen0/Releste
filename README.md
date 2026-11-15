@@ -125,18 +125,22 @@ Scenarios live in `crates/game/tests/scenarios/` - expectations must be
 derivable from `references/pureCeleste.cs` (cite the line), not copied from
 whatever the engine currently prints.
 
-## Configuration (key bindings)
+## Configuration
 
-Bindings are read from the first of these that exists:
+Settings are layered, lowest precedence first. Every layer is merged field by
+field, and every layer is re-read while the game runs -- no restart:
 
-1. `--config <PATH>`,
-2. `RELESTE_CONFIG_FILE`,
-3. `<root>/settings.toml` -- a portable / per-install override that deliberately
-   beats the user configuration,
-4. the user configuration directory:
+1. the **compiled-in `config.toml`** (`crates/game/config.toml`, shipped inside
+   the binary). It is the complete default, so nothing is hardcoded in Rust;
+2. the **user configuration**:
    `$XDG_CONFIG_HOME/releste/config.toml` (fallback `~/.config/releste/config.toml`),
    `~/Library/Application Support/releste/config.toml` on macOS,
-   `%APPDATA%\releste\config.toml` on Windows.
+   `%APPDATA%\releste\config.toml` on Windows;
+3. `<root>/settings.toml` -- a portable / per-install override that deliberately
+   beats the user configuration.
+
+`--config <PATH>` or `RELESTE_CONFIG_FILE` replaces layers 2 and 3 with that one
+file; layer 1 still applies underneath.
 
 ```toml
 # Releste configuration.
@@ -148,16 +152,31 @@ down = ["ArrowDown"]
 jump = ["KeyC"]
 dash = ["KeyX"]
 grab = ["KeyZ", "KeyV", "ShiftLeft"]
+
+[skin]
+# Atlas namespace of the player reskin, e.g. "Foxeline" or "Niko".
+# Empty is the vanilla player. Convert a mod with smh2releste first.
+name = ""
 ```
 
 Key names are winit `KeyCode` names and bind by physical position (vanilla
 `TranslateKeys`, pureCeleste.cs:101708). An action may list several keys.
 
-- `releste --write-config` writes the file (current bindings, or the vanilla
-  defaults) and exits -- the quickest way to get an editable starting point.
-- A missing file, a missing action or an unknown key name falls back to that
-  action's vanilla default and logs a warning; nothing panics.
-- Writing always targets the path from 1/2/4, never `<root>/settings.toml`.
+- Editing any layer while the game runs applies it live: `[keys]` takes effect on
+  the next key event, `[skin]` rebuilds the atlas and animation table from disk
+  and re-uploads the textures, with the player state untouched.
+- A missing file, a missing action or an unknown key name falls back to the value
+  from the layer below and logs a warning; nothing panics. An empty `[skin] name`
+  is not an override either, so a local file that only touches keys keeps the
+  user's skin.
+- `--skin <NAME>` overrides `[skin]` for one run (tests, quick experiments). A
+  pinned `--skin` is *not* hot reloaded.
+- `releste --write-config` writes the resolved settings (current values, seeded
+  from the compiled-in default when the file does not exist yet) and exits --
+  the quickest way to get an editable starting point.
+- Writing always targets the user configuration path or an explicit
+  `--config`/`RELESTE_CONFIG_FILE`, never `<root>/settings.toml`, which may live
+  in a read-only install directory.
 
 ## Measured results
 

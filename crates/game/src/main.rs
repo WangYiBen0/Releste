@@ -51,19 +51,20 @@ struct Args {
     #[arg(long, value_name = "DIR")]
     root: Option<PathBuf>,
 
-    /// Config file (key bindings). Defaults to
-    /// `$XDG_CONFIG_HOME/releste/config.toml` (`RELESTE_CONFIG_FILE` overrides
-    /// it, this flag overrides both).
+    /// Config file. Defaults to `$XDG_CONFIG_HOME/releste/config.toml`
+    /// (`RELESTE_CONFIG_FILE` overrides it, this flag overrides both). The
+    /// compiled-in `config.toml` and `<root>/settings.toml` still layer under it.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
 
-    /// Write the resolved config file (current bindings, or the vanilla defaults
-    /// when it does not exist yet) and exit.
+    /// Write the resolved settings to the config path (current values, seeded
+    /// from the compiled-in default when the file does not exist yet) and exit.
     #[arg(long)]
     write_config: bool,
 
-    /// Reskin the player's hair with an atlas sub-namespace prefix (e.g. `Foxeline`).
-    /// Defaults to the vanilla player (no prefix).
+    /// Override the skin from `<config>/[skin]` (an atlas sub-namespace such as
+    /// `Foxeline`). Prefer the `[skin]` setting: this flag exists for tests and
+    /// for one-off runs, and it is not hot reloaded.
     #[arg(long, value_name = "SKIN")]
     skin: Option<String>,
 
@@ -232,19 +233,32 @@ fn run(args: &Args) -> anyhow::Result<()> {
     let paths = Paths::resolve(args.root.as_deref());
     info_paths(&paths);
     let config = settings::config_location(args.config.as_deref(), paths.root());
+
+    // Settings are a layer stack (compiled-in `config.toml` < user config <
+    // `<root>/settings.toml`); `--skin` overrides `[skin]` for this run only.
+    let settings = settings::Settings::load_resolved(&config, paths.root());
     if args.write_config {
-        let bindings = settings::KeyBindings::load_resolved(&config, paths.root());
-        bindings.save(&config.path)?;
+        settings.save(&config.path)?;
         println!("ok: config written to {}", config.path.display());
         return Ok(());
     }
     tracing::info!(
         config = %config.path.display(),
         read = %config.read_path(paths.root()).display(),
+        skin = %settings.skin,
         "config file"
     );
+    let skin_name = match &args.skin {
+        Some(prefix) => prefix.clone(),
+        None => settings.skin.clone(),
+    };
+    let skin = if skin_name.is_empty() {
+        None
+    } else {
+        Some(skin_name.as_str())
+    };
 
-    let session = Session::load_with_skin(&args.map, args.skin.as_deref(), &paths)?;
+    let session = Session::load_with_skin(&args.map, skin, &paths)?;
 
     if let Some(out) = &args.dump_map {
         devtools::dump_session_json(&session, out)?;
@@ -283,16 +297,10 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     if args.headless {
-        return run_headless(args, &paths, session);
+        return run_headless(args, &paths, session, skin);
     }
 
     let plugins = !args.no_plugins;
-    let skin = args
-        .skin
-        .as_deref()
-        .map(str::to_owned)
-        .map(crate::skin::PlayerHairSkin::from_prefix)
-        .unwrap_or(crate::skin::PlayerHairSkin::VANILLA);
     let app = GameApp::new(
         paths,
         session,
@@ -300,13 +308,18 @@ fn run(args: &Args) -> anyhow::Result<()> {
         args.screenshot.clone(),
         args.frame_count(),
         config,
-        skin,
+        args.skin.clone(),
     );
     app.run()
 }
 
 /// Headless smoke test: run `--frames` ticks, print a report, exit.
-fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<()> {
+fn run_headless(
+    args: &Args,
+    paths: &Paths,
+    session: Session,
+    skin: Option<&str>,
+) -> anyhow::Result<()> {
     let host = if args.no_plugins {
         None
     } else {
@@ -314,8 +327,8 @@ fn run_headless(args: &Args, paths: &Paths, session: Session) -> anyhow::Result<
     };
     let watcher = watch_maps(paths);
     let mut service = GameService::new(session, host, watcher, None);
-    if let Some(prefix) = &args.skin {
-        service.skin = crate::skin::PlayerHairSkin::from_prefix(prefix.clone());
+    if let Some(prefix) = skin {
+        service.skin = crate::skin::PlayerHairSkin::from_prefix(prefix.to_string());
     }
 
     let mut kernel = Kernel::new().with(service);

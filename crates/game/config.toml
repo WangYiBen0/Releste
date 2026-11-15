@@ -1,0 +1,27 @@
+# Releste - the settings shipped with this build.
+#
+# This file is compiled into the binary and is the lowest layer of the settings
+# chain. Higher layers override only the keys they name:
+#
+#   [this file]  <  $XDG_CONFIG_HOME/releste/config.toml  <  <root>/settings.toml
+#
+# `--config PATH` and RELESTE_CONFIG_FILE replace the chain with that one file.
+#
+# Key names are winit `KeyCode` names and bind by physical position (vanilla
+# `TranslateKeys`, pureCeleste.cs:101708). An action may list several keys.
+# Delete a line here to inherit the value from the next layer down instead.
+
+[keys]
+left = ["ArrowLeft"]
+right = ["ArrowRight"]
+up = ["ArrowUp"]
+down = ["ArrowDown"]
+jump = ["KeyC"]
+dash = ["KeyX"]
+grab = ["KeyZ", "KeyV", "ShiftLeft"]
+
+[skin]
+# A reskin of the player character installed by `smh2releste` (a Skin Mod
+# Helper pack under `resources/<namespace>/`). Empty selects the vanilla look.
+# Editing this while the game runs swaps the skin without a restart.
+name = ""

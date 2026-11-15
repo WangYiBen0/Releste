@@ -62,6 +62,13 @@ impl PlayerHairSkin {
         }
     }
 
+    /// The atlas prefix this skin prepends to the vanilla player names; empty for the
+    /// vanilla player. Used when the skin has to be re-resolved from settings (hot
+    /// reload) rather than kept as a name.
+    pub fn prefix(&self) -> &str {
+        self.prefix.as_ref()
+    }
+
     /// The resolved hair-tail texture name for this skin. The vanilla skin returns the
     /// existing `PLAYER_HAIR_SPRITE` constants unchanged; a prefixed skin returns
     /// `<prefix>\characters\player\hair00`.

@@ -1,21 +1,23 @@
-//! User settings: key bindings (the counterpart of vanilla `Settings.Instance`).
+//! User settings: key bindings and the player skin (the counterpart of vanilla
+//! `Settings.Instance`).
 //!
 //! Vanilla stores bindings in the settings under the user directory, and
-//! `SetDefaultKeyboardControls(reset)` (`pureCeleste.cs:101595-101706`) falls back
-//! to the defaults when a binding is missing: arrow keys move, C jumps, X dashes,
-//! Z/V/LeftShift grabs, Enter pauses. This engine persists them in TOML (the stack
-//! spec forbids JSON): a missing section or an unknown key name falls back to the
-//! vanilla default for that action and warns; it never panics (AGENTS.md 15.8/15.9).
+//! `SetDefaultKeyboardControls(reset)` (`Settings.cs:161`, called from `AfterLoad`
+//! at `Settings.cs:151`) falls back to the defaults when a binding is missing: arrow
+//! keys move, C jumps, X dashes, Z/V/LeftShift grabs, Enter pauses. This engine
+//! persists them in TOML (the stack spec forbids JSON): a missing section or an
+//! unknown key name falls back per action and warns; it never panics
+//! (AGENTS.md 15.8/15.9).
 //!
-//! # Where the file lives
+//! # Layers
 //!
-//! Reading checks these in order, first hit wins:
+//! Settings are read as a stack, the later layer winning field by field:
 //!
-//! 1. `--config <PATH>` on the command line,
-//! 2. the `RELESTE_CONFIG_FILE` environment variable,
-//! 3. `<root>/settings.toml` -- a portable or per-install override next to the
-//!    asset root; it beats the user configuration on purpose,
-//! 4. the user configuration directory:
+//! 1. **Compiled-in default**, `crates/game/config.toml`, embedded with
+//!    `include_str!`. This is the only place the shipped values live: the Rust
+//!    sources do not hardcode a key or a skin name, so changing the defaults is a
+//!    data change. `--write-config` seeds a user file from this layer.
+//! 2. **User configuration**, the file in the user configuration directory:
 //!
 //!    | platform | path |
 //!    |---|---|
@@ -23,12 +25,15 @@
 //!    | macOS | `~/Library/Application Support/releste/config.toml` |
 //!    | Windows | `%APPDATA%\releste\config.toml` |
 //!
-//! 5. `<root>/config.toml` when no home directory is known at all (portable
-//!    install, or a test).
+//! 3. **Per-install override**, `<root>/settings.toml` next to the asset root. It
+//!    beats the user configuration on purpose (a portable install carries its own
+//!    settings), and nothing ever writes it: an install directory may be read-only.
 //!
-//! Writing (a future rebinding menu, or `--config`-driven tooling) always uses the
-//! path from 1/2/4/5 -- never `<root>/settings.toml`, which may live in a
-//! read-only install directory.
+//! `--config <PATH>` or `RELESTE_CONFIG_FILE` replaces layers 2 and 3 with that one
+//! file (still on top of the compiled-in default), for tests and for tooling.
+//!
+//! Every layer is re-read on change while the game runs, so editing the skin name
+//! swaps the reskin without a restart (see `crate::app`).
 //!
 //! Key names are the `Debug` name of `winit::keyboard::KeyCode` (e.g. `"KeyC"`,
 //! `"ArrowLeft"`): physical keys (scancode semantics), matching vanilla
@@ -36,9 +41,10 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use winit::keyboard::KeyCode;
 
 /// File name inside the user configuration directory.
@@ -51,21 +57,41 @@ pub const CONFIG_ENV: &str = "RELESTE_CONFIG_FILE";
 /// concerned: it takes precedence over the user configuration, but nothing writes
 /// it (an install directory may be read-only).
 pub const LOCAL_FILE_NAME: &str = "settings.toml";
+/// The shipped default, embedded at build time. Editing this file changes the
+/// defaults for every install; the Rust sources carry no key or skin values.
+pub const BUILTIN_TOML: &str = include_str!("../config.toml");
+/// Label used for the compiled-in layer in logs and diagnostics.
+pub const BUILTIN_NAME: &str = "<builtin config.toml>";
 
 /// Where the config lives, and whether that path was chosen explicitly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLocation {
-    /// Canonical path: the write target, and the read source unless a local
-    /// override exists.
+    /// Canonical path: the write target, and the user-level read source.
     pub path: PathBuf,
     /// True when `--config` or `RELESTE_CONFIG_FILE` picked the path, in which case
-    /// `<root>/settings.toml` is ignored.
+    /// `<root>/settings.toml` and the user file are not consulted separately.
     pub explicit: bool,
 }
 
 impl ConfigLocation {
-    /// The file to read: an explicit choice as-is, otherwise `<root>/settings.toml`
-    /// when that exists, otherwise the canonical path.
+    /// The files read on top of the compiled-in default, lowest precedence first.
+    ///
+    /// Missing files are not an error (a layer that does not exist contributes
+    /// nothing), so the caller filters by existence.
+    pub fn layers(&self, root: &Path) -> Vec<PathBuf> {
+        if self.explicit {
+            return vec![self.path.clone()];
+        }
+        let mut files = vec![self.path.clone()];
+        let local = root.join(LOCAL_FILE_NAME);
+        if local != self.path {
+            files.push(local);
+        }
+        files
+    }
+
+    /// The highest-precedence file for `root`, for logging: `<root>/settings.toml`
+    /// when it exists, the canonical path otherwise, an explicit choice as-is.
     pub fn read_path(&self, root: &Path) -> PathBuf {
         if self.explicit {
             return self.path.clone();
@@ -85,7 +111,7 @@ impl ConfigLocation {
 /// `$XDG_CONFIG_HOME`, `home` `$HOME` (or `%APPDATA%` on Windows), and `root` the
 /// asset root used as a last resort. Everything is passed in so the precedence is
 /// testable without touching the process environment. `<root>/settings.toml` is not
-/// consulted here -- see [`ConfigLocation::read_path`].
+/// consulted here -- see [`ConfigLocation::layers`].
 pub fn resolve_config(
     cli: Option<&Path>,
     env: Option<&OsStr>,
@@ -163,24 +189,222 @@ pub struct KeyBindings {
     pub grab: Vec<KeyCode>,
 }
 
-impl Default for KeyBindings {
-    fn default() -> Self {
-        // Vanilla defaults (101602-101651). Grab (Z/V/LeftShift, 101622) and
-        // dash (X, 101632) are added once Phase 4.1 is implemented.
+impl KeyBindings {
+    fn empty() -> Self {
         KeyBindings {
-            left: vec![KeyCode::ArrowLeft],
-            right: vec![KeyCode::ArrowRight],
-            up: vec![KeyCode::ArrowUp],
-            down: vec![KeyCode::ArrowDown],
-            jump: vec![KeyCode::KeyC],
-            dash: vec![KeyCode::KeyX],
-            grab: vec![KeyCode::KeyZ, KeyCode::KeyV, KeyCode::ShiftLeft],
+            left: Vec::new(),
+            right: Vec::new(),
+            up: Vec::new(),
+            down: Vec::new(),
+            jump: Vec::new(),
+            dash: Vec::new(),
+            grab: Vec::new(),
         }
     }
 }
 
-/// The serializable shape of the settings file.
-#[derive(Debug, Default, Deserialize)]
+impl Default for KeyBindings {
+    /// The bindings shipped in `config.toml` (vanilla defaults, 101602-101651).
+    fn default() -> Self {
+        builtin().keys.clone()
+    }
+}
+
+/// Everything the settings file configures.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Settings {
+    /// Key bindings for the current layer stack.
+    pub keys: KeyBindings,
+    /// Player reskin namespace installed by `smh2releste`; empty means vanilla.
+    /// Matches SkinModHelper's `Character_ID`, which prefixes every player texture
+    /// (`SkinModHelperModule.cs:205-222`).
+    pub skin: String,
+}
+
+impl Settings {
+    fn empty() -> Self {
+        Settings {
+            keys: KeyBindings::empty(),
+            skin: String::new(),
+        }
+    }
+
+    /// Read the settings for `location`, merging every layer over the compiled-in
+    /// default (`ConfigLocation::layers`). Missing files are skipped silently, an
+    /// unreadable or invalid file warns and is skipped, and a field that yields no
+    /// usable value keeps the value from the layer below.
+    pub fn load_resolved(location: &ConfigLocation, root: &Path) -> Self {
+        let mut settings = builtin().clone();
+        for file in location.layers(root) {
+            if !file.exists() {
+                continue;
+            }
+            if file != location.path && !location.explicit {
+                info!(
+                    file = %file.display(),
+                    config = %location.path.display(),
+                    "using the local settings.toml, which takes precedence over the user config"
+                );
+            }
+            settings.merge_file(&file);
+        }
+        settings
+    }
+
+    /// Read one file on top of the compiled-in default.
+    ///
+    /// Test-only helper: the game itself always goes through
+    /// [`Settings::load_resolved`], which also covers an explicit `--config` path.
+    #[cfg(test)]
+    pub fn load(file: &Path) -> Self {
+        let mut settings = builtin().clone();
+        settings.merge_file(file);
+        settings
+    }
+
+    fn merge_file(&mut self, file: &Path) {
+        let text = match std::fs::read_to_string(file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                warn!(path = %file.display(), error = %e, "config file is unreadable; ignoring this layer");
+                return;
+            }
+        };
+        match toml::from_str::<SettingsToml>(&text) {
+            Ok(layer) => self.apply_layer(&layer, file),
+            Err(e) => {
+                warn!(path = %file.display(), error = %e, "config file is invalid; ignoring this layer");
+            }
+        }
+    }
+
+    /// Overlay one parsed layer: a present field wins when it yields at least one
+    /// usable key (or a non-empty skin name), otherwise the layer below is kept.
+    fn apply_layer(&mut self, layer: &SettingsToml, source: &Path) {
+        apply_action(&layer.keys.left, &mut self.keys.left, "left", source);
+        apply_action(&layer.keys.right, &mut self.keys.right, "right", source);
+        apply_action(&layer.keys.up, &mut self.keys.up, "up", source);
+        apply_action(&layer.keys.down, &mut self.keys.down, "down", source);
+        apply_action(&layer.keys.jump, &mut self.keys.jump, "jump", source);
+        apply_action(&layer.keys.dash, &mut self.keys.dash, "dash", source);
+        apply_action(&layer.keys.grab, &mut self.keys.grab, "grab", source);
+        // An empty name is not an override: it means "this layer says nothing about
+        // the skin", so a local file that only touches keys keeps the user's skin.
+        if let Some(name) = &layer.skin.name {
+            let name = name.trim();
+            if !name.is_empty() {
+                self.skin = name.to_string();
+            }
+        }
+    }
+
+    /// Write these settings to `file`, creating the parent directory if needed.
+    ///
+    /// This is the write half of the config surface: a rebinding UI saves here, and
+    /// `releste --write-config` seeds a file. The output is deterministic (fixed key
+    /// order, no maps), so re-saving unchanged settings produces identical bytes,
+    /// which keeps the hot-reload watcher quiet.
+    pub fn save(&self, file: &Path) -> std::io::Result<()> {
+        if let Some(parent) = file.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, self.to_toml())
+    }
+
+    /// Render the config file body for these settings.
+    pub fn to_toml(&self) -> String {
+        fn names(keys: &[KeyCode]) -> String {
+            keys.iter()
+                .map(|k| format!("\"{k:?}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        fn quote(value: &str) -> String {
+            let mut out = String::with_capacity(value.len() + 2);
+            out.push('"');
+            for ch in value.chars() {
+                match ch {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    other => out.push(other),
+                }
+            }
+            out.push('"');
+            out
+        }
+        format!(
+            "# Releste configuration.\n\
+             #\n\
+             # Key names are winit `KeyCode` names and bind by physical position\n\
+             # (vanilla `TranslateKeys`, pureCeleste.cs:101708). An action may list\n\
+             # several keys; the first match wins.\n\
+             #\n\
+             # This file is one layer of a stack: the compiled-in default is below\n\
+             # it, and <root>/settings.toml wins over it. Editing any of them while\n\
+             # the game runs takes effect without a restart; delete a line to fall\n\
+             # back to the value below.\n\
+             \n\
+             [keys]\n\
+             left = [{}]\n\
+             right = [{}]\n\
+             up = [{}]\n\
+             down = [{}]\n\
+             jump = [{}]\n\
+             dash = [{}]\n\
+             grab = [{}]\n\
+             \n\
+             # Player reskin namespace installed by `smh2releste`; empty means vanilla.\n\
+             [skin]\n\
+             name = {}\n",
+            names(&self.keys.left),
+            names(&self.keys.right),
+            names(&self.keys.up),
+            names(&self.keys.down),
+            names(&self.keys.jump),
+            names(&self.keys.dash),
+            names(&self.keys.grab),
+            quote(&self.skin),
+        )
+    }
+}
+
+/// The compiled-in layer, parsed once.
+pub fn builtin() -> &'static Settings {
+    static BUILTIN: OnceLock<Settings> = OnceLock::new();
+    BUILTIN.get_or_init(|| {
+        let layer: SettingsToml = match toml::from_str(BUILTIN_TOML) {
+            Ok(layer) => layer,
+            Err(e) => {
+                error!(error = %e, "the compiled-in config.toml is invalid; every binding will be empty");
+                SettingsToml::default()
+            }
+        };
+        let mut settings = Settings::empty();
+        settings.apply_layer(&layer, Path::new(BUILTIN_NAME));
+        settings
+    })
+}
+
+fn apply_action(list: &Option<Vec<String>>, slot: &mut Vec<KeyCode>, action: &str, source: &Path) {
+    let Some(names) = list else {
+        return;
+    };
+    let keys: Vec<KeyCode> = names.iter().filter_map(|n| parse_key(n)).collect();
+    if keys.is_empty() {
+        warn!(
+            action,
+            source = %source.display(),
+            "config layer binds no usable keys; keeping the value from the layer below"
+        );
+        return;
+    }
+    *slot = keys;
+}
+
+/// The serializable shape of one settings layer.
+#[derive(Debug, Default, Clone, Deserialize)]
 struct KeysToml {
     left: Option<Vec<String>>,
     right: Option<Vec<String>>,
@@ -191,131 +415,17 @@ struct KeysToml {
     grab: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
+struct SkinToml {
+    name: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
 struct SettingsToml {
     #[serde(default)]
     keys: KeysToml,
-}
-
-impl KeyBindings {
-    /// Read bindings for `location`, honouring the `<root>/settings.toml` override.
-    ///
-    /// A missing file is not an error: the vanilla defaults apply (the `reset: false`
-    /// branch of 101595). A missing section, or a key name that does not parse, falls
-    /// back per action with a `warn` -- never silently, never a panic.
-    pub fn load_resolved(location: &ConfigLocation, root: &Path) -> Self {
-        let file = location.read_path(root);
-        if file != location.path {
-            info!(
-                file = %file.display(),
-                config = %location.path.display(),
-                "using the local settings.toml, which takes precedence over the user config"
-            );
-        }
-        Self::load(&file)
-    }
-
-    /// Read bindings from one file. See [`KeyBindings::load_resolved`] for the
-    /// precedence rules.
-    pub fn load(file: &Path) -> Self {
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(_) => {
-                // A missing config file is not an error -- use the vanilla defaults (the
-                // `reset: false` branch of 101595: do nothing if a binding is non-empty).
-                return KeyBindings::default();
-            }
-        };
-        let parsed: SettingsToml = match toml::from_str(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(path = %file.display(), error = %e, "config file is invalid; using vanilla defaults");
-                return KeyBindings::default();
-            }
-        };
-        let k = parsed.keys;
-        let map =
-            |list: &Option<Vec<String>>, fallback: Vec<KeyCode>, action: &str| -> Vec<KeyCode> {
-                match list {
-                    None => fallback,
-                    Some(names) => {
-                        let keys: Vec<KeyCode> =
-                            names.iter().filter_map(|n| parse_key(n)).collect();
-                        if keys.is_empty() {
-                            warn!(
-                                action,
-                                "config file binds no usable keys; using the vanilla default"
-                            );
-                            fallback
-                        } else {
-                            keys
-                        }
-                    }
-                }
-            };
-        KeyBindings {
-            left: map(&k.left, vec![KeyCode::ArrowLeft], "left"),
-            right: map(&k.right, vec![KeyCode::ArrowRight], "right"),
-            up: map(&k.up, vec![KeyCode::ArrowUp], "up"),
-            down: map(&k.down, vec![KeyCode::ArrowDown], "down"),
-            jump: map(&k.jump, vec![KeyCode::KeyC], "jump"),
-            dash: map(&k.dash, vec![KeyCode::KeyX], "dash"),
-            grab: map(
-                &k.grab,
-                vec![KeyCode::KeyZ, KeyCode::KeyV, KeyCode::ShiftLeft],
-                "grab",
-            ),
-        }
-    }
-
-    /// Write these bindings to `file`, creating the parent directory if needed.
-    ///
-    /// This is the write half of the config surface: a rebinding UI saves here, and
-    /// `releste --config <path>`-driven scripts can seed a file. The output is
-    /// deterministic (fixed key order, no maps), so re-saving an unchanged config
-    /// produces identical bytes.
-    pub fn save(&self, file: &Path) -> std::io::Result<()> {
-        if let Some(parent) = file.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(file, self.to_toml())
-    }
-
-    /// Render the config file body for these bindings.
-    pub fn to_toml(&self) -> String {
-        fn names(keys: &[KeyCode]) -> String {
-            keys.iter()
-                .map(|k| format!("\"{k:?}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-        format!(
-            "# Releste configuration.\n\
-             #\n\
-             # Key names are winit `KeyCode` names and bind by physical position\n\
-             # (vanilla `TranslateKeys`, pureCeleste.cs:101708). An action may list\n\
-             # several keys; the first match wins.\n\
-             #\n\
-             # Reload by restarting the game. Delete a line to fall back to that\n\
-             # action's vanilla default.\n\
-             \n\
-             [keys]\n\
-             left = [{}]\n\
-             right = [{}]\n\
-             up = [{}]\n\
-             down = [{}]\n\
-             jump = [{}]\n\
-             dash = [{}]\n\
-             grab = [{}]\n",
-            names(&self.left),
-            names(&self.right),
-            names(&self.up),
-            names(&self.down),
-            names(&self.jump),
-            names(&self.dash),
-            names(&self.grab),
-        )
-    }
+    #[serde(default)]
+    skin: SkinToml,
 }
 
 /// `"ArrowLeft"` / `"KeyC"` / `"Escape"` ... -> `KeyCode`.
@@ -362,33 +472,56 @@ mod tests {
         dir
     }
 
-    /// Missing file -> vanilla defaults (arrow keys + C).
+    /// The shipped default carries the vanilla bindings and no skin, and it parses
+    /// without warnings -- the Rust sources must not hardcode these values.
     #[test]
-    fn missing_file_falls_back_to_vanilla_defaults() {
-        let root = tmp("missing");
-        let b = KeyBindings::load(&root.join(CONFIG_FILE_NAME));
-        assert_eq!(b, KeyBindings::default());
+    fn builtin_config_matches_the_vanilla_defaults() {
+        let builtin = builtin();
+        assert_eq!(builtin.keys.left, vec![KeyCode::ArrowLeft]);
+        assert_eq!(builtin.keys.right, vec![KeyCode::ArrowRight]);
+        assert_eq!(builtin.keys.up, vec![KeyCode::ArrowUp]);
+        assert_eq!(builtin.keys.down, vec![KeyCode::ArrowDown]);
+        assert_eq!(builtin.keys.jump, vec![KeyCode::KeyC]);
+        assert_eq!(builtin.keys.dash, vec![KeyCode::KeyX]);
+        assert_eq!(
+            builtin.keys.grab,
+            vec![KeyCode::KeyZ, KeyCode::KeyV, KeyCode::ShiftLeft]
+        );
+        assert_eq!(builtin.skin, "", "vanilla has no reskin");
+        // `Default` is the compiled-in layer, not a second copy of the values.
+        assert_eq!(KeyBindings::default(), builtin.keys);
     }
 
-    /// Valid overrides take effect; a bad key name warns and is ignored; a missing
-    /// action falls back to its own vanilla default.
+    /// Missing file -> the compiled-in default.
     #[test]
-    fn config_overrides_and_falls_back_per_action() {
+    fn missing_file_falls_back_to_the_builtin_default() {
+        let root = tmp("missing");
+        assert_eq!(Settings::load(&root.join(CONFIG_FILE_NAME)), *builtin());
+    }
+
+    /// A valid override wins; a bad key name keeps the layer below; a missing
+    /// action keeps the layer below.
+    #[test]
+    fn a_layer_overrides_only_the_fields_it_sets() {
         let root = tmp("load");
         std::fs::write(
             root.join(CONFIG_FILE_NAME),
             "[keys]\njump = [\"Space\", \"KeyC\"]\nleft = [\"KeyA\"]\nright = [\"Nope\"]\n",
         )
         .unwrap();
-        let b = KeyBindings::load(&root.join(CONFIG_FILE_NAME));
-        assert_eq!(b.jump, vec![KeyCode::Space, KeyCode::KeyC]);
-        assert_eq!(b.left, vec![KeyCode::KeyA]);
+        let settings = Settings::load(&root.join(CONFIG_FILE_NAME));
+        assert_eq!(settings.keys.jump, vec![KeyCode::Space, KeyCode::KeyC]);
+        assert_eq!(settings.keys.left, vec![KeyCode::KeyA]);
         assert_eq!(
-            b.right,
+            settings.keys.right,
             vec![KeyCode::ArrowRight],
-            "bad key -> vanilla default"
+            "bad key -> layer below"
         );
-        assert_eq!(b.up, vec![KeyCode::ArrowUp], "missing -> vanilla default");
+        assert_eq!(
+            settings.keys.up,
+            vec![KeyCode::ArrowUp],
+            "missing -> layer below"
+        );
     }
 
     /// Canonical path precedence: `--config` > env > `XDG_CONFIG_HOME` > home > root.
@@ -430,40 +563,65 @@ mod tests {
         assert!(!loc.explicit);
     }
 
-    /// `<root>/settings.toml` beats the user config, but an explicit `--config` or
-    /// `RELESTE_CONFIG_FILE` is used exactly as given.
+    /// `<root>/settings.toml` beats the user config field by field; an explicit
+    /// `--config` replaces both of them.
     #[test]
-    fn local_settings_toml_takes_precedence_over_the_user_config() {
+    fn the_local_file_beats_the_user_file_and_explicit_replaces_both() {
         let root = tmp("precedence");
         let user = root.join("user").join(CONFIG_FILE_NAME);
+        let local = root.join(LOCAL_FILE_NAME);
 
-        let default = ConfigLocation {
+        let location = ConfigLocation {
             path: user.clone(),
             explicit: false,
         };
-        assert_eq!(
-            default.read_path(&root),
-            user,
-            "no local file -> user config"
-        );
+        assert_eq!(location.layers(&root), vec![user.clone(), local.clone()]);
 
-        let local = root.join(LOCAL_FILE_NAME);
-        std::fs::write(&local, "[keys]\njump = [\"Space\"]\n").unwrap();
-        assert_eq!(default.read_path(&root), local, "local file wins");
+        std::fs::create_dir_all(user.parent().expect("user config parent")).unwrap();
+        std::fs::write(
+            &user,
+            "[keys]\njump = [\"Space\"]\n[skin]\nname = \"Foxeline\"\n",
+        )
+        .unwrap();
+        let user_only = Settings::load_resolved(&location, &root);
+        assert_eq!(user_only.keys.jump, vec![KeyCode::Space]);
+        assert_eq!(user_only.skin, "Foxeline");
 
+        // The local file only sets one field: the rest survives from the user file.
+        std::fs::write(&local, "[keys]\njump = [\"KeyW\"]\n").unwrap();
+        let merged = Settings::load_resolved(&location, &root);
+        assert_eq!(merged.keys.jump, vec![KeyCode::KeyW], "local beats user");
+        assert_eq!(merged.skin, "Foxeline", "untouched field falls through");
+
+        // An explicit path replaces the user and local layers.
         let explicit = ConfigLocation {
             path: user.clone(),
             explicit: true,
         };
-        assert_eq!(
-            explicit.read_path(&root),
-            user,
-            "--config/RELESTE_CONFIG_FILE ignore the local file"
-        );
+        assert_eq!(explicit.layers(&root), vec![user.clone()]);
+        let only = Settings::load_resolved(&explicit, &root);
+        assert_eq!(only.keys.jump, vec![KeyCode::Space], "local is ignored");
+    }
 
-        // And loading through the location reads the local file, so the binding wins.
-        let bindings = KeyBindings::load_resolved(&default, &root);
-        assert_eq!(bindings.jump, vec![KeyCode::Space]);
+    /// A high layer with no usable value must not wipe the layer below.
+    #[test]
+    fn a_broken_high_layer_keeps_the_lower_value() {
+        let root = tmp("broken");
+        let user = root.join(CONFIG_FILE_NAME);
+        let local = root.join(LOCAL_FILE_NAME);
+        std::fs::write(
+            &user,
+            "[keys]\njump = [\"Space\"]\n[skin]\nname = \"Foxeline\"\n",
+        )
+        .unwrap();
+        std::fs::write(&local, "[keys]\njump = [\"Nope\"]\n[skin]\nname = \"\"\n").unwrap();
+        let location = ConfigLocation {
+            path: user,
+            explicit: false,
+        };
+        let merged = Settings::load_resolved(&location, &root);
+        assert_eq!(merged.keys.jump, vec![KeyCode::Space]);
+        assert_eq!(merged.skin, "Foxeline", "an empty name is not an override");
     }
 
     /// Saving creates missing directories and round-trips through `load`.
@@ -471,20 +629,24 @@ mod tests {
     fn save_then_load_round_trips() {
         let root = tmp("roundtrip");
         let file = root.join("nested").join(CONFIG_FILE_NAME);
-        let bindings = KeyBindings {
-            left: vec![KeyCode::KeyA],
-            right: vec![KeyCode::KeyD],
-            up: vec![KeyCode::KeyW],
-            down: vec![KeyCode::KeyS],
-            jump: vec![KeyCode::Space],
-            dash: vec![KeyCode::ShiftRight],
-            grab: vec![KeyCode::KeyZ, KeyCode::KeyV],
+        let settings = Settings {
+            keys: KeyBindings {
+                left: vec![KeyCode::KeyA],
+                right: vec![KeyCode::KeyD],
+                up: vec![KeyCode::KeyW],
+                down: vec![KeyCode::KeyS],
+                jump: vec![KeyCode::Space],
+                dash: vec![KeyCode::ShiftRight],
+                grab: vec![KeyCode::KeyZ, KeyCode::KeyV],
+            },
+            skin: "Foxeline".to_string(),
         };
-        bindings.save(&file).expect("save");
-        assert_eq!(KeyBindings::load(&file), bindings);
+        settings.save(&file).expect("save");
+        assert_eq!(Settings::load(&file), settings);
         // Deterministic output: saving again writes the same bytes.
         let first = std::fs::read_to_string(&file).unwrap();
-        bindings.save(&file).expect("save again");
+        settings.save(&file).expect("save again");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), first);
+        assert!(first.contains("[skin]"), "the skin section must persist");
     }
 }

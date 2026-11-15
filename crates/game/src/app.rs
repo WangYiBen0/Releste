@@ -32,6 +32,8 @@ const MAX_CATCHUP: u32 = 8;
 const MAX_WALL_GAP: Duration = Duration::from_millis(250);
 /// Title bar refresh interval.
 const TITLE_INTERVAL: Duration = Duration::from_secs(1);
+/// Debounce for the settings layers; kept in step with the map watcher (100ms).
+const SETTINGS_DEBOUNCE_MS: u64 = 100;
 
 /// The windowed application.
 pub struct GameApp {
@@ -44,10 +46,17 @@ pub struct GameApp {
     kernel: Option<Kernel>,
     batch: SpriteBatch,
     keys: Input,
-    /// User key bindings, loaded from the resolved config file (absent = vanilla
-    /// defaults; see `crate::settings` for the path rules).
-    bindings: crate::settings::KeyBindings,
-    /// Hair skin selected by `--skin` (applied to the service on window settle).
+    /// The config path stack, kept so a change can be re-read (hot reload; see
+    /// `crate::settings` for the path rules).
+    config: crate::settings::ConfigLocation,
+    /// Settings resolved from the layer stack; re-read when any layer changes.
+    settings: crate::settings::Settings,
+    /// `--skin` override: when set, the `[skin]` setting is ignored and never
+    /// hot reloaded (a CLI flag is a one-off choice).
+    skin_override: Option<String>,
+    /// The settings layers, watched so an edit applies without a restart.
+    settings_watcher: Option<releste_reload::FileWatcher>,
+    /// Hair skin applied to the service (from `--skin` or `[skin]`).
     skin: crate::skin::PlayerHairSkin,
     accumulator: Duration,
     last: Instant,
@@ -74,10 +83,12 @@ impl GameApp {
         screenshot: Option<PathBuf>,
         screenshot_after: u64,
         config: crate::settings::ConfigLocation,
-        skin: crate::skin::PlayerHairSkin,
+        skin_override: Option<String>,
     ) -> Self {
-        let bindings = crate::settings::KeyBindings::load_resolved(&config, paths.root());
+        let settings = crate::settings::Settings::load_resolved(&config, paths.root());
+        let skin = resolve_skin(&settings.skin, skin_override.as_deref());
         let watcher = watch_maps(&paths);
+        let settings_watcher = watch_settings(&config, &paths);
         let now = Instant::now();
         GameApp {
             paths,
@@ -89,7 +100,10 @@ impl GameApp {
             kernel: None,
             batch: SpriteBatch::default(),
             keys: Input::default(),
-            bindings,
+            config,
+            settings,
+            skin_override,
+            settings_watcher,
             skin,
             accumulator: Duration::ZERO,
             last: now,
@@ -220,25 +234,25 @@ impl GameApp {
             }
             return;
         }
-        if self.bindings.left.contains(&code) {
+        if self.settings.keys.left.contains(&code) {
             self.keys.left = down;
         }
-        if self.bindings.right.contains(&code) {
+        if self.settings.keys.right.contains(&code) {
             self.keys.right = down;
         }
-        if self.bindings.up.contains(&code) {
+        if self.settings.keys.up.contains(&code) {
             self.keys.up = down;
         }
-        if self.bindings.down.contains(&code) {
+        if self.settings.keys.down.contains(&code) {
             self.keys.down = down;
         }
-        if self.bindings.jump.contains(&code) {
+        if self.settings.keys.jump.contains(&code) {
             self.keys.jump = down;
         }
-        if self.bindings.dash.contains(&code) {
+        if self.settings.keys.dash.contains(&code) {
             self.keys.dash = down;
         }
-        if self.bindings.grab.contains(&code) {
+        if self.settings.keys.grab.contains(&code) {
             self.keys.grab = down;
         }
     }
@@ -258,8 +272,62 @@ impl GameApp {
         }
     }
 
+    /// Re-read the settings layers when one of them changed, applying whatever differs.
+    ///
+    /// Key bindings take effect immediately (the next `on_key` sees them) and so does the
+    /// skin: [`Session::set_skin`] rebuilds the atlas and animation table from disk and
+    /// `load_atlas` re-uploads the textures, with the player state untouched (AGENTS.md 4.3).
+    /// A `--skin` override pins the skin, so the `[skin]` setting is then ignored here too.
+    fn poll_settings(&mut self) {
+        let Some(path) = self.settings_watcher.as_mut().and_then(|w| w.poll()) else {
+            return;
+        };
+        let settings = crate::settings::Settings::load_resolved(&self.config, self.paths.root());
+        if settings.keys != self.settings.keys {
+            info!(path = %path.display(), "key bindings reloaded");
+        }
+        self.settings = settings;
+        let wanted = resolve_skin(&self.settings.skin, self.skin_override.as_deref());
+        if wanted == self.skin {
+            return;
+        }
+        self.skin = wanted;
+        info!(skin = %self.skin.prefix(), "skin changed");
+        self.apply_skin();
+    }
+
+    /// Push the current skin into the session and the GPU.
+    fn apply_skin(&mut self) {
+        let name = self.skin.prefix().to_string();
+        let skin = if name.is_empty() {
+            None
+        } else {
+            Some(name.as_str())
+        };
+        let (Some(kernel), Some(gpu)) = (self.kernel.as_mut(), self.gpu.as_mut()) else {
+            return;
+        };
+        let Some(service) = kernel.resolve_mut::<GameService>() else {
+            return;
+        };
+        if let Err(e) = service.session.set_skin(skin, &self.paths) {
+            warn!(skin = %self.skin.prefix(), error = %format!("{e:#}"), "skin swap failed; keeping the previous one");
+            return;
+        }
+        service.skin = self.skin.clone();
+        match gpu.load_atlas(&service.session.atlas) {
+            Ok(groups) => info!(
+                groups,
+                textures = gpu.texture_count(),
+                "skin atlas uploaded"
+            ),
+            Err(e) => warn!(error = %e, "skin atlas upload failed; some sprites will not draw"),
+        }
+    }
+
     /// Fixed-step advance.
     fn tick(&mut self) {
+        self.poll_settings();
         let now = Instant::now();
         let mut wall = now.duration_since(self.last);
         self.last = now;
@@ -374,6 +442,35 @@ impl GameApp {
         );
         self.screenshot_saved = true;
         Ok(())
+    }
+}
+
+/// Resolve the skin to use: the `--skin` override wins over the `[skin]` setting, and an
+/// empty name is the vanilla player.
+fn resolve_skin(setting: &str, override_name: Option<&str>) -> crate::skin::PlayerHairSkin {
+    let name = override_name.unwrap_or(setting);
+    crate::skin::PlayerHairSkin::from_prefix(name.to_string())
+}
+
+/// Watch every settings layer (the user config and `<root>/settings.toml`) for writes.
+///
+/// A layer may not exist yet, so the watcher watches its parent directory and matches by
+/// path (see `FileWatcher::new_files`). Failing to watch is not fatal: the game keeps the
+/// settings it already resolved.
+fn watch_settings(
+    config: &crate::settings::ConfigLocation,
+    paths: &Paths,
+) -> Option<releste_reload::FileWatcher> {
+    let files = config.layers(paths.root());
+    match releste_reload::FileWatcher::new_files(&files, SETTINGS_DEBOUNCE_MS) {
+        Ok(watcher) => {
+            info!(files = files.len(), "watching settings for changes");
+            Some(watcher)
+        }
+        Err(e) => {
+            warn!(error = %e, "settings hot-reload disabled");
+            None
+        }
     }
 }
 
