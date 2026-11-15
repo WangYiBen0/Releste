@@ -56,6 +56,41 @@ const LAYER_WIRE_ABOVE: i32 = Layer::Player.value() + 150;
 /// front of the terrain and Madeline walks over them).
 const LAYER_BRIDGE: i32 = Layer::Entities.value();
 
+/// Draw layer for the `bgtiles` decoration overlay.
+///
+/// Vanilla does **not** give `bgtiles` its own depth: the loader overlays the grid
+/// **into** the background tile grid (`LevelLoader`, `77244-77248`:
+/// `backgroundTiles.Tiles.Overlay(GFX.SceneryTiles, tiles, ...)`), so those cells stop
+/// showing the autotiled `bgDirt` tile and show the scenery tile instead, all at
+/// `BackgroundTiles.Depth = 10000`. The engine keeps them as a separate pass, so this
+/// must sit just **in front of** `BgTiles` -- putting it behind would let the `bg` layer
+/// paint over it.
+const LAYER_BG_SCENERY: i32 = Layer::BgTiles.value() + 20;
+
+/// Draw layer for `bgdecals`: vanilla `Depth = 9000` (`pureCeleste.cs:115083-115086`).
+///
+/// Vanilla draws the **larger** depth first, so `BackgroundTiles` (10000) and its
+/// `bgtiles` overlay are behind the background decals (9000), and both are behind
+/// `SolidTiles` (-10000). Mirrored here: in front of `LAYER_BG_SCENERY`, behind
+/// `Layer::Tiles(0)`.
+const LAYER_BG_DECAL: i32 = Layer::BgTiles.value() + 50;
+
+/// Draw layer for the `fgtiles` decoration overlay.
+///
+/// Vanilla overlays `fgtiles` **into** the solid tile grid (`LevelLoader`, `77249-77254`:
+/// `solidTiles.Tiles.Overlay(GFX.SceneryTiles, tiles, ...)`), so the decorations are drawn
+/// cell by cell among the solid tiles. The engine keeps them in a separate pass, so they
+/// go immediately after `Tiles(0)`: in front of the terrain, behind the entities.
+const LAYER_FG_SCENERY: i32 = Layer::Tiles.value() + 50;
+
+/// Draw layer for `fgdecals`: vanilla `Depth = -10500` (`pureCeleste.cs:115079-115082`).
+///
+/// In vanilla the smaller depth draws in front, so the foreground decals are in front of
+/// the player (`0`) and of the `wire above` (-8500), but behind the `introCrusher`
+/// (-10501). Mirrored here: after `LAYER_WIRE_ABOVE(350)` and before
+/// `LAYER_INTRO_CRUSHER(400)`.
+const LAYER_FG_DECAL: i32 = Layer::Foreground.value() - 120;
+
 /// The 16-segment polyline of one `Wire`: returns `(start, length, rotation radians)`
 /// per segment.
 ///
@@ -857,6 +892,27 @@ impl Session {
     pub fn build_static(&mut self, gpu: &GpuRenderer, room_index: usize) -> Vec<SpriteDraw> {
         let mut out = Vec::new();
         let room = &self.doc.rooms[room_index];
+        // Decoration layers, in vanilla depth order (`EntityList.CompareDepth` draws the
+        // larger `Depth` first): `bgtiles` (10000) is the furthest back, then `bgdecals`
+        // (9000), then the solids; `fgtiles` is overlaid into the solids themselves and
+        // `fgdecals` (-10500) is the front-most layer of the room.
+        let tex_size = |id: u32| gpu.texture_size(id);
+        push_scenery(
+            &mut out,
+            room,
+            &room.bg_scenery,
+            LAYER_BG_SCENERY,
+            self,
+            &tex_size,
+        );
+        push_decals(
+            &mut out,
+            room,
+            &room.bg_decals,
+            LAYER_BG_DECAL,
+            self,
+            &tex_size,
+        );
         push_tiles(
             &mut out,
             room,
@@ -886,6 +942,22 @@ impl Session {
             },
         );
         self.push_entities(&mut out, room, gpu);
+        push_scenery(
+            &mut out,
+            room,
+            &room.fg_scenery,
+            LAYER_FG_SCENERY,
+            self,
+            &tex_size,
+        );
+        push_decals(
+            &mut out,
+            room,
+            &room.fg_decals,
+            LAYER_FG_DECAL,
+            self,
+            &tex_size,
+        );
 
         debug!(
             draws = out.len(),
@@ -1629,6 +1701,139 @@ fn push_tiles(
                     .with_color(ctx.tint),
             );
         }
+    }
+}
+
+/// The shared 8x8 scenery sheet every decoration layer (`bgtiles` / `fgtiles` / `objtiles`)
+/// indexes.
+///
+/// Vanilla builds it once as `SceneryTiles = new Tileset(Game["tilesets/scenery"], 8, 8)`
+/// (`GFX.cs:133`) and the level loader overlays it onto the tile grids
+/// (`LevelLoader`, `77244-77254`). It is **not** autotiled: the CSV holds a flat tile
+/// index, and `Tileset[index]` maps it to `(index % columns, index / columns)`
+/// (`Monocle/Tileset.cs:15-25`).
+const SCENERY_SPRITE: &str = "tilesets/scenery";
+
+/// Decode one stored scenery cell back to its flat `tilesets/scenery` index.
+///
+/// The converter stores `index + 1` so that `0` can mean "empty"
+/// (`tools/content-pipeline/src/pipeline.rs`, `csv_tileset`), which is this inverse: a
+/// stored `1` is sheet index `0`, and a stored `0` is an empty cell (`None`).
+fn scenery_index(value: u16) -> Option<u32> {
+    value.checked_sub(1).map(u32::from)
+}
+
+/// Draw one decoration grid (`bgtiles` / `fgtiles`) from the shared scenery sheet.
+///
+/// Vanilla overlays the grid onto the already-built tile grid and renders it cell by
+/// cell (`TileGrid.Overlay`, `Monocle/TileGrid.cs:47-58`, then `RenderAt`,
+/// `:145-190`), so each cell is a plain 8x8 sprite at `room.bounds + (tx*8, ty*8)`.
+/// A grid whose `is_empty()` holds is skipped without looking up the atlas.
+fn push_scenery(
+    out: &mut Vec<SpriteDraw>,
+    room: &Room,
+    grid: &releste_map::Tileset,
+    layer: i32,
+    session: &Session,
+    tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+) {
+    if grid.is_empty() {
+        return;
+    }
+    let Some((group, sheet)) = session.atlas.sprite(SCENERY_SPRITE) else {
+        if session.warn_once("missing-scenery-sheet") {
+            warn!(
+                sprite = SCENERY_SPRITE,
+                "scenery sheet not found in atlas; skipping every decoration layer"
+            );
+        }
+        return;
+    };
+    let atlas_id = sprites::group_id(&session.atlas, group);
+    let Some((tw, th)) = tex_size(atlas_id) else {
+        return; // texture not uploaded; load_atlas already warned
+    };
+    let tex = Vec2::from_f32s(tw as f32, th as f32);
+    // `Tileset[index]` wraps at the sheet width (`Monocle/Tileset.cs:15-25`).
+    let columns = (u32::try_from(sheet.w).unwrap_or(1) / sprites::TILE_PX as u32).max(1);
+
+    for ty in 0..grid.height {
+        for tx in 0..grid.width {
+            let Some(index) = scenery_index(grid.get(tx, ty).unwrap_or(0)) else {
+                continue; // 0 = empty
+            };
+            let cell = sprites::tile_cell(sheet, index % columns, index / columns);
+            if cell.w <= 0 || cell.h <= 0 {
+                continue; // the index ran past the sheet: vanilla would clip it away
+            }
+            let uv = GpuRenderer::uv_for_sprite(&cell, tex);
+            let pos = Vec2::from_f32s(
+                room.bounds.x + tx as f32 * TILE,
+                room.bounds.y + ty as f32 * TILE,
+            );
+            out.push(
+                SpriteDraw::new(atlas_id, pos, Vec2::from_f32s(TILE, TILE), uv)
+                    .with_layer(layer)
+                    .with_color(WHITE),
+            );
+        }
+    }
+}
+
+/// Draw one decal layer (`bgdecals` / `fgdecals`).
+///
+/// Vanilla renders each decal with `DrawCentered(Position, Color.White, Scale)`: the
+/// **centre of the untrimmed frame** lands on `room.bounds + (decal.x, decal.y)`, and a
+/// negative scale mirrors about that centre (`Decal.cs`, `DecalImage.Render`). The trim
+/// offset is undone exactly like the player body does it: see
+/// [`sprites::origin_in_trim`].
+fn push_decals(
+    out: &mut Vec<SpriteDraw>,
+    room: &Room,
+    decals: &[releste_map::Decal],
+    layer: i32,
+    session: &Session,
+    tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+) {
+    for decal in decals {
+        let Some((group, sprite)) = session.atlas.sprite(&decal.texture) else {
+            if session.warn_once(&format!("decal-tex:{}", decal.texture)) {
+                warn!(
+                    texture = %decal.texture,
+                    room = %room.name,
+                    "decal texture not found in atlas; skipping this decal"
+                );
+            }
+            continue;
+        };
+        let atlas_id = sprites::group_id(&session.atlas, group);
+        let Some((tw, th)) = tex_size(atlas_id) else {
+            continue;
+        };
+        let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
+        let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
+        // `DrawCentered` mirrors about `MTexture.Center`, which is the **untrimmed frame**
+        // centre (`MTexture.SetUtil`: `Center = (Width, Height) * 0.5f`, where `Width` is
+        // the frame size, not the cropped rect). Using the cropped size here would anchor
+        // the decal off-centre by exactly the trim offset.
+        let (fw, fh) = sprite.frame_size();
+        let origin = sprites::origin_in_trim(sprite, (fw * 0.5, fh * 0.5));
+        let sx = decal.scale_x.abs();
+        let sy = decal.scale_y.abs();
+        let flip_x = decal.scale_x < 0.0;
+        let offset_x = if flip_x { w - origin.0 } else { origin.0 };
+        let anchor = Vec2::from_f32s(room.bounds.x + decal.x, room.bounds.y + decal.y);
+        out.push(
+            SpriteDraw::new(
+                atlas_id,
+                anchor - Vec2::from_f32s(offset_x * sx, origin.1 * sy),
+                Vec2::from_f32s(w * sx, h * sy),
+                uv,
+            )
+            .with_layer(layer)
+            .with_color(WHITE)
+            .with_flip_x(flip_x),
+        );
     }
 }
 
@@ -2444,6 +2649,229 @@ frame_h = 9
     /// mirrors a negative-scaled quad **about the origin**; swapping only the UVs (which is
     /// what `SpriteEffects.FlipHorizontally` does) leaves the quad in place, so every frame
     /// whose trimmed content is not centred on the origin came out asymmetric.
+    /// The stored scenery value is `flat_index + 1`, so `0` stays "empty" and the lowest
+    /// drawable index is `0` (`tilesets/scenery`'s first cell).
+    ///
+    /// Provenance: `tools/content-pipeline/src/pipeline.rs`, `csv_tileset` stores
+    /// `value + 1`; vanilla's CSV uses `-1` for "no tile" and `Tileset[index]` indexes
+    /// flat (`Monocle/Tileset.cs:15-25`).
+    #[test]
+    fn scenery_cells_decode_to_flat_tileset_indices() {
+        assert_eq!(scenery_index(0), None, "0 means empty, not index -1");
+        assert_eq!(scenery_index(1), Some(0), "the first sheet cell is index 0");
+        assert_eq!(scenery_index(2), Some(1));
+        assert_eq!(scenery_index(353), Some(352), "5-MirrorTemple reaches 352");
+    }
+
+    /// A `bgtiles` / `fgtiles` grid draws one 8x8 sprite per non-empty cell, at the room
+    /// offset, folding the flat index into `(col, row)` of the shared scenery sheet.
+    ///
+    /// Vanilla overlays the same grid onto the tile layer and renders `tileset[index]`
+    /// per cell (`LevelLoader`, `77244-77254`; `Monocle/Tileset.cs:15-25`).
+    #[test]
+    fn scenery_grid_draws_one_tile_per_non_empty_cell() {
+        use releste_render::atlas::{Sprite, TextureGroup, TextureKind};
+        // A 240x96 sheet of 8x8 cells is 30 columns x 12 rows (the real
+        // `tilesets\scenery` geometry in `assets/atlas/Gameplay.atlas`).
+        let sheet = Sprite {
+            name: "tilesets\\scenery".into(),
+            x: 0,
+            y: 0,
+            w: 240,
+            h: 96,
+            origin_x: 0,
+            origin_y: 0,
+            frame_w: 240,
+            frame_h: 96,
+            source: None,
+        };
+        let mut session = seam_session();
+        session.atlas = SpriteAtlas::new(
+            AtlasDescriptor {
+                name: "Test".into(),
+                version: 0,
+                links: Vec::new(),
+                textures: vec![TextureGroup {
+                    name: "Test0".into(),
+                    kind: TextureKind::Png,
+                    source: "atlas/Test/Test0.png".into(),
+                    width: Some(256),
+                    height: Some(256),
+                    sprites: vec![sheet],
+                }],
+            },
+            Path::new("/nonexistent"),
+        );
+        let size = |_id: u32| Some((256u32, 256u32));
+
+        // 3x2 grid holding indices 0, 31 (= col 1, row 1) and 60 (= col 0, row 2).
+        let mut grid = Tileset {
+            atlas: "Scenery".into(),
+            width: 3,
+            height: 2,
+            tiles: vec![1, 32, 0, 0, 61, 0],
+        };
+        let mut room = Room {
+            name: "lvl_0".into(),
+            bounds: RectDef {
+                x: -48.0,
+                y: 0.0,
+                w: 24.0,
+                h: 16.0,
+            },
+            tiles: Tileset::default(),
+            bg: Tileset::default(),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            bg_decals: Vec::new(),
+            fg_decals: Vec::new(),
+            bg_scenery: Tileset::default(),
+            fg_scenery: Tileset::default(),
+        };
+        room.fg_scenery = grid.clone();
+
+        let mut out = Vec::new();
+        push_scenery(
+            &mut out,
+            &room,
+            &room.fg_scenery,
+            LAYER_FG_SCENERY,
+            &session,
+            &size,
+        );
+        assert_eq!(out.len(), 3, "one draw per non-empty cell");
+        for draw in &out {
+            assert_eq!(draw.layer, LAYER_FG_SCENERY);
+            assert_eq!(draw.size, Vec2::from_f32s(8.0, 8.0));
+        }
+        // Cell (0,0) -> index 0, i.e. the sheet's top-left cell.
+        assert_eq!(out[0].position, Vec2::from_f32s(-48.0, 0.0));
+        assert_eq!(out[0].uv_min, (0.0, 0.0));
+        // Cell (1,0) -> index 31 -> col 1, row 1 (30 columns per sheet row).
+        assert_eq!(out[1].position, Vec2::from_f32s(-40.0, 0.0));
+        assert_eq!(out[1].uv_min, (8.0 / 256.0, 8.0 / 256.0));
+        // Cell (1,1) -> index 60 -> col 0, row 2.
+        assert_eq!(out[2].position, Vec2::from_f32s(-40.0, 8.0));
+        assert_eq!(out[2].uv_min, (0.0, 16.0 / 256.0));
+
+        // An all-zero grid is skipped without even resolving the sheet.
+        grid.tiles = vec![0; 6];
+        let mut empty = Vec::new();
+        push_scenery(&mut empty, &room, &grid, LAYER_FG_SCENERY, &session, &size);
+        assert!(empty.is_empty(), "an empty grid draws nothing");
+    }
+
+    /// Decals are **centre**-anchored on the untrimmed frame, and a negative scale
+    /// mirrors them about that centre.
+    ///
+    /// Vanilla: `DecalImage.Render` -> `MTexture.DrawCentered(Position, White, scale)`,
+    /// which passes `Center - DrawOffset` as the origin (`MTexture.cs:206-234`), and
+    /// `Center` is `Width / 2, Height / 2` of the **frame**, not of the cropped rect.
+    #[test]
+    fn decals_are_centred_on_their_frame_and_mirror_about_the_centre() {
+        use releste_render::atlas::{Sprite, TextureGroup, TextureKind};
+        // `decals\generic\grass_a` from the real atlas: 5x5 art inside an 8x8 frame with
+        // the trim origin (2, 3).
+        let sprite = Sprite {
+            name: "decals\\generic\\grass_a".into(),
+            x: 0,
+            y: 0,
+            w: 5,
+            h: 5,
+            origin_x: 2,
+            origin_y: 3,
+            frame_w: 8,
+            frame_h: 8,
+            source: None,
+        };
+        let mut session = seam_session();
+        session.atlas = SpriteAtlas::new(
+            AtlasDescriptor {
+                name: "Test".into(),
+                version: 0,
+                links: Vec::new(),
+                textures: vec![TextureGroup {
+                    name: "Test0".into(),
+                    kind: TextureKind::Png,
+                    source: "atlas/Test/Test0.png".into(),
+                    width: Some(256),
+                    height: Some(256),
+                    sprites: vec![sprite],
+                }],
+            },
+            Path::new("/nonexistent"),
+        );
+        let size = |_id: u32| Some((256u32, 256u32));
+        let room = Room {
+            name: "lvl_0".into(),
+            bounds: RectDef {
+                x: 100.0,
+                y: 200.0,
+                w: 320.0,
+                h: 180.0,
+            },
+            tiles: Tileset::default(),
+            bg: Tileset::default(),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            bg_decals: Vec::new(),
+            fg_decals: Vec::new(),
+            bg_scenery: Tileset::default(),
+            fg_scenery: Tileset::default(),
+        };
+        let decal = |scale_x: f32| releste_map::Decal {
+            texture: "decals/generic/grass_a".into(),
+            x: 40.0,
+            y: 60.0,
+            scale_x,
+            scale_y: 1.0,
+        };
+
+        let mut right = Vec::new();
+        push_decals(
+            &mut right,
+            &room,
+            &[decal(1.0)],
+            LAYER_FG_DECAL,
+            &session,
+            &size,
+        );
+        let mut left = Vec::new();
+        push_decals(
+            &mut left,
+            &room,
+            &[decal(-1.0)],
+            LAYER_FG_DECAL,
+            &session,
+            &size,
+        );
+
+        assert_eq!(right.len(), 1);
+        assert_eq!(left.len(), 1);
+        let (r, l) = (&right[0], &left[0]);
+        // Frame centre (4,4) minus the trim origin (2,3) = (2,1); the quad is 5x5.
+        assert_eq!(
+            r.position,
+            Vec2::from_f32s(100.0 + 40.0 - 2.0, 200.0 + 60.0 - 1.0)
+        );
+        assert_eq!(r.size, Vec2::from_f32s(5.0, 5.0));
+        assert!(!r.flip_x, "an unmirrored decal does not swap UVs");
+        assert_eq!(r.layer, LAYER_FG_DECAL);
+        assert!(l.flip_x, "a negative scale mirrors the decal");
+        assert_eq!(l.position.y, r.position.y, "mirroring keeps y");
+        assert_eq!(l.size, r.size, "mirroring keeps the size");
+        // Reflecting the unmirrored quad about the anchor gives the mirrored one.
+        let mirrored_x = 2.0 * (100.0 + 40.0) - r.position.x.to_f32() - r.size.x.to_f32();
+        assert!(
+            (l.position.x.to_f32() - mirrored_x).abs() < 0.001,
+            "mirrored decal x={} is not the reflection of x={} (would be {mirrored_x})",
+            l.position.x.to_f32(),
+            r.position.x.to_f32()
+        );
+    }
+
     #[test]
     fn flipped_body_is_the_mirror_of_the_unflipped_body() {
         let session = sprite_session();
