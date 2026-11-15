@@ -766,7 +766,13 @@ impl Player {
         // standing on a solid (`on_ground` means there is solid under the feet,
         // equivalent to `CollideCheck<Solid>(Position + UnitY)`) -> RefillDash
         // (121082-121090: writes only when not already full).
-        if self.on_ground && self.dashes < self.max_dashes {
+        //
+        // The refill is an `else` of the refill-cooldown decay (119843-119863):
+        // `if (dashRefillCooldownTimer > 0f) { dashRefillCooldownTimer -= Engine.DeltaTime; }
+        // else if (...) { RefillDash(); }`. `DashBegin` arms it with 0.1s = 6 ticks
+        // (122534-122565), so an upward ground dash gets no dash back for the first six
+        // frames. This check therefore runs BEFORE the decay below.
+        if self.dash_refill_cooldown == 0 && self.on_ground && self.dashes < self.max_dashes {
             self.dashes = self.max_dashes;
         }
         // jumpGraceTimer (119830-119840) -- already handled by the coyote counter at the
@@ -2603,6 +2609,40 @@ mod tests {
     }
 
     #[test]
+    fn an_upward_ground_dash_does_not_refund_the_dash_immediately() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        let up_dash = Input {
+            up: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&up_dash, std::slice::from_ref(&room));
+        assert_eq!(p.state, 2, "the up dash starts");
+        assert_eq!(p.dashes, 0, "StartDash spends the dash (122471)");
+        // `DashBegin` arms `dashRefillCooldownTimer = 0.1f` = 6 ticks (122534-122565) and
+        // the ground refill is the `else` of that timer (119843-119863), so the dash is
+        // not handed straight back -- this is the reported "extra dash".
+        for _ in 0..DASH_REFILL_COOLDOWN_TICKS {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+            assert_eq!(p.dashes, 0, "the refill cooldown blocks the refund");
+        }
+        // Airborne now: the dash only comes back on landing.
+        let mut landed = false;
+        for _ in 0..120 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+            if p.on_ground {
+                landed = true;
+                break;
+            }
+            assert_eq!(p.dashes, 0, "an air dash does not refill in the air");
+        }
+        assert!(landed, "fixture: the player must come back down");
+        p.step(&Input::default(), std::slice::from_ref(&room));
+        assert_eq!(p.dashes, 1, "landing refills once the cooldown is over");
+    }
+
+    #[test]
     fn holding_jump_gives_more_height_than_releasing_early() {
         let room = tall_room();
         let hold = Input {
@@ -2919,8 +2959,6 @@ mod tests {
     fn dash_refill_and_hair_states_follow_update_hair() {
         let room = wide_room();
         let mut p = settled(&room, 40.0);
-        // Refilled by the ground immediately after the dash (the ground branch at
-        // 119855-119863 fires in the head tick).
         let dash = Input {
             right: true,
             dash: true,
@@ -2928,13 +2966,20 @@ mod tests {
         };
         p.step(&dash, std::slice::from_ref(&room));
         assert_eq!(p.dashes, 0);
-        // Head refill after landing (119855-119863): the tick in which the dash speed
-        // takes effect is still grounded (ground horizontal dash), and the next tick the
-        // head refills.
+        // `DashBegin` arms `dashRefillCooldownTimer = 0.1f` = 6 ticks (122534-122565) and
+        // the ground refill is the `else` of that timer (119843-119863), so the dash is
+        // NOT refunded on the frame after the dash -- it comes back on tick 8.
+        for _ in 0..DASH_REFILL_COOLDOWN_TICKS {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+            assert_eq!(
+                p.dashes, 0,
+                "the refill cooldown blocks the ground refill (119843-119863)"
+            );
+        }
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(
             p.dashes, 1,
-            "RefillDash refills on the ground (119855-119863)"
+            "RefillDash once the 0.1s refill cooldown ran out (119843-119863)"
         );
         assert_eq!(
             p.hair_color(),
@@ -2964,11 +3009,15 @@ mod tests {
         }
         p.step(&again, std::slice::from_ref(&room));
         assert_eq!(p.state, 2, "after the cooldown a fresh dash starts");
-        // The next tick after a ground dash the head refills again (119855-119863:
-        // standing means standing on a solid) -> lastDashes(0) != Dashes(1) flashes white
-        // once more -- exactly how a ground dash behaves in vanilla.
+        // The ground refill is again behind the 0.1s refill cooldown armed by `DashBegin`
+        // (119843-119863, 122534-122565), so the dash comes back 6 ticks later and the
+        // hair flashes white at that point.
+        for _ in 0..DASH_REFILL_COOLDOWN_TICKS {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+            assert_eq!(p.dashes, 0, "still inside the refill cooldown");
+        }
         p.step(&Input::default(), std::slice::from_ref(&room));
-        assert_eq!(p.dashes, 1, "ground dash refills next tick");
+        assert_eq!(p.dashes, 1, "ground dash refills after the cooldown");
         assert_eq!(p.hair_color(), crate::sprites::hair_color::FLASH);
         // White flash 0.12s = 7 ticks: every tick with the timer > 0 shows FLASH (the else
         // branch at 120286-120290); on the **next** tick after it reaches zero, the
