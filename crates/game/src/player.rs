@@ -564,6 +564,10 @@ impl Player {
     /// `rooms` is passed explicitly so unit tests can build room geometry directly
     /// without spinning up a whole Session.
     pub(crate) fn step(&mut self, input: &Input, rooms: &[Room]) {
+        // Vanilla samples every `VirtualButton` once per tick (`MInput.Update` runs before
+        // `Player.Update`), so the buffered-input edges belong here rather than in the
+        // state-specific updates -- `ClimbUpdate` reads the same buffers.
+        self.sample_input_edges(input);
         self.update_head(input);
         match self.state {
             1 => self.climb_update(input, rooms),
@@ -723,6 +727,33 @@ impl Player {
                 )
                 + step_per_segment;
             previous = self.hair_nodes[i];
+        }
+    }
+
+    /// Samples the buffered input edges, mirroring vanilla `VirtualButton`
+    /// (`Monocle/VirtualButton.cs`).
+    ///
+    /// `VirtualButton.Update` decrements `bufferCounter` by `Engine.DeltaTime` on *every*
+    /// tick, refills it to `BufferTime` only on a fresh `Binding.Pressed` edge, and zeroes
+    /// it once the button is released. `Input.Jump`/`Input.Dash` both use 0.08s
+    /// (`Celeste/Input.cs:153-157`), i.e. the press frame plus four more -- hence
+    /// [`JUMP_BUFFER_FRAMES`]. The engine therefore decays first and refills second, so a
+    /// press that cannot be spent expires instead of waiting for a dash refill.
+    fn sample_input_edges(&mut self, input: &Input) {
+        // `bufferCounter -= Engine.DeltaTime;` (unconditional, before any decision).
+        self.jump_buffer = self.jump_buffer.saturating_sub(1);
+        self.dash_buffer = self.dash_buffer.saturating_sub(1);
+
+        // `if (Binding.Pressed(GamepadIndex, Threshold)) bufferCounter = BufferTime;`
+        let jump_pressed = input.jump && !self.prev_jump;
+        self.prev_jump = input.jump;
+        if jump_pressed {
+            self.jump_buffer = JUMP_BUFFER_FRAMES;
+        }
+        let dash_pressed = input.dash && !self.prev_dash;
+        self.prev_dash = input.dash;
+        if dash_pressed {
+            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime, likewise 0.08s (110376)
         }
     }
 
@@ -1098,11 +1129,6 @@ impl Player {
         // (|DashDir.Y| < 0.1) while grounded -> SuperJump (120740); a vertical dash
         // (|DashDir.X| <= 0.2) -> SuperWallJump (120865); otherwise -> WallJump
         // (ClimbJump needs a grab, not implemented, skipped -- deviation declared).
-        let jump_pressed = input.jump && !self.prev_jump;
-        self.prev_jump = input.jump;
-        if jump_pressed {
-            self.jump_buffer = JUMP_BUFFER_FRAMES;
-        }
         if self.dash_dir != Vec2::ZERO && self.jump_buffer > 0 {
             let horizontal_dash = self.dash_dir.y.abs() < Fx::from_ratio(1, 10);
             let vertical_dash = self.dash_dir.x.abs() <= Fx::from_ratio(1, 5);
@@ -1699,11 +1725,6 @@ impl Player {
 
         // Dash trigger (121841-121843 + `CanDash` 119325-119340): the dash button was
         // pressed (within the buffer window), the cooldown has ended, and dashes remain.
-        let dash_pressed = input.dash && !self.prev_dash;
-        self.prev_dash = input.dash;
-        if dash_pressed {
-            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime, likewise 0.08s (110376)
-        }
         if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
             self.start_dash(input, rooms); // StartDash (122469-122479) -> State 2
             return; // speed is 0 this tick (DashBegin zeroes it); go straight to movement
@@ -1791,14 +1812,6 @@ impl Player {
             }
         }
 
-        // Jump input edge: on press -> fill the buffer (VirtualButton.BufferTime, 110376;
-        // buffer semantics 16824-16840).
-        let jump_pressed = input.jump && !self.prev_jump;
-        self.prev_jump = input.jump;
-        if jump_pressed {
-            self.jump_buffer = JUMP_BUFFER_FRAMES;
-        }
-
         // Jump decision (122090-122101): inside the buffer window -> grounded/coyote ->
         // `Jump()` (120694-120716: vertical -105, horizontal +40*moveX (JumpHBoost),
         // varJump filled to 0.2s); airborne -> wall jump (122057-122100,
@@ -1825,17 +1838,13 @@ impl Player {
         {
             self.ducking = false;
         }
-        // Coyote time + jump buffer expiry: refresh coyote while grounded; once airborne
-        // both decay. The buffer can only fire on "the frame after landing" (the grounded
-        // state is updated at the end of the tick), so the grounded frame does not decay
-        // it, avoiding eating the landing margin.
+        // Coyote time: refresh while grounded, decay once airborne. The jump buffer is
+        // not decayed here -- `sample_input_edges` already ages it every tick, matching
+        // `VirtualButton.Update` (`Monocle/VirtualButton.cs`).
         if self.on_ground {
             self.coyote = COYOTE_FRAMES;
-        } else {
-            if self.coyote > 0 {
-                self.coyote -= 1;
-            }
-            self.jump_buffer = self.jump_buffer.saturating_sub(1);
+        } else if self.coyote > 0 {
+            self.coyote -= 1;
         }
     }
 
@@ -2561,6 +2570,36 @@ mod tests {
             fired,
             "a jump pressed just before landing must fire on landing"
         );
+    }
+
+    #[test]
+    fn a_dash_press_expires_instead_of_waiting_for_the_cooldown() {
+        let room = tall_room();
+        let mut p = settled(&room, 32.0);
+        // Keep the dash gate shut (`CanDash` needs `dashCooldownTimer <= 0`,
+        // 119325-119340) for longer than the 0.08s buffer window.
+        p.dash_cooldown = DASH_COOLDOWN_TICKS + 10;
+        let press = Input {
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&press, std::slice::from_ref(&room));
+        assert!(p.dash_buffer > 0, "the press fills the buffer");
+
+        // `VirtualButton.Update` ages `bufferCounter` every tick, so the press is spent
+        // after `JUMP_BUFFER_FRAMES` ticks even though the dash gate stays shut.
+        for _ in 0..JUMP_BUFFER_FRAMES {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert_eq!(p.dash_buffer, 0, "the buffer must expire while unspendable");
+
+        // Let the cooldown run out: the stale press must NOT fire on the refill.
+        for _ in 0..(DASH_COOLDOWN_TICKS + 12) {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert_eq!(p.dash_cooldown, 0, "fixture: the cooldown has ended");
+        assert!(p.dashes > 0, "fixture: a dash is available again");
+        assert_eq!(p.state, 0, "a stale dash press must not start a dash");
     }
 
     #[test]
