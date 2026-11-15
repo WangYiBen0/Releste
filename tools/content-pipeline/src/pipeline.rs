@@ -429,17 +429,58 @@ impl Pipeline {
         for pack_dir in packs {
             let config_path = pack_dir.join("SkinModHelperConfig.yaml");
             let config = crate::skin::SkinConfigFile::from_file(&config_path)?;
-            self.write_skin_pack(&pack_dir, &config)?;
+            self.write_skin_pack_to(&pack_dir, &config, &self.config.output.clone(), None)?;
         }
         Ok(())
     }
 
+    /// Repackage one skin `.zip` into `resources_root/<namespace>/` (ROADMAP Appendix C).
+    ///
+    /// This is the `--skin-pack` entry point: extract, read the manifest, and reuse
+    /// [`Pipeline::write_skin_pack_to`] with the namespace directory as the output root.
+    /// The archive is unpacked into a temp directory under `resources_root` that is
+    /// removed on the way out.
+    pub fn convert_skin_zip(
+        &mut self,
+        zip_path: &std::path::Path,
+        resources_root: &std::path::Path,
+        namespace: Option<&str>,
+    ) -> Result<PathBuf, PipelineError> {
+        let namespace = namespace
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| crate::skinpack::default_namespace(zip_path));
+        let ns_root = resources_root.join(&namespace);
+        std::fs::create_dir_all(&ns_root).map_err(|e| PipelineError::io(ns_root.display(), e))?;
+
+        let work = resources_root.join(".skinpack-work");
+        std::fs::create_dir_all(&work).map_err(|e| PipelineError::io(work.display(), e))?;
+        let result: Result<(), PipelineError> = (|| {
+            let pack_dir = crate::skinpack::extract_pack(zip_path, &work)?;
+            let config_path = pack_dir.join("SkinModHelperConfig.yaml");
+            let config = crate::skin::SkinConfigFile::from_file(&config_path)?;
+            // The namespace is the skin id the game selects (`--skin <namespace>`), so the
+            // atlas/skin files are named after it, not the archive's inner folder.
+            self.write_skin_pack_to(&pack_dir, &config, &ns_root, Some(&namespace))?;
+            Ok(())
+        })();
+        // Best-effort cleanup; a leftover temp dir must not fail the conversion.
+        let _ = std::fs::remove_dir_all(&work);
+        result?;
+        Ok(ns_root)
+    }
+
     /// Write one pack: an atlas holding every sprite it defines, and the engine-native
     /// skin descriptor (character id + hair colours + animation table).
-    fn write_skin_pack(
+    ///
+    /// `out_root` is the directory the `atlas/` and `skins/` subdirectories land in: the
+    /// flat `assets/` tree for a normal run, or `resources/<namespace>/` when repackaging
+    /// a skin zip (ROADMAP Appendix C).
+    pub fn write_skin_pack_to(
         &mut self,
         pack_dir: &std::path::Path,
         config: &crate::skin::SkinConfigFile,
+        out_root: &std::path::Path,
+        pack_id_override: Option<&str>,
     ) -> Result<(), PipelineError> {
         use serde::Serialize;
 
@@ -469,11 +510,15 @@ impl Pipeline {
             textures: Vec<TextureOut>,
         }
 
-        let pack_id = pack_dir
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
+        let pack_id = pack_id_override
+            .map(|s| s.to_owned())
+            .or_else(|| {
+                pack_dir
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
             .unwrap_or_else(|| "skin".into());
-        let atlas_dir = self.safe_out(std::path::Path::new("atlas"))?;
+        let atlas_dir = out_root.join("atlas");
         std::fs::create_dir_all(&atlas_dir)
             .map_err(|e| PipelineError::io(atlas_dir.display(), e))?;
 
@@ -505,7 +550,13 @@ impl Pipeline {
                 let rel_str = stripped.to_string_lossy().replace('\\', "/");
                 let sprite_name = rel_str.trim_end_matches(".png").replace('/', "\\");
                 let out_rel = format!("atlas/{pack_id}/img{group_index}.png");
-                self.copy_exact(&png, &out_rel)?;
+                let out_path = out_root.join(&out_rel);
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| PipelineError::io(parent.display(), e))?;
+                }
+                std::fs::copy(&png, &out_path)
+                    .map_err(|e| PipelineError::io(out_path.display(), e))?;
 
                 let img = image::open(&png)
                     .map_err(|e| PipelineError::Png {
@@ -602,7 +653,7 @@ impl Pipeline {
             rgb: [u8; 3],
         }
 
-        let skins_dir = self.safe_out(std::path::Path::new("skins"))?;
+        let skins_dir = out_root.join("skins");
         std::fs::create_dir_all(&skins_dir)
             .map_err(|e| PipelineError::io(skins_dir.display(), e))?;
 

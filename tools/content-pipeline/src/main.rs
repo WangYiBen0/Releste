@@ -43,6 +43,20 @@ struct Args {
     /// After writing, read every `.map` back to confirm the runtime loader can parse it.
     #[arg(long)]
     verify: bool,
+
+    /// Repackage one Everest skin `.zip` into `resources/<namespace>/` and exit
+    /// (ROADMAP Appendix C layout). Combine with `--resources-root` / `--namespace`.
+    #[arg(long, value_name = "SKIN.zip")]
+    skin_pack: Option<PathBuf>,
+
+    /// Destination for `--skin-pack` (the directory that holds `resources/`). Defaults
+    /// to the repo root's `resources/`.
+    #[arg(long, value_name = "DIR")]
+    resources_root: Option<PathBuf>,
+
+    /// Namespace directory to write under for `--skin-pack`. Defaults to the zip stem.
+    #[arg(long, value_name = "NS")]
+    namespace: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -62,6 +76,30 @@ fn main() -> ExitCode {
     };
 
     let mut pipeline = Pipeline::new(config);
+
+    // `--skin-pack` is a separate one-shot mode: repackage a single `.zip`.
+    if let Some(zip) = &args.skin_pack {
+        let resources_root = args
+            .resources_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("resources"));
+        return match pipeline.convert_skin_zip(zip, &resources_root, args.namespace.as_deref()) {
+            Ok(ns_root) => {
+                println!("=== Releste skin-pack converter ===");
+                println!(
+                    "  input     : {}",
+                    args.skin_pack.as_ref().unwrap().display()
+                );
+                println!("  output    : {}", ns_root.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("skin-pack conversion failed: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match pipeline.run() {
         Ok(report) => {
             println!("=== Releste content-pipeline ===");

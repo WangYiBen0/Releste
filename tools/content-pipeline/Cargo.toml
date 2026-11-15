@@ -24,3 +24,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+# Reading `.zip` skin packs (Everest mods ship as archives). Build-time only, and only
+# the read path + flate2 deflate are enabled: the default features pull zopfli/bzip2/lzma.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
