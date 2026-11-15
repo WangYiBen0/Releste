@@ -644,7 +644,11 @@ impl GameService {
         let at = (t.ticks as f32 / TRANSITION_TICKS as f32).min(1.0);
         let eased = 1.0 - (1.0 - at).powi(3); // Ease.CubeOut
         let eased_fx = Fx::from_f32(eased);
-        let snap = eased > 0.9;
+        // Vanilla snaps on the **raw** progress, not on the eased value (`Level.cs:1576`:
+        // `cameraAt = Calc.Approach(cameraAt, 1f, ...); if (cameraAt > 0.9f) Camera.Position = cameraTo;`).
+        // Testing `eased > 0.9` instead fires at cameraAt ~0.536, i.e. tick 21 of 39, which teleports the
+        // last ~10% of the pan in a single frame -- the whole parallax backdrop jumps by tens of pixels.
+        let snap = at > 0.9;
         self.prev_camera = self.camera;
         self.camera.position = if snap {
             t.camera_to
@@ -959,6 +963,100 @@ mod tests {
         let expected =
             Vec2::from_f32s(40.0, 90.0) + (target - Vec2::from_f32s(40.0, 90.0)) * CAMERA_LERP;
         assert_eq!(service.camera.position, expected);
+    }
+
+    /// The transition camera must snap on the **raw** progress `cameraAt > 0.9`
+    /// (`Level.cs:1576`), not on `Ease.CubeOut(cameraAt) > 0.9`. The eased form crosses
+    /// 0.9 at `cameraAt ~= 0.536` (tick 21 of 39), which teleports the last ~10% of the
+    /// pan in one frame -- observed as the whole parallax backdrop jumping tens of pixels
+    /// mid-transition, because `Parallax.Render` is driven entirely by `Camera.Position`.
+    #[test]
+    fn the_transition_camera_snaps_at_ninety_percent_raw_progress() {
+        let doc = seam_map();
+        let session = Session::from_doc(doc, "test");
+        let mut service = GameService::new(session, None, None, None);
+        service.input.right = true;
+        for _ in 0..240 {
+            service.simulate_tick();
+            if service.transition.is_some() {
+                break;
+            }
+        }
+        assert!(
+            service.transition.is_some(),
+            "the seam must start a transition"
+        );
+        let to = service.transition.as_ref().unwrap().camera_to;
+
+        // Tick 35 of 39: cameraAt = 0.897 < 0.9 -> still lerped, so not at the target.
+        for _ in 0..35 {
+            service.simulate_tick();
+            assert!(service.transition.is_some(), "the pan ended early");
+        }
+        assert_ne!(
+            service.camera.position, to,
+            "cameraAt 0.897 is below vanilla's 0.9 snap threshold; the camera must still be easing"
+        );
+
+        // Tick 36 of 39: cameraAt = 0.923 > 0.9 -> vanilla assigns `Camera.Position = cameraTo`.
+        service.simulate_tick();
+        assert_eq!(
+            service.camera.position, to,
+            "cameraAt 0.923 crosses vanilla's raw 0.9 threshold, so the camera must snap to cameraTo"
+        );
+    }
+
+    /// A transition must never teleport the camera: `Parallax.Render` derives every backdrop
+    /// tile position from `Camera.Position`, so a one-tick camera jump shows up as the whole
+    /// background snapping sideways. Vanilla's `Ease.CubeOut` pan over `0.65s` moves a
+    /// 320px room by at most `3 * dt / 0.65 * 320 = 24.6px` in one tick (derivative maximal
+    /// at `t = 0`); the previous `eased > 0.9` snap instead moved 37px on tick 21.
+    #[test]
+    fn the_transition_camera_never_jumps_more_than_vanilla_allows() {
+        let doc = seam_map();
+        let session = Session::from_doc(doc, "test");
+        let mut service = GameService::new(session, None, None, None);
+        service.input.right = true;
+        for _ in 0..240 {
+            service.simulate_tick();
+            if service.transition.is_some() {
+                break;
+            }
+        }
+        assert!(
+            service.transition.is_some(),
+            "the seam must start a transition"
+        );
+
+        // The pan crosses one full 320px room, so the vanilla bound is 3 * (1/39) * 320.
+        let pan = (service.transition.as_ref().unwrap().camera_to
+            - service.transition.as_ref().unwrap().camera_from)
+            .x
+            .to_f32()
+            .abs();
+        assert!(
+            (pan - 320.0).abs() < 1.0,
+            "the fixture pans exactly one room width, got {pan}"
+        );
+        let vanilla_max_step = 3.0 * (1.0 / 39.0) * pan;
+
+        let mut last = service.camera.position;
+        let mut max_step: f32 = 0.0;
+        let mut ticks = 0;
+        while service.transition.is_some() {
+            service.simulate_tick();
+            let step = (service.camera.position - last).length().to_f32();
+            max_step = max_step.max(step);
+            last = service.camera.position;
+            ticks += 1;
+            assert!(ticks <= 64, "the transition never finished");
+        }
+        assert!(
+            max_step <= vanilla_max_step + 0.5,
+            "the camera jumped {max_step:.1}px in one tick during the transition; \
+             vanilla's CubeOut pan allows at most {vanilla_max_step:.1}px (a larger step means \
+             the backdrop visibly snaps)"
+        );
     }
 
     /// During a room transition the body stays frozen but the hair chain keeps advancing
