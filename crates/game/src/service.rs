@@ -128,6 +128,14 @@ pub struct GameService {
     ///
     /// It is a pure render flag owned by the host, so it never touches the simulation.
     pub debug_open: bool,
+    /// Screen shake timer/direction state (vanilla `Level.shakeTimer`/`ShakeVector`).
+    ///
+    /// The vector is applied to the **render** camera only (`camera_pos`), never to
+    /// `self.camera` -- vanilla restores `Camera.Position` in `Level.AfterRender`
+    /// (pureCeleste.cs:114204-114208), so the simulation never sees the offset.
+    shake: crate::shake::Shake,
+    /// Dust/particle ring buffer (vanilla `Level.Particles`, 400 slots, Depth -8000).
+    particles: crate::particles::ParticleSystem,
 }
 
 impl GameService {
@@ -186,6 +194,8 @@ impl GameService {
             reported_room: spawn_room,
             skin: crate::skin::PlayerHairSkin::VANILLA,
             debug_open: false,
+            shake: crate::shake::Shake::new(),
+            particles: crate::particles::ParticleSystem::new(),
         }
     }
 
@@ -307,6 +317,22 @@ impl GameService {
                 warn!("sprite batch full; player draw dropped");
             }
         }
+        // Dust particles sit at `Layer::Effects`, i.e. in front of the player: vanilla
+        // `Level.Particles` has Depth -8000 versus the player's -10000, and larger Depth
+        // draws first (`Monocle/EntityList.cs:26`), so the dust renders on top.
+        let mut dust = Vec::new();
+        self.particles.push_draws(
+            &mut dust,
+            &self.session,
+            gpu,
+            releste_render::Layer::Effects.value(),
+        );
+        for draw in dust {
+            if batch.push(draw).is_err() && !self.overflow_warned {
+                self.overflow_warned = true;
+                warn!("sprite batch full; particle draw dropped");
+            }
+        }
         // The debug overlay sits at `Layer::Ui`, above every game layer, and is rebuilt
         // from the interpolated camera each frame so the readout tracks the drawn frame.
         if self.debug_open {
@@ -345,7 +371,14 @@ impl GameService {
     /// Interpolated camera position (viewport **center**).
     fn camera_pos(&self, alpha: f32) -> Vec2 {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
-        self.prev_camera.position + (self.camera.position - self.prev_camera.position) * a
+        let base =
+            self.prev_camera.position + (self.camera.position - self.prev_camera.position) * a;
+        // The screen shake is a render-only offset: vanilla adds `ShakeVector` to
+        // `Camera.Position` in `BeforeRender` and floors it, then restores the position in
+        // `AfterRender` (pureCeleste.cs:114087-114091, 114204-114208). Flooring matters
+        // because the offset is an integer pixel count and the parallax layers floor the
+        // camera again themselves (`Parallax.Render`, 112163-112236).
+        (base + self.shake.offset()).floor()
     }
 
     /// Interpolated camera (for rendering).
@@ -437,6 +470,22 @@ impl GameService {
         // (`Monocle/Engine.cs:264-273`, `Monocle/Scene.cs:75-82`).
         self.session
             .update_backdrop_effects(Fx::from_bits(Fx::DT_ONE_SIXTIETH));
+
+        // Dust bursts requested by the player this tick, then the particle update
+        // (vanilla `Level.Update` runs `Particles.Update()` once per scene update,
+        // 113915-113922). Both sit after the physics branch so a tick's emissions are
+        // visible immediately, and after the freeze early-return so a frozen tick does
+        // not advance them (`Engine.FreezeTimer` skips `Scene.Update`).
+        self.particles.emit(self.player.dust());
+        self.particles.update(Fx::from_bits(Fx::DT_ONE_SIXTIETH));
+
+        // Shake requests (vanilla `Level.DirectionalShake`, 114209-114216) and the shake
+        // tick (113702-113731: re-rolled on `OnRawInterval(0.04f)`, amplitude
+        // `Ceiling(shakeTimer * 10)`, timer drained by the raw delta).
+        if let Some((dir, time)) = self.player.take_shake_request() {
+            self.shake.directional(dir, time);
+        }
+        self.shake.update(Fx::from_bits(Fx::DT_ONE_SIXTIETH));
 
         // Room identity changed: at `-v` and above log a line to debug "which room the player is actually standing in".
         if room != self.reported_room {

@@ -104,6 +104,21 @@ const JUMP_SPEED: Fx = Fx::from_ratio(-7, 4);
 /// (pureCeleste.cs:120704). Jumping while running briefly overspeeds, then gets
 /// pulled back at the 400 rate.
 const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
+/// Quarter turn in Q16.16 radians (`MathHelper.PiOver2`). The math crate keeps its
+/// own copy private to `trig`, so the angle constants the dust directions need are
+/// declared here.
+const PI_OVER_2: Fx = Fx::from_bits(102_944);
+/// `Math.PI / 4f`.
+const PI_OVER_4: Fx = Fx::from_bits(51_472);
+/// `Math.PI * 3f / 4f`.
+const THREE_PI_OVER_4: Fx = Fx::from_bits(154_415);
+/// Landing-dust speed gate 80 px/s (4/3 px/tick): `if (Speed.Y >= 80f)` before the
+/// landing `Dust.Burst` (pureCeleste.cs:121588).
+const LAND_DUST_SPEED: Fx = Fx::from_ratio(4, 3);
+/// Landing dust only fires once the fall is this fast -- vanilla uses the same
+/// threshold for the burst (8 particles, pureCeleste.cs:121589).
+const LAND_DUST_COUNT: u8 = 8;
+
 /// varJump duration 0.2s = 12 ticks (pureCeleste.cs:120698).
 ///
 /// While jump is held, vertical speed is clamped back to the jump value
@@ -412,6 +427,18 @@ pub struct Player {
     /// Freeze request at dash start (`Celeste.Freeze(0.05f)`, 122540; consumed by the
     /// service).
     pub freeze_ticks: u8,
+    /// Scene clock in seconds, advanced once per tick (vanilla `Scene.TimeActive`,
+    /// pureCeleste.cs:118292 `TimeActive += Engine.DeltaTime`). Drives the
+    /// `Scene.OnInterval` gates on the periodic dust emitters.
+    scene_time: Fx,
+    /// Queued `Dust.Burst` emissions for this tick, drained by the service into
+    /// [`crate::particles::ParticleSystem`] (vanilla emits straight into
+    /// `Level.Particles`, but the player does not own that system here).
+    dust: Vec<crate::particles::Burst>,
+    /// Queued screen-shake request at dash start
+    /// (`SceneAs<Level>().DirectionalShake(DashDir, 0.2f)`, 122783), drained by the
+    /// service into [`crate::shake::Shake`] (vanilla keeps the shake on the level).
+    shake_request: Option<(Vec2, Fx)>,
     /// Animation state (vanilla `Sprite`: current animation id, frame, timer, playing).
     pub anim_id: String,
     pub anim_frame: usize,
@@ -507,6 +534,9 @@ impl Player {
             prev_dash: false,
             dash_buffer: 0,
             freeze_ticks: 0,
+            scene_time: Fx::zero(),
+            dust: Vec::new(),
+            shake_request: None,
             anim_id: String::new(),
             anim_frame: 0,
             anim_timer: 0.0,
@@ -581,6 +611,10 @@ impl Player {
         // `Player.Update`), so the buffered-input edges belong here rather than in the
         // state-specific updates -- `ClimbUpdate` reads the same buffers.
         self.sample_input_edges(input);
+        // `Scene.TimeActive += Engine.DeltaTime` happens before the scene update, so the
+        // player always sees a clock that already includes this tick
+        // (pureCeleste.cs:118292).
+        self.scene_time += Fx::from_bits(Fx::DT_ONE_SIXTIETH);
         self.update_head(input, rooms);
         match self.state {
             1 => self.climb_update(input, rooms),
@@ -646,6 +680,71 @@ impl Player {
     /// and ducking (`DUCK_H + DUCK_Y_OFF = 11`), so the anchor never moves on a crouch.
     pub fn anchor(&self) -> Vec2 {
         self.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H)
+    }
+
+    /// The hitbox centre (vanilla `Monocle.Entity.Center`, which is collider-relative:
+    /// `CenterX = Left + Width * 0.5`, `CenterY = Top + Height * 0.5`,
+    /// pureCeleste.cs:118612).
+    fn center(&self) -> Vec2 {
+        let (w, h, y_off) = self.box_dims();
+        // The ducking hitbox is the normal box moved down by `y_off`, so its centre is
+        // `y_off + h / 2` below the stored top-left.
+        self.pos
+            + Vec2::new(
+                Fx::from_int(w) / Fx::from_int(2),
+                Fx::from_int(y_off) + Fx::from_int(h) / Fx::from_int(2),
+            )
+    }
+
+    /// Queued dust bursts for this tick, drained by `GameService` into the particle
+    /// system (vanilla emits straight into `Level.Particles`; the player does not own
+    /// that system here).
+    pub(crate) fn dust(&mut self) -> &mut Vec<crate::particles::Burst> {
+        &mut self.dust
+    }
+
+    /// Take the pending screen-shake request, if any (see
+    /// [`crate::shake::Shake`]).
+    pub(crate) fn take_shake_request(&mut self) -> Option<(Vec2, Fx)> {
+        self.shake_request.take()
+    }
+
+    /// Queue a single `Dust.Burst` (vanilla `Dust.Burst(position, direction, count)`,
+    /// pureCeleste.cs:6356-6369).
+    fn burst(&mut self, position: Vec2, direction: Fx, count: u8) {
+        self.dust
+            .push(crate::particles::Burst::new(position, direction, count));
+    }
+
+    /// `CreateWallSlideParticles(dir)` (pureCeleste.cs:120997-121011): one dust particle
+    /// per `OnInterval(0.01f)` tick, 5px toward the wall and 4px below the centre.
+    fn wall_slide_dust(&mut self) {
+        if !self.on_interval(Fx::from_ratio(1, 100)) {
+            return;
+        }
+        let dir = self.wall_slide_dir;
+        // `float num = (particleType == ParticleTypes.Dust) ? 5f : 2f;` -- always Dust
+        // here, so 5px.
+        let offset = Vec2::new(Fx::from_int(5) * Fx::from_int(dir), Fx::from_int(4));
+        let position = self.center() + offset;
+        self.burst(position, -PI_OVER_2, 1);
+    }
+
+    /// `Scene.OnInterval(interval)`: true on the tick the integer interval slot
+    /// advances (`(int)((TimeActive - DeltaTime) / interval) < (int)(TimeActive /
+    /// interval)`, pureCeleste.cs:118325-118330).
+    ///
+    /// The player's periodic dust emitters use it: the wall-slide puff is
+    /// `OnInterval(0.01f)` (120997) -- shorter than a tick, so it fires every tick --
+    /// and the skid puff is `OnInterval(0.02f)` (120570), which fires on roughly every
+    /// other tick.
+    fn on_interval(&self, interval: Fx) -> bool {
+        let span = i64::from(interval.bits());
+        if span <= 0 {
+            return true;
+        }
+        let previous = self.scene_time - Fx::from_bits(Fx::DT_ONE_SIXTIETH);
+        previous.bits() as i64 / span < self.scene_time.bits() as i64 / span
     }
 
     /// Advance the hair: vanilla `PlayerHair.Update`'s wave (111142), `Player.Update`'s
@@ -1025,10 +1124,27 @@ impl Player {
         if !self.on_ground {
             self.stamina -= CLIMBJUMP_DRAIN;
         }
-        self.jump(Fx::zero()); // Jump(particles: false, playSfx: false)
+        self.jump(Fx::zero(), false); // Jump(particles: false, playSfx: false)
         if self.move_x == Fx::zero() {
             self.wall_boost_dir = -self.facing;
             self.wall_boost_ticks = WALL_BOOST_TICKS;
+        }
+        // `if (Facing == Facings.Right) Dust.Burst(Center + UnitX * 2, -3Pi/4, 4)` else
+        // the mirrored burst (120915-120928). Note this one keys off FACING, not the
+        // jump direction.
+        let center = self.center();
+        if self.facing == 1 {
+            self.burst(
+                center + Vec2::new(Fx::from_int(2), Fx::zero()),
+                -THREE_PI_OVER_4,
+                4,
+            );
+        } else {
+            self.burst(
+                center - Vec2::new(Fx::from_int(2), Fx::zero()),
+                -PI_OVER_4,
+                4,
+            );
         }
     }
 
@@ -1061,7 +1177,7 @@ impl Player {
     /// Vanilla `Jump()` (pureCeleste.cs:120694-120716): vertical -105, horizontal
     /// +40*moveX (JumpHBoost), varJump filled to 0.2s, varJumpSpeed saved, coyote and
     /// buffer zeroed. (`LiftBoost` is 0 on static ground and is omitted.)
-    fn jump(&mut self, move_x: Fx) {
+    fn jump(&mut self, move_x: Fx, particles: bool) {
         self.jump_buffer = 0;
         self.coyote = 0;
         self.var_jump = VAR_JUMP_TICKS;
@@ -1070,7 +1186,17 @@ impl Player {
         self.vel.x += move_x * JUMP_H_BOOST;
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
+        // `Sprite.Scale = new Vector2(0.6f, 1.4f)` (120708) -- the vertical jump
+        // stretch; it springs back to 1 in `UpdateSprite` (120302-120303).
+        self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
+        // `if (particles) { ... Dust.Burst(BottomCenter, -PiOver2, 4, ...) }`
+        // (120710-120716). `ClimbJump` calls `Jump(particles: false, ...)` (120906), so
+        // the climb jump stays dust-free.
+        if particles {
+            let anchor = self.anchor();
+            self.burst(anchor, -PI_OVER_2, 4);
+        }
     }
 
     /// The normal branch of vanilla `WallJumpCheck(dir)` (pureCeleste.cs:120779-120804)
@@ -1104,6 +1230,22 @@ impl Player {
         // `Sprite.Scale = (0.6, 1.4)` (120853) -- the wall-jump vertical stretch.
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
+        // `if (dir == -1) Dust.Burst(Center + UnitX * 2, -3Pi/4, 4)` else the mirrored
+        // burst at `Center - UnitX * 2` with `-Pi/4` (120855-120860).
+        let center = self.center();
+        if dir == -1 {
+            self.burst(
+                center + Vec2::new(Fx::from_int(2), Fx::zero()),
+                -THREE_PI_OVER_4,
+                4,
+            );
+        } else {
+            self.burst(
+                center - Vec2::new(Fx::from_int(2), Fx::zero()),
+                -PI_OVER_4,
+                4,
+            );
+        }
         let _ = rooms;
     }
 
@@ -1225,6 +1367,10 @@ impl Player {
                 }
                 self.vel = speed;
                 self.dash_dir = aim;
+                // `SceneAs<Level>().DirectionalShake(DashDir, 0.2f)` (122782-122785).
+                // The service owns the shake (vanilla keeps it on `Level`), so it is
+                // queued here and drained after the tick.
+                self.shake_request = Some((aim, Fx::from_ratio(1, 5)));
                 if aim.x != Fx::zero() {
                     self.facing = aim.x.signum(); // 122779-122782
                 }
@@ -1286,6 +1432,10 @@ impl Player {
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         self.state = 0;
+        // `Dust.Burst(BottomCenter, -PiOver2, 4, ...)` (120768-120776) -- unlike `Jump`
+        // this one is unconditional.
+        let anchor = self.anchor();
+        self.burst(anchor, -PI_OVER_2, 4);
         let _ = rooms;
     }
 
@@ -1305,6 +1455,21 @@ impl Player {
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         self.state = 0;
+        // Same dir-conditional burst as `WallJump` (120886-120891).
+        let center = self.center();
+        if dir == -1 {
+            self.burst(
+                center + Vec2::new(Fx::from_int(2), Fx::zero()),
+                -THREE_PI_OVER_4,
+                4,
+            );
+        } else {
+            self.burst(
+                center - Vec2::new(Fx::from_int(2), Fx::zero()),
+                -PI_OVER_4,
+                4,
+            );
+        }
     }
 
     /// State 1: `ClimbUpdate` (pureCeleste.cs:122184-122362). Order: stagger decay ->
@@ -1607,6 +1772,13 @@ impl Player {
                 && self.vel.x != Fx::zero()
                 && self.move_x == Fx::from_int(-self.vel.x.signum())
             {
+                // `if (Scene.OnInterval(0.02f)) { Dust.Burst(Position, -PiOver2); }`
+                // (120569-120572): the skid puff, 1 particle, paced on the 0.02 s
+                // interval (roughly every other tick).
+                if self.on_interval(Fx::from_ratio(2, 100)) {
+                    let anchor = self.anchor();
+                    self.burst(anchor, -PI_OVER_2, 1);
+                }
                 self.play(table, "skid");
             } else if self.ducking {
                 self.play(table, "duck");
@@ -1852,6 +2024,14 @@ impl Player {
                 let t = self.wall_slide_ticks as f32 / WALLSLIDE_TICKS as f32;
                 let lerp = WALLSLIDE_FAST + (WALLSLIDE_SLOW - WALLSLIDE_FAST) * Fx::from_f32(t);
                 target = lerp;
+                // `if (wallSlideTimer / 1.2f > 0.65f) CreateWallSlideParticles(...)`
+                // (121029-121035): the puff only starts once the slow part of the slide
+                // is reached, then the callee paces it on `OnInterval(0.01f)`
+                // (120997-121011) -- shorter than a tick, so one particle per tick,
+                // 5px to the wall side and 4px below the centre.
+                if Fx::from_f32(t) > Fx::from_ratio(65, 100) {
+                    self.wall_slide_dust();
+                }
             }
             let half = (input.jump || self.auto_jump > 0) && self.vel.y.abs() < HALF_GRAV_THRESHOLD;
             let rate = if half { HALF_GRAVITY } else { GRAVITY };
@@ -1877,7 +2057,7 @@ impl Player {
         // `WallJumpCheck` 120779-120804 -> `WallJump` 120806-120860).
         if self.jump_buffer > 0 {
             if self.on_ground || self.coyote > 0 {
-                self.jump(move_x);
+                self.jump(move_x, true);
             } else if self.wall_jump_check(rooms, 1) {
                 self.wall_jump(rooms, -1);
             } else if self.wall_jump_check(rooms, -1) {
@@ -2197,6 +2377,15 @@ impl Player {
                         let sx = Fx::one() + Fx::from_ratio(3, 5) * amount;
                         let sy = Fx::one() - Fx::from_ratio(3, 5) * amount;
                         self.sprite_scale = [sx, sy];
+                        // `if (Speed.Y >= 80f) { Dust.Burst(Position, new Vector2(0,-1)
+                        // .Angle(), 8, ...) }` (121588-121592) -- a landing puff only
+                        // once the fall is fast enough, 8 particles, straight up. It
+                        // reads `Speed.Y` after the dash conversion above zeroed it, so
+                        // a down-diagonal dash landing stays puff-free.
+                        if self.vel.y >= LAND_DUST_SPEED {
+                            let anchor = self.anchor();
+                            self.burst(anchor, -PI_OVER_2, LAND_DUST_COUNT);
+                        }
                     }
                 } else {
                     // 121625-121646: a ceiling contact first tries the upward corner
@@ -3196,6 +3385,106 @@ mod tests {
     /// each tick through `UpdateSprite` (120302-120303, rate 1.75 * dt). The value is
     /// consumed by the renderer (body squash about the origin) and by the hair root
     /// offset (`-9 * Scale.Y`, 111117), so it must be tracked in the sim.
+    /// `Jump(particles: true)` queues the 4-particle landing-style puff at the bottom
+    /// centre (`Dust.Burst(BottomCenter, -PiOver2, 4, ...)`, 120710-120716) and sets the
+    /// vertical stretch (120708). `ClimbJump` passes `particles: false` and must stay
+    /// dust-free (120906).
+    #[test]
+    fn a_normal_jump_queues_dust_but_a_climb_jump_does_not() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        // `settled` lands the player, which already queues a landing puff; start clean.
+        p.dust().clear();
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        let anchor = p.anchor();
+        p.step(&jump, std::slice::from_ref(&room));
+        let bursts = p.dust();
+        assert_eq!(bursts.len(), 1, "one burst per jump, got {bursts:?}");
+        assert_eq!(bursts[0].count, 4, "Jump bursts 4 dust particles (120712)");
+        assert_eq!(bursts[0].position, anchor, "burst sits at BottomCenter");
+        assert!(
+            (p.sprite_scale[0].to_f32() - 0.6).abs() < 0.01,
+            "Jump Scale.X = 0.6 (120708, got {})",
+            p.sprite_scale[0].to_f32()
+        );
+
+        // `ClimbJump` calls `Jump(particles: false, ...)` (120906), so the jump half of
+        // that move stays dust-free. The wall-jump puff it emits separately is covered
+        // by the wall-jump path, so this asserts the `particles: false` gate directly.
+        let mut p = settled(&room, 40.0);
+        p.dust().clear();
+        p.jump(Fx::zero(), false);
+        assert!(
+            p.dust().is_empty(),
+            "Jump(particles: false) must not queue dust, got {:?}",
+            p.dust()
+        );
+    }
+
+    /// `DirectionalShake(DashDir, 0.2f)` fires once the dash direction is chosen
+    /// (122782-122785), and the service drains the request.
+    #[test]
+    fn a_dash_queues_a_directional_shake() {
+        let room = wide_room();
+        let mut p = settled(&room, 40.0);
+        assert!(p.take_shake_request().is_none(), "no shake while idle");
+        let dash = Input {
+            right: true,
+            dash: true,
+            ..Input::default()
+        };
+        p.step(&dash, std::slice::from_ref(&room)); // StartDash (state 2, phase 0)
+        assert!(
+            p.take_shake_request().is_none(),
+            "the direction is only known once the dash tick runs"
+        );
+        p.step(&dash, std::slice::from_ref(&room)); // phase 0 -> picks the aim
+        let (dir, time) = p.take_shake_request().expect("dash must request a shake");
+        assert_eq!(
+            dir,
+            Vec2::new(Fx::one(), Fx::zero()),
+            "shake follows DashDir"
+        );
+        assert_eq!(time, Fx::from_ratio(1, 5), "0.2s (122783)");
+        assert!(
+            p.take_shake_request().is_none(),
+            "the request is drained exactly once"
+        );
+    }
+
+    /// A hard landing puffs 8 particles straight up; a slow one does not
+    /// (`if (Speed.Y >= 80f)`, 121588-121592).
+    #[test]
+    fn only_a_fast_landing_queues_dust() {
+        let room = tall_room();
+        // Fall from high: the drop is long enough to exceed 80 px/s (4/3 px/tick).
+        let mut p = Player::new(Vec2::from_f32s(32.0, 20.0));
+        for _ in 0..80 {
+            p.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert!(p.on_ground, "fixture: the player must land");
+        let anchor = p.anchor();
+        let bursts = p.dust();
+        assert_eq!(bursts.len(), 1, "a hard landing puffs once, got {bursts:?}");
+        assert_eq!(bursts[0].count, LAND_DUST_COUNT, "8 particles (121589)");
+        assert_eq!(bursts[0].position, anchor, "burst sits at Position");
+
+        // A tiny drop (a few pixels) stays below the gate.
+        let mut low = Player::new(Vec2::from_f32s(32.0, 118.0));
+        for _ in 0..10 {
+            low.step(&Input::default(), std::slice::from_ref(&room));
+        }
+        assert!(low.on_ground);
+        assert!(
+            low.dust().is_empty(),
+            "a slow landing stays below the 80 px/s gate, got {:?}",
+            low.dust()
+        );
+    }
+
     #[test]
     fn super_jump_sets_scale_then_it_springs_back() {
         let room = wide_room();

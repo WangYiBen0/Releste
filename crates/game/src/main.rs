@@ -13,11 +13,13 @@ mod devtools;
 mod filmstrip;
 use releste_kernel::log as logging;
 mod overlay;
+mod particles;
 mod paths;
 mod player;
 mod service;
 mod session;
 mod settings;
+mod shake;
 mod skin;
 mod sprites;
 

@@ -1572,7 +1572,10 @@ impl Session {
     }
 
     /// Emit any given warning only once; returns `true` the first time.
-    fn warn_once(&self, key: &str) -> bool {
+    ///
+    /// `pub(crate)` so the sibling sprite-drawing modules (particles, ...) can share the
+    /// same dedup table instead of inventing their own.
+    pub(crate) fn warn_once(&self, key: &str) -> bool {
         let mut warned = self.warned.borrow_mut();
         if warned.contains(key) {
             false
