@@ -488,6 +488,13 @@ pub struct Session {
     backdrop_drift: RefCell<Vec<Vec2>>,
     /// Keys that warn only once, to avoid spamming every frame.
     warned: RefCell<HashSet<String>>,
+    /// Shared grass-banner clock in seconds (`Banner.sineTimer`): every banner adds
+    /// `Engine.DeltaTime * WindMultiplier` per tick (`Decal.cs:44-46`), and because
+    /// `OnlyIfWindy` is false for the grass decals `WindMultiplier` stays at 1, so one
+    /// accumulator shared by all of them is enough. Each banner's phase is seeded
+    /// deterministically from its index (`Calc.Random.NextFloat()` in vanilla) and
+    /// offset by this clock at draw time, so the field itself stays `&self`.
+    banner_time: RefCell<Fx>,
 }
 
 /// Bangs are the hair-root texture: `bangs[Sprite.HairFrame]` (111186, 111196), where
@@ -574,6 +581,12 @@ impl Session {
         // `Position += WindMultiplier * Level.Wind * Engine.DeltaTime` (`112153-112157`,
         // still unported because `Level.Wind` is not modelled).
         self.advance_backdrop_drift(dt);
+        // `Banner.Update` advances its `sineTimer` by `Engine.DeltaTime` every tick
+        // (`Decal.cs:44-46`); with `OnlyIfWindy = false` the wind branch is skipped, so
+        // `WindMultiplier` stays at 1 and one shared clock covers every banner. Skipping
+        // the tick during a freeze falls out of the caller, exactly like vanilla's
+        // early-returning `Level.Update`.
+        *self.banner_time.borrow_mut() += dt;
         let kinds: Vec<&str> = self
             .doc
             .style
@@ -705,6 +718,7 @@ impl Session {
             backdrop_effects: RefCell::default(),
             backdrop_drift: RefCell::default(),
             warned: RefCell::default(),
+            banner_time: RefCell::new(Fx::zero()),
         })
     }
 
@@ -842,6 +856,7 @@ impl Session {
             backdrop_effects: RefCell::default(),
             backdrop_drift: RefCell::default(),
             warned: RefCell::default(),
+            banner_time: RefCell::new(Fx::zero()),
         }
     }
 
@@ -1026,6 +1041,45 @@ impl Session {
                 effect.push_draws(&mut out, camera, atlas_id, uv, layer);
             }
         }
+        out
+    }
+
+    /// This frame's grass-banner draws (`Decal.Banner`, `Celeste/Decal.cs:12-68`).
+    ///
+    /// **Rebuilt every frame** (like [`Session::backdrop_draws`]): each 1-px slice of a
+    /// banner sways on its own sine phase, so the slices cannot live in the cached
+    /// static list. Vanilla builds the slices once in `MakeBanner` (`Decal.cs:372-395`)
+    /// and only recomputes the sway offsets per `Render`; recomputing the whole list
+    /// here produces the same quads without keeping per-decal state.
+    pub fn grass_draws(
+        &self,
+        tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+        room_index: usize,
+    ) -> Vec<SpriteDraw> {
+        let mut out = Vec::new();
+        let Some(room) = self.doc.rooms.get(room_index) else {
+            return out;
+        };
+        push_grass_banners(
+            &mut out,
+            room,
+            &room.bg_decals,
+            LAYER_BG_DECAL,
+            self,
+            &tex_size,
+            room_index,
+            false,
+        );
+        push_grass_banners(
+            &mut out,
+            room,
+            &room.fg_decals,
+            LAYER_FG_DECAL,
+            self,
+            &tex_size,
+            room_index,
+            true,
+        );
         out
     }
 
@@ -1799,6 +1853,14 @@ fn push_decals(
     tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
 ) {
     for decal in decals {
+        if is_banner_decal(&decal.texture) {
+            // `Decal.Added` (`Celeste/Decal.cs:164-176`) replaces the static
+            // `DecalImage` of the four `generic/grass_a..d` decals with a swaying
+            // `Banner` component (`MakeBanner(2f, 2f, 1, 0.05f, easeDown: false, -2f)`),
+            // so they must not join the cached static list; [`Session::grass_draws`]
+            // emits them per frame instead.
+            continue;
+        }
         let Some((group, sprite)) = session.atlas.sprite(&decal.texture) else {
             if session.warn_once(&format!("decal-tex:{}", decal.texture)) {
                 warn!(
@@ -1838,6 +1900,143 @@ fn push_decals(
             .with_flip_x(flip_x),
         );
     }
+}
+
+/// `Decal.Added` (`Celeste/Decal.cs:164-176`) lowercases the decal name, strips the
+/// `decals/` prefix and maps `generic/grass_a..d` to `MakeBanner(2f, 2f, 1, 0.05f,
+/// easeDown: false, -2f)` -- those four render as swaying banners, not static images.
+fn is_banner_decal(texture: &str) -> bool {
+    // `Decal.Added` compares the full path after `Name.ToLower().Replace("decals/",
+    // "")` (`Celeste/Decal.cs:165-176`), so `scenery/grass_a` stays a static image
+    // exactly like in vanilla; the trailing `.png` some sources add is ignored
+    // (`format.rs` documents that vanilla strips it).
+    let name = texture.to_ascii_lowercase().replace('\\', "/");
+    let name = name.strip_prefix("decals/").unwrap_or(&name);
+    let name = name.strip_suffix(".png").unwrap_or(name);
+    matches!(
+        name,
+        "generic/grass_a" | "generic/grass_b" | "generic/grass_c" | "generic/grass_d"
+    )
+}
+
+/// Emits one quad per visible 1-px slice of every `generic/grass_*` decal in the list.
+///
+/// Provenance (`Decal.MakeBanner`, `Celeste/Decal.cs:372-395`, and `Banner.Render`,
+/// `:52-65`): vanilla slices the decal texture with `GetSubtexture(0, i, Width, 1)` for
+/// `i` in `0..Height`, where `MTexture.Height` is the **frame** height -- so the empty
+/// rows the trim cut away still count in `list.Count` and lower every slice's
+/// `num = 1 - i / count`. Each visible slice `i` (frame rows inside the cropped art,
+/// `DrawOffset.y <= i < DrawOffset.y + h` after `GetRelativeRect`'s clamps) draws at
+/// `Position + (x, 0)` with the spritebatch origin `(Width/2, Height/2 - i)` minus the
+/// slice's own `DrawOffset`, and `x = sin(sineTimer * 2 + i * 0.05) * num * 2 +
+/// num * -2`.
+#[allow(clippy::too_many_arguments)]
+fn push_grass_banners(
+    out: &mut Vec<SpriteDraw>,
+    room: &Room,
+    decals: &[releste_map::Decal],
+    layer: i32,
+    session: &Session,
+    tex_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+    room_index: usize,
+    foreground: bool,
+) {
+    let elapsed = session.banner_time.borrow();
+    for (index, decal) in decals.iter().enumerate() {
+        if !is_banner_decal(&decal.texture) {
+            continue;
+        }
+        let Some((group, sprite)) = session.atlas.sprite(&decal.texture) else {
+            if session.warn_once(&format!("decal-tex:{}", decal.texture)) {
+                warn!(
+                    texture = %decal.texture,
+                    room = %room.name,
+                    "banner decal texture not found in atlas; skipping this decal"
+                );
+            }
+            continue;
+        };
+        let atlas_id = sprites::group_id(&session.atlas, group);
+        let Some((tw, th)) = tex_size(atlas_id) else {
+            continue;
+        };
+        // `MTexture.GetSubtexture` clamps each slice against the parent's clip rect
+        // (`MTexture.cs:130-140`); the loop bounds below reproduce those clamps with
+        // the atlas numbers instead of building intermediate textures.
+        let (ox, oy) = sprite.origin();
+        let (fw, fh) = sprite.frame_size();
+        let (x0, y0, w, h) = (
+            f32::from(sprite.x),
+            f32::from(sprite.y),
+            f32::from(sprite.w),
+            f32::from(sprite.h),
+        );
+        let count = fh.max(1.0);
+        let sx = decal.scale_x.abs();
+        let sy = decal.scale_y.abs();
+        let flip_x = decal.scale_x < 0.0;
+        // `sineTimer = Calc.Random.NextFloat()` per banner (`Decal.cs:21`); seeded
+        // deterministically from the decal's identity instead, so replays and headless
+        // screenshots stay stable.
+        let phase = banner_phase(room_index, foreground, index);
+        let sine_timer = *elapsed + phase;
+        let anchor = Vec2::from_f32s(room.bounds.x + decal.x, room.bounds.y + decal.y);
+        for i in 0..count as i32 {
+            let i = i as f32;
+            // `GetRelativeRect(0, i, Width, 1)`: frame row i folded into the clip rect.
+            let rx = x0 - ox;
+            let ry = y0 - oy + i;
+            let cx = rx.max(x0).min(x0 + w);
+            let cy = ry.max(y0).min(y0 + h);
+            let cw = (rx + fw).min(x0 + w) - cx;
+            let ch = (ry + 1.0).min(y0 + h) - cy;
+            if ch <= 0.0 {
+                continue;
+            }
+            // The slice's own `DrawOffset` (`GetSubtexture`, `MTexture.cs:141-146`) is
+            // subtracted from the passed origin: `(Width/2 - max(ox, 0), Height/2 - i -
+            // max(oy - i, 0))`.
+            let origin_x = fw * 0.5 - ox.max(0.0);
+            let origin_y = fh * 0.5 - i - (oy - i).max(0.0);
+            // `num = (1 - i / list.Count) * WindMultiplier` with `WindMultiplier = 1`
+            // (`Decal.cs:53-56`, `OnlyIfWindy = false`).
+            let num = Fx::one() - Fx::from_ratio(i as i32, count as i32);
+            let x = (sine_timer * Fx::from_int(2) + Fx::from_ratio(i as i32, 20)).sin()
+                * num
+                * Fx::from_int(2)
+                + num * Fx::from_int(-2);
+            let offset_x = if flip_x { cw - origin_x } else { origin_x };
+            let uv_min = (cx / tw as f32, cy / th as f32);
+            let uv_max = ((cx + cw) / tw as f32, (cy + ch) / th as f32);
+            out.push(
+                SpriteDraw::new(
+                    atlas_id,
+                    anchor - Vec2::from_f32s(offset_x * sx, origin_y * sy)
+                        + Vec2::from_f32s(x.to_f32(), 0.0),
+                    Vec2::from_f32s(cw * sx, ch * sy),
+                    (uv_min, uv_max),
+                )
+                .with_layer(layer)
+                .with_color(WHITE)
+                .with_flip_x(flip_x),
+            );
+        }
+    }
+}
+
+/// Deterministic banner phase in `[0, 1)` seconds, standing in for vanilla's
+/// `sineTimer = Calc.Random.NextFloat()` (`Decal.cs:21`). Mixing the room index, the
+/// layer and the decal index through the same constants as [`crate::backdrop`]'s
+/// `SplitMix64` keeps the draw pass stateless (`&self`) while giving every banner its
+/// own phase.
+fn banner_phase(room_index: usize, foreground: bool, decal_index: usize) -> Fx {
+    let mut z = (room_index as u64) << 1 | u64::from(foreground) | (decal_index as u64) << 32;
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Q16.16: the low 16 bits are exactly [0, 1) seconds.
+    Fx::from_bits((z & 0xFFFF) as i32)
 }
 
 /// Vanilla's starting room and spawn point, each step with provenance:
@@ -1996,6 +2195,7 @@ mod tests {
             backdrop_effects: RefCell::default(),
             backdrop_drift: RefCell::default(),
             warned: RefCell::default(),
+            banner_time: RefCell::new(Fx::zero()),
         }
     }
 
@@ -2774,10 +2974,10 @@ frame_h = 9
     #[test]
     fn decals_are_centred_on_their_frame_and_mirror_about_the_centre() {
         use releste_render::atlas::{Sprite, TextureGroup, TextureKind};
-        // `decals\generic\grass_a` from the real atlas: 5x5 art inside an 8x8 frame with
-        // the trim origin (2, 3).
+        // A plain (non-banner) decal sprite, shaped like `decals\generic\grass_a` from
+        // the real atlas: 5x5 art inside an 8x8 frame with the trim origin (2, 3).
         let sprite = Sprite {
-            name: "decals\\generic\\grass_a".into(),
+            name: "decals\\0-prologue\\sign".into(),
             x: 0,
             y: 0,
             w: 5,
@@ -2825,7 +3025,7 @@ frame_h = 9
             fg_scenery: Tileset::default(),
         };
         let decal = |scale_x: f32| releste_map::Decal {
-            texture: "decals/generic/grass_a".into(),
+            texture: "decals/0-prologue/sign".into(),
             x: 40.0,
             y: 60.0,
             scale_x,
@@ -2873,6 +3073,216 @@ frame_h = 9
             l.position.x.to_f32(),
             r.position.x.to_f32()
         );
+    }
+
+    /// The four `generic/grass_a..d` decals are bannered by `Decal.Added`
+    /// (`Decal.cs:164-176`), so they must never join the cached static list.
+    #[test]
+    fn grass_decals_do_not_join_the_static_list() {
+        assert!(is_banner_decal("decals/generic/grass_a"));
+        assert!(is_banner_decal("decals\\generic\\grass_b"));
+        assert!(is_banner_decal("GENERIC/GRASS_C"));
+        assert!(is_banner_decal("generic/grass_d.png"));
+        for name in [
+            "decals/0-prologue/sign",
+            "generic/grass",
+            "generic/grass_e",
+            "scenery/grass_a",
+            "",
+        ] {
+            assert!(
+                !is_banner_decal(name),
+                "{name} must not be treated as a banner"
+            );
+        }
+
+        let (session, room, size) = banner_fixture();
+        let decal = releste_map::Decal {
+            texture: "decals/generic/grass_a".into(),
+            x: 40.0,
+            y: 60.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        };
+        let mut statics = Vec::new();
+        push_decals(
+            &mut statics,
+            &room,
+            &[decal],
+            LAYER_FG_DECAL,
+            &session,
+            &size,
+        );
+        assert!(
+            statics.is_empty(),
+            "a banner decal draws nothing statically"
+        );
+    }
+
+    /// Vanilla slices the banner decal into 1-px frame rows (`MakeBanner`,
+    /// `Decal.cs:372-395`): the empty trim rows still count in `list.Count`, each
+    /// visible slice stacks directly below the previous one, and the slice's quad is
+    /// one pixel of the cropped art (`GetRelativeRect` clamps).
+    #[test]
+    fn grass_banners_slice_the_frame_like_vanilla() {
+        let (session, room, size) = banner_fixture();
+        let decal = releste_map::Decal {
+            texture: "decals/generic/grass_a".into(),
+            x: 40.0,
+            y: 60.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        };
+        let mut out = Vec::new();
+        push_grass_banners(
+            &mut out,
+            &room,
+            &[decal],
+            LAYER_FG_DECAL,
+            &session,
+            &size,
+            0,
+            true,
+        );
+        // grass_a: 5x5 art with DrawOffset (2, 3) inside the 8x8 frame -> slices
+        // 3..8 are visible, 5 quads.
+        assert_eq!(out.len(), 5, "one quad per visible 1-px slice");
+        for (k, draw) in out.iter().enumerate() {
+            let i = 3.0 + k as f32;
+            // Rows stack: origin_y = frame/2 - i for i >= DrawOffset.y = 3, so the
+            // slice tops run anchor.y - 1, anchor.y, anchor.y + 1, ...
+            assert_eq!(
+                draw.position.y,
+                Vec2::from_f32s(0.0, 200.0 + 60.0 - (4.0 - i)).y,
+                "slice {k} must sit on frame row {i}"
+            );
+            assert_eq!(draw.size, Vec2::from_f32s(5.0, 1.0), "slice {k} is 5x1");
+            assert_eq!(draw.layer, LAYER_FG_DECAL);
+            // UV v-range covers art row k of the sprite at (5, 94) on a 256-px sheet.
+            let expected_v0 = (94.0 + k as f32) / 256.0;
+            assert!(
+                (draw.uv_min.1 - expected_v0).abs() < 1e-6,
+                "slice {k} must sample art row {k} (v0 {} vs {expected_v0})",
+                draw.uv_min.1
+            );
+            assert!((draw.uv_max.1 - expected_v0 - 1.0 / 256.0).abs() < 1e-6);
+            // Horizontal quad: origin_x = frame/2 - max(ox, 0) = 4 - 2 = 2 from the
+            // slice's left edge.
+            assert!(
+                (draw.position.x.to_f32() - (140.0 - 2.0)).abs() < 1.5,
+                "slice {k} x={} must be the anchor minus the origin plus the sway",
+                draw.position.x.to_f32()
+            );
+        }
+        assert!(!out[0].flip_x, "a positive scale does not swap UVs");
+    }
+
+    /// `Banner.Update` advances `sineTimer` by `Engine.DeltaTime` per tick
+    /// (`Decal.cs:44-46`) and `Banner.Render` shifts slice `i` by
+    /// `sin(sineTimer * 2 + i * 0.05) * num * 2 + num * -2` (`:53-62`): the shared
+    /// clock must move the slices, and deterministically per decal.
+    #[test]
+    fn grass_banners_sway_with_the_shared_clock() {
+        let (session, room, size) = banner_fixture();
+        let decal = |x: f32| releste_map::Decal {
+            texture: "decals/generic/grass_a".into(),
+            x,
+            y: 60.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        };
+        let draws = |session: &Session, x: f32| {
+            let mut out = Vec::new();
+            push_grass_banners(
+                &mut out,
+                &room,
+                &[decal(x)],
+                LAYER_FG_DECAL,
+                session,
+                &size,
+                0,
+                true,
+            );
+            out
+        };
+        let first = draws(&session, 40.0);
+        // Advancing one tick (1/60 s) re-rolls every slice's sine phase.
+        *session.banner_time.borrow_mut() += Fx::from_bits(Fx::DT_ONE_SIXTIETH);
+        let second = draws(&session, 40.0);
+        assert_eq!(first.len(), second.len());
+        let moved = first
+            .iter()
+            .zip(&second)
+            .filter(|(a, b)| a.position != b.position)
+            .count();
+        assert!(moved > 0, "advancing the clock must sway the slices");
+        // The same decal in another room keeps its own phase, but the phase is
+        // deterministic: identical inputs reproduce identical offsets bit for bit.
+        let repeat = draws(&session, 40.0);
+        for (a, b) in second.iter().zip(&repeat) {
+            assert_eq!(a.position, b.position, "the phase must be deterministic");
+        }
+        assert_ne!(
+            banner_phase(0, true, 0),
+            banner_phase(0, true, 1),
+            "two decals must not sway in lockstep"
+        );
+        assert_eq!(banner_phase(3, false, 7), banner_phase(3, false, 7));
+    }
+
+    /// Builds the grass banner fixture: a session whose atlas holds the real
+    /// `decals\generic\grass_a` sprite (5x5 art at (5, 94), DrawOffset (2, 3), frame
+    /// 8x8) and one room anchored at (100, 200).
+    fn banner_fixture() -> (Session, Room, impl Fn(u32) -> Option<(u32, u32)>) {
+        use releste_render::atlas::{Sprite, TextureGroup, TextureKind};
+        let sprite = Sprite {
+            name: "decals\\generic\\grass_a".into(),
+            x: 5,
+            y: 94,
+            w: 5,
+            h: 5,
+            origin_x: 2,
+            origin_y: 3,
+            frame_w: 8,
+            frame_h: 8,
+            source: None,
+        };
+        let mut session = seam_session();
+        session.atlas = SpriteAtlas::new(
+            AtlasDescriptor {
+                name: "Test".into(),
+                version: 0,
+                links: Vec::new(),
+                textures: vec![TextureGroup {
+                    name: "Test0".into(),
+                    kind: TextureKind::Png,
+                    source: "atlas/Test/Test0.png".into(),
+                    width: Some(256),
+                    height: Some(256),
+                    sprites: vec![sprite],
+                }],
+            },
+            Path::new("/nonexistent"),
+        );
+        let room = Room {
+            name: "lvl_0".into(),
+            bounds: RectDef {
+                x: 100.0,
+                y: 200.0,
+                w: 320.0,
+                h: 180.0,
+            },
+            tiles: Tileset::default(),
+            bg: Tileset::default(),
+            entities: Vec::new(),
+            triggers: Vec::new(),
+            script: None,
+            bg_decals: Vec::new(),
+            fg_decals: Vec::new(),
+            bg_scenery: Tileset::default(),
+            fg_scenery: Tileset::default(),
+        };
+        (session, room, |_id: u32| Some((256u32, 256u32)))
     }
 
     #[test]

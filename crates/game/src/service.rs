@@ -263,15 +263,15 @@ impl GameService {
         // Vanilla draws only one room at a time: when a transition starts (`Session.Level` already switched to the new room)
         // or on hot reload, the static batch is rebuilt from the current room.
         let room_name = self.current_room.clone();
+        let room_idx = self
+            .session
+            .doc
+            .rooms
+            .iter()
+            .position(|r| r.name == room_name)
+            .unwrap_or(0);
         if self.static_dirty || self.built_room != room_name {
-            let idx = self
-                .session
-                .doc
-                .rooms
-                .iter()
-                .position(|r| r.name == room_name)
-                .unwrap_or(0);
-            self.static_draws = self.session.build_static(gpu, idx);
+            self.static_draws = self.session.build_static(gpu, room_idx);
             self.built_room = room_name;
             self.static_dirty = false;
         }
@@ -309,6 +309,18 @@ impl GameService {
             if batch.push(draw).is_err() && !self.overflow_warned {
                 self.overflow_warned = true;
                 warn!("sprite batch full; backdrop draw dropped");
+            }
+        }
+        // The grass decals sway per frame (`Decal.Banner`, `Decal.cs:12-68`): every
+        // 1-px slice gets its own sine offset, so they cannot be cached with the
+        // static list and are emitted here on the decal layers.
+        for draw in self
+            .session
+            .grass_draws(&|id: u32| gpu.texture_size(id), room_idx)
+        {
+            if batch.push(draw).is_err() && !self.overflow_warned {
+                self.overflow_warned = true;
+                warn!("sprite batch full; grass banner draw dropped");
             }
         }
         for draw in self.player_draws(gpu, alpha) {
