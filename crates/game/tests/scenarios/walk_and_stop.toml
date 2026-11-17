@@ -8,6 +8,11 @@
 #   releasing the input decelerates at the full 1000 rate
 #   (pureCeleste.cs:121965-121975; the 400 rate is for same-direction overspeed)
 #
+# Animation: `runSlow` is 12 frames at 0.07s and only then gotos `runFast`
+# (Graphics/Sprites.xml:197), i.e. it plays for 0.84s = 50 ticks. Shorter runs
+# therefore stay on `runSlow` the whole way, exactly like vanilla -- the run is
+# not short because the engine picks the wrong animation.
+#
 # Displacement uses dx (relative to tick 1) so a different map or spawn point
 # cannot cause false alarms.
 [scenario]
@@ -28,12 +33,13 @@ anim = "runSlow"
 [[expect]]
 tick = 10
 vx = 1.5               # top speed 90 px/s reached
-anim = "runFast"
+anim = "runSlow"       # still inside runSlow's 12 frames (Sprites.xml:197)
 
 [[expect]]
 tick = 40
 vx = 1.5
 dx = 50.667            # ramp + top-speed displacement
+anim = "runSlow"
 
 [[expect]]
 tick = 50

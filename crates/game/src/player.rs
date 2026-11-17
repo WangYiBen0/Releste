@@ -954,8 +954,13 @@ impl Player {
                 self.hop_wait_x = 0;
             }
         }
-        // Facing follows input (119908-119917).
-        if move_x != Fx::zero() {
+        // Facing follows input, **except in Climb** (119908-119917: `if (moveX != 0 &&
+        // InControl && StateMachine.State != 1 && ... != 8 && ... != 5 && ... != 6)`).
+        // States 5/6/8 (red dash, swim, star fly) do not exist in this port; state 1 is
+        // the one that matters: while climbing, holding a direction away from the wall
+        // must NOT flip `Facing`, or the following `ClimbUpdate` jump branch reads the
+        // wrong side and turns the intended `WallJump` into a `ClimbJump`.
+        if move_x != Fx::zero() && self.state != 1 {
             self.facing = move_x.signum();
         }
     }
@@ -1115,6 +1120,23 @@ impl Player {
             }
             self.pos.x += Fx::from_int(self.facing); // 122153-122160 snap to the wall
         }
+    }
+
+    /// Whether a jump against a wall becomes a `ClimbJump` instead of a wall jump.
+    ///
+    /// Vanilla gates `ClimbJump()` on six conditions before calling it from the jump
+    /// branch of `NormalUpdate`/`DashUpdate`/`ClimbUpdate` (122063-122066,
+    /// 122073-122076): the wall is on the side the player is facing, grab is held,
+    /// grabbing is not disabled by an assist, stamina remains, nothing is carried and
+    /// no `ClimbBlocker` entity sits in front. This engine has no grab assist, no
+    /// carried entity and no `ClimbBlocker` (see the module docs), so three of the six
+    /// reduce to constants; the facing/stamina/grab half is what still varies.
+    ///
+    /// This is the branch that makes a **corner boost** possible: grab the wall, press
+    /// jump while pointing into it, and the climb jump zeroes the horizontal speed and
+    /// grants the 0.2 s `wallBoostTimer` (`climb_jump`).
+    fn climb_jump_check(&self, input: &Input, dir: i32) -> bool {
+        dir == self.facing && input.grab && self.stamina > Fx::zero()
     }
 
     /// Vanilla `ClimbJump()` (pureCeleste.cs:120902-120928): deduct 27.5 stamina when
@@ -1343,10 +1365,20 @@ impl Player {
                     self.super_wall_jump(1);
                 }
             } else if self.wall_jump_check(rooms, 1) {
-                self.wall_jump(rooms, -1);
+                // 122668-122672: grabbing the wall the jump points away from turns the
+                // wall jump into a `ClimbJump` -- this is the corner-boost branch.
+                if self.climb_jump_check(input, 1) {
+                    self.climb_jump();
+                } else {
+                    self.wall_jump(rooms, -1);
+                }
                 self.state = 0;
             } else if self.wall_jump_check(rooms, -1) {
-                self.wall_jump(rooms, 1);
+                if self.climb_jump_check(input, -1) {
+                    self.climb_jump();
+                } else {
+                    self.wall_jump(rooms, 1);
+                }
                 self.state = 0;
             }
         }
@@ -2053,15 +2085,24 @@ impl Player {
 
         // Jump decision (122090-122101): inside the buffer window -> grounded/coyote ->
         // `Jump()` (120694-120716: vertical -105, horizontal +40*moveX (JumpHBoost),
-        // varJump filled to 0.2s); airborne -> wall jump (122057-122100,
-        // `WallJumpCheck` 120779-120804 -> `WallJump` 120806-120860).
+        // varJump filled to 0.2s); airborne -> ClimbJump when grabbing the wall the jump
+        // points away from, otherwise a wall jump (122057-122100, `WallJumpCheck`
+        // 120779-120804 -> `ClimbJump` 120902-120928 / `WallJump` 120806-120860).
         if self.jump_buffer > 0 {
             if self.on_ground || self.coyote > 0 {
                 self.jump(move_x, true);
             } else if self.wall_jump_check(rooms, 1) {
-                self.wall_jump(rooms, -1);
+                if self.climb_jump_check(input, 1) {
+                    self.climb_jump();
+                } else {
+                    self.wall_jump(rooms, -1);
+                }
             } else if self.wall_jump_check(rooms, -1) {
-                self.wall_jump(rooms, 1);
+                if self.climb_jump_check(input, -1) {
+                    self.climb_jump();
+                } else {
+                    self.wall_jump(rooms, 1);
+                }
             }
         }
 
@@ -4083,6 +4124,128 @@ mod tests {
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "ground refills stamina");
         assert_eq!(p.state, 0, "releasing grab leaves Climb (122211-122216)");
+    }
+
+    /// A jump while grabbing the wall the player faces is a `ClimbJump`, not a wall jump.
+    ///
+    /// Vanilla branches on six conditions (122063-122076): facing the wall, grab held,
+    /// stamina left, no carry, no grab assist, no `ClimbBlocker`. The first three are the
+    /// ones that vary here. The distinguishing numbers come from `ClimbJump()`
+    /// (120902-120928): a plain `Jump()` vertical (-105 px/s, 120705) with **no**
+    /// horizontal impulse -- `WallJump` would instead set 130 px/s away from the wall
+    /// (120836) -- and 27.5 stamina spent when airborne (120904-120906).
+    ///
+    /// This branch is what makes the corner boost work: with no horizontal input the climb
+    /// jump also arms the 0.2 s `wallBoostTimer` (120910-120913), which re-applies 130 px/s
+    /// toward the wall once the player pushes that way.
+    #[test]
+    fn a_grab_jump_into_the_wall_is_a_climb_jump() {
+        let room = wall_room(true);
+        let mut p = settled(&room, 56.0);
+        p.facing = 1;
+        let grab = Input {
+            grab: true,
+            ..Input::default()
+        };
+        // Lift the player off the floor first: `ClimbJump` only spends stamina when
+        // airborne (120904-120906), and standing on the ground next to a wall keeps
+        // `onGround` true through the climb tick.
+        p.pos.y -= Fx::from_int(16);
+        p.on_ground = false;
+        p.step(&grab, std::slice::from_ref(&room));
+        assert_eq!(p.state, 1, "grab enters Climb (121843-121849)");
+        assert!(!p.on_ground, "fixture: the climb starts airborne");
+        let stamina = p.stamina;
+
+        // Jump with grab still held and no direction: ClimbJump.
+        let jump = Input {
+            grab: true,
+            jump: true,
+            ..Input::default()
+        };
+        p.step(&jump, std::slice::from_ref(&room));
+        assert_eq!(p.state, 0, "the climb jump leaves Climb (122193-122205)");
+        assert_eq!(
+            p.vel.x,
+            Fx::zero(),
+            "ClimbJump adds no horizontal impulse, unlike WallJump's 130 px/s (120836)"
+        );
+        assert_eq!(
+            p.vel.y, JUMP_SPEED,
+            "the climb jump is a plain Jump() vertical (120705)"
+        );
+        assert_eq!(
+            p.stamina,
+            stamina - CLIMBJUMP_DRAIN,
+            "27.5 stamina when airborne (120904-120906)"
+        );
+        assert_eq!(
+            p.wall_boost_ticks, WALL_BOOST_TICKS,
+            "no horizontal input arms the 0.2 s wall boost (120910-120913)"
+        );
+    }
+
+    /// Holding a direction into the wall does not arm the wall boost: vanilla only sets
+    /// `wallBoostTimer` when `moveX == 0` (120910-120913).
+    #[test]
+    fn a_climb_jump_with_direction_skips_the_wall_boost() {
+        let room = wall_room(true);
+        let mut p = settled(&room, 56.0);
+        p.facing = 1;
+        p.step(
+            &Input {
+                grab: true,
+                ..Input::default()
+            },
+            std::slice::from_ref(&room),
+        );
+        assert_eq!(p.state, 1);
+        p.step(
+            &Input {
+                grab: true,
+                jump: true,
+                right: true,
+                ..Input::default()
+            },
+            std::slice::from_ref(&room),
+        );
+        assert_eq!(
+            p.wall_boost_ticks, 0,
+            "moveX != 0 skips the boost window (120910-120913)"
+        );
+    }
+
+    /// Without grab the same jump is a normal wall jump: 130 px/s away from the wall.
+    ///
+    /// The fixture grabs the wall first (which sets `Facing` toward it) and then releases
+    /// grab while pressing jump, so `WallJumpCheck` finds the solid and `ClimbJump`'s
+    /// grab condition fails -- exactly the vanilla branch split at 122063-122076.
+    #[test]
+    fn a_jump_off_the_wall_without_grab_is_a_wall_jump() {
+        let room = wall_room(true);
+        let mut p = settled(&room, 56.0);
+        p.facing = 1;
+        let grab = Input {
+            grab: true,
+            ..Input::default()
+        };
+        p.pos.y -= Fx::from_int(16);
+        p.on_ground = false;
+        p.step(&grab, std::slice::from_ref(&room));
+        assert_eq!(p.state, 1, "fixture: climbing before the jump");
+        // Pressing *away* from the wall is the `WallJump` half of `ClimbUpdate`'s jump
+        // branch (122193-122205: `if (moveX == -Facing) WallJump(-Facing) else ClimbJump()`);
+        // with no direction it would be a `ClimbJump` instead.
+        let away = Input {
+            jump: true,
+            left: true,
+            ..Input::default()
+        };
+        p.step(&away, std::slice::from_ref(&room));
+        assert_eq!(
+            p.vel.x, -WALLJUMP_X,
+            "a wall jump pushes 130 px/s away from the wall (120836)"
+        );
     }
 
     // -----------------------------------------------------------------
