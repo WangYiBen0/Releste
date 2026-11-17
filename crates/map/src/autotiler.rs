@@ -305,14 +305,20 @@ mod tests {
     fn real_map_and_tilesets_produce_varied_tiles() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let tilesets_path = root.join("assets/atlas/tilesets.toml");
-        let map_path = root.join("assets/maps/0-Intro.map");
-        if !tilesets_path.is_file() || !map_path.is_file() {
+        // No map name is hardcoded: the lexicographically smallest `.map` is used, so the
+        // test follows whatever the content pipeline produced.
+        let maps_dir = root.join("assets/maps");
+        let Some(map_path) = smallest_map(&maps_dir) else {
+            eprintln!("skipping: run the content-pipeline first");
+            return;
+        };
+        if !tilesets_path.is_file() {
             eprintln!("skipping: run the content-pipeline first");
             return;
         }
 
         let defs = TilesetsDoc::from_file(&tilesets_path).expect("tileset definitions");
-        let doc = crate::loader::load_map(&map_path).expect("the intro map");
+        let doc = crate::loader::load_map(&map_path).expect("the default map");
         let room = &doc.rooms[0];
         let coords = generate(&room.tiles, &defs);
 
@@ -330,5 +336,17 @@ mod tests {
             "expected varied tile coordinates, got {used:?} - \
              the autotiler collapsed every tile onto one variant"
         );
+    }
+
+    /// The lexicographically smallest `.map` under `dir` (no map name is hardcoded).
+    fn smallest_map(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let mut maps: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "map"))
+            .collect();
+        maps.sort();
+        maps.into_iter().next()
     }
 }

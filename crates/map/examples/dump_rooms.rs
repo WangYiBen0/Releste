@@ -1,7 +1,7 @@
 //! Print a `.map` room's geometry and **boundary openings**, to investigate "which room the
 //! player is actually standing in / whether they get stuck or fall at a seam".
 //!
-//! Usage: `cargo run -p releste-map --example dump_rooms -- assets/maps/0-Intro.map`
+//! Usage: `cargo run -p releste-map --example dump_rooms -- assets/maps/<some-map>.map`
 //!
 //! Prints three parts:
 //! 1. One line per room: world rect, tile size, entity count; `player` entities get their own line.

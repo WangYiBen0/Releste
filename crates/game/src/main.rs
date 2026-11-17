@@ -42,13 +42,17 @@ use crate::session::Session;
     version,
     about = "Releste - a 2D precision platformer engine",
     long_about = "Releste - a 2D precision platformer engine.\n\n\
-                  Run with no flags to open `0-Intro.map` in a window.\n\
+                  Run with no flags to open the default map (the lexicographically\n\
+                  smallest `.map` under `maps/`) in a window.\n\
                   Use `--headless --frames 600` for a smoke test that needs no display."
 )]
 struct Args {
     /// Map to load, relative to `maps/` (extension optional).
-    #[arg(default_value = "0-Intro.map", value_name = "MAP")]
-    map: String,
+    ///
+    /// Defaults to the **lexicographically smallest** `.map` under the resolved maps
+    /// directory (`Paths::default_map`), so no map name is baked into the binary.
+    #[arg(value_name = "MAP")]
+    map: Option<String>,
 
     /// Asset root; defaults to the first of exe dir / repo / cwd that
     /// actually contains maps.
@@ -268,7 +272,27 @@ fn run(args: &Args) -> anyhow::Result<()> {
         Some(skin_name.as_str())
     };
 
-    let session = Session::load_with_skin(&args.map, skin, &paths)?;
+    // The script is parsed before the map is resolved: a scenario may name the map it
+    // expects (`[scenario] map = ...`), and that name then selects the map to load.
+    let script = match &args.script {
+        Some(path) => Some(devtools::load_script(path)?),
+        None => None,
+    };
+
+    // The map name, in order of precedence: the explicit `--map`, the map the scenario
+    // declares, else the lexicographically smallest `.map` under the resolved maps
+    // directory (no name is hardcoded in the binary).
+    let map_name = match &args.map {
+        Some(name) => name.clone(),
+        None => match script.as_ref().and_then(|s| s.scenario.map.clone()) {
+            Some(name) => name,
+            None => paths.default_map().ok_or_else(|| {
+                anyhow::anyhow!("no `.map` found under {}", paths.maps().display())
+            })?,
+        },
+    };
+
+    let session = Session::load_with_skin(&map_name, skin, &paths)?;
 
     if let Some(out) = &args.dump_map {
         devtools::dump_session_json(&session, out)?;
@@ -277,7 +301,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     if let Some(path) = &args.script {
-        let script = devtools::load_script(path)?;
+        let script = script.expect("the script was parsed above");
         if let Some(note) = &script.scenario.note {
             tracing::info!(note = %note, "scenario");
         }
@@ -291,7 +315,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
                 args.filmstrip_size.as_deref().and_then(parse_size),
             )
         });
-        let outcome = devtools::run_script(&script, session, &paths, &args.map, filmstrip)?;
+        let outcome = devtools::run_script(&script, session, &paths, &map_name, filmstrip)?;
         for failure in &outcome.failures {
             println!("FAIL {failure}");
         }
@@ -307,7 +331,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     if args.headless {
-        return run_headless(args, &paths, session, skin);
+        return run_headless(args, &paths, session, skin, &map_name);
     }
 
     let plugins = !args.no_plugins;
@@ -330,6 +354,7 @@ fn run_headless(
     paths: &Paths,
     session: Session,
     skin: Option<&str>,
+    map_name: &str,
 ) -> anyhow::Result<()> {
     let host = if args.no_plugins {
         None
@@ -345,11 +370,7 @@ fn run_headless(
 
     let mut kernel = Kernel::new().with(service);
     let mut trace = match &args.trace {
-        Some(path) => Some(devtools::TraceWriter::create(
-            path,
-            &args.map,
-            paths.root(),
-        )?),
+        Some(path) => Some(devtools::TraceWriter::create(path, map_name, paths.root())?),
         None => None,
     };
     let started = Instant::now();

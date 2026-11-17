@@ -131,6 +131,23 @@ impl Paths {
         }
     }
 
+    /// The default map: the **lexicographically smallest** `.map` under [`Paths::maps`].
+    ///
+    /// The engine never hardcodes a map name: the shipped tree decides
+    /// which map opens first, and this rule makes that decision reproducible -- `0-Intro`
+    /// sorts before `1-ForsakenCity`, so the vanilla chapter order survives without naming
+    /// any file in the source.
+    ///
+    /// The returned name is **relative to the maps directory** (`0-Intro.map`, or
+    /// `Gameplay/0-Intro.map` in the namespaced layout), so it can be fed back to
+    /// [`Paths::map`]. `None` when the directory holds no `.map` at all.
+    pub fn default_map(&self) -> Option<String> {
+        let mut names = Vec::new();
+        collect_map_names(&self.maps, &self.maps, &mut names);
+        names.sort();
+        names.into_iter().next()
+    }
+
     /// Full path of one atlas descriptor (the `.atlas` matches the directory name at its level).
     pub fn atlas(&self, name: &str) -> PathBuf {
         self.atlas.join(format!("{name}.atlas"))
@@ -193,6 +210,28 @@ fn is_map(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "map")
 }
 
+/// Collect every `.map` under `dir`, as a path relative to `base`.
+///
+/// The namespaced layout (`maps/<namespace>/<name>.map`) is supported: the relative name
+/// keeps the namespace (`Gameplay/0-Intro.map`), so [`Paths::map`] resolves it again.
+/// Sub-directories deeper than one level are not searched -- that matches the layout
+/// described in AGENTS.md 3.
+fn collect_map_names(dir: &Path, base: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_map_names(&path, base, out);
+        } else if is_map(&path) {
+            if let Ok(rel) = path.strip_prefix(base) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+}
+
 fn first_dir(dir: &Path) -> Option<PathBuf> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
@@ -212,8 +251,8 @@ mod tests {
     fn map_path_appends_extension_once() {
         let mut p = Paths::resolve(Some(Path::new("/nonexistent-root")));
         p.maps = PathBuf::from("/maps");
-        assert_eq!(p.map("0-Intro"), PathBuf::from("/maps/0-Intro.map"));
-        assert_eq!(p.map("0-Intro.map"), PathBuf::from("/maps/0-Intro.map"));
+        assert_eq!(p.map("a-map"), PathBuf::from("/maps/a-map.map"));
+        assert_eq!(p.map("a-map.map"), PathBuf::from("/maps/a-map.map"));
     }
 
     #[test]
@@ -250,7 +289,7 @@ mod tests {
         std::fs::create_dir_all(lookalike.join("plugins/clock")).unwrap();
         // The repo root's shape: assets/maps/ has a real map.
         std::fs::create_dir_all(real.join("assets/maps")).unwrap();
-        std::fs::write(real.join("assets/maps/0-Intro.map"), b"RELMAP").unwrap();
+        std::fs::write(real.join("assets/maps/a-map.map"), b"RELMAP").unwrap();
 
         let picked = Paths::pick(&[lookalike.clone(), real.clone()]);
         assert_eq!(picked.root(), real, "the root with actual maps must win");
@@ -267,7 +306,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("maps")).unwrap();
         std::fs::create_dir_all(root.join("assets/maps")).unwrap();
-        std::fs::write(root.join("assets/maps/0-Intro.map"), b"RELMAP").unwrap();
+        std::fs::write(root.join("assets/maps/a-map.map"), b"RELMAP").unwrap();
 
         let p = Paths::resolve(Some(&root));
         assert!(
@@ -278,6 +317,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The default map is the lexicographically smallest `.map` under the maps directory.
+    ///
+    /// The engine never hardcodes a map name: the shipped tree decides
+    /// which map opens first, and this rule keeps that decision reproducible.
+    #[test]
+    fn default_map_is_the_smallest_map() {
+        let root = std::env::temp_dir().join("releste-paths-default-map");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("assets/maps")).unwrap();
+        for name in ["2-OldSite.map", "0-Intro.map", "1-ForsakenCity.map"] {
+            std::fs::write(root.join("assets/maps").join(name), b"RELMAP").unwrap();
+        }
+
+        let p = Paths::resolve(Some(&root));
+        assert_eq!(p.default_map().as_deref(), Some("0-Intro.map"));
+        let name = p.default_map().expect("a default map");
+        assert!(p.map(&name).is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The namespaced layout keeps the namespace in the relative name, so the default map
+    /// still resolves through `Paths::map`.
+    #[test]
+    fn default_map_keeps_the_namespace_prefix() {
+        let root = std::env::temp_dir().join("releste-paths-default-namespaced");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("maps/Gameplay")).unwrap();
+        std::fs::create_dir_all(root.join("maps/Alchemy")).unwrap();
+        std::fs::write(root.join("maps/Gameplay/a-map.map"), b"RELMAP").unwrap();
+        std::fs::write(root.join("maps/Alchemy/a-map.map"), b"RELMAP").unwrap();
+
+        let p = Paths::resolve(Some(&root));
+        assert_eq!(p.default_map().as_deref(), Some("Alchemy/a-map.map"));
+        let name = p.default_map().expect("a default map");
+        assert!(p.map(&name).is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Release tree: when `maps/<namespace>/` has maps it must beat the empty `assets/maps/`.
     #[test]
     fn maps_dir_prefers_the_namespace_layout_when_it_has_maps() {
@@ -285,13 +362,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("maps/Gameplay")).unwrap();
         std::fs::create_dir_all(root.join("assets/maps")).unwrap();
-        std::fs::write(root.join("maps/Gameplay/0-Intro.map"), b"RELMAP").unwrap();
+        std::fs::write(root.join("maps/Gameplay/a-map.map"), b"RELMAP").unwrap();
 
         let p = Paths::resolve(Some(&root));
         assert!(p.maps().ends_with("maps"), "{:?}", p.maps());
         assert_eq!(
-            p.map("Gameplay/0-Intro"),
-            root.join("maps/Gameplay/0-Intro.map")
+            p.map("Gameplay/a-map"),
+            root.join("maps/Gameplay/a-map.map")
         );
         let _ = std::fs::remove_dir_all(&root);
     }

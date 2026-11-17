@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run -p releste-editor                       # new map
-//! cargo run -p releste-editor -- assets/maps/1-ForsakenCity.map
+//! cargo run -p releste-editor -- assets/maps/<some-map>.map
 //! ```
 
 #![deny(warnings)]

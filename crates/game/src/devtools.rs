@@ -537,7 +537,7 @@ mod tests {
     const SCRIPT: &str = r#"
 [scenario]
 ticks = 8
-map = "0-Intro.map"
+map = "test-map.map"
 note = "unit test"
 
 [[input]]

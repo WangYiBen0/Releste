@@ -3,7 +3,7 @@
 //! # Why this table is needed
 //! The engine core carries no gameplay (AGENTS.md 4.1), but **rendering** a ready-made `.map`
 //! needs to know which image to take. The real answer is eventually registered by plugins through capabilities
-//! (ROADMAP Phase 3); this is the minimal built-in table that gets 0-Intro running,
+//! (ROADMAP Phase 3); this is the minimal built-in table that gets a map running,
 //! and every entity that misses it is `tracing::warn` + skipped (AGENTS.md 15.8 / 15.9).
 
 use std::collections::HashMap;
