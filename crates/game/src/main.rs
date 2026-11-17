@@ -331,7 +331,7 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     if args.headless {
-        return run_headless(args, &paths, session, skin, &map_name);
+        return run_headless(args, &paths, session, skin, &map_name, &settings);
     }
 
     let plugins = !args.no_plugins;
@@ -355,6 +355,7 @@ fn run_headless(
     session: Session,
     skin: Option<&str>,
     map_name: &str,
+    settings: &settings::Settings,
 ) -> anyhow::Result<()> {
     let host = if args.no_plugins {
         None
@@ -367,6 +368,7 @@ fn run_headless(
         service.skin = crate::skin::PlayerHairSkin::from_prefix(prefix.to_string());
     }
     service.debug_open = args.debug_overlay;
+    service.smooth_motion = settings.smooth_motion;
 
     let mut kernel = Kernel::new().with(service);
     let mut trace = match &args.trace {

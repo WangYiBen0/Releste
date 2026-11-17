@@ -25,3 +25,11 @@ grab = ["KeyZ", "KeyV", "ShiftLeft"]
 # Helper pack under `resources/<namespace>/`). Empty selects the vanilla look.
 # Editing this while the game runs swaps the skin without a restart.
 name = ""
+
+[render]
+# Snap world positions to whole pixels while drawing, like vanilla: the player
+# draws through a floored `RenderPosition` (pureCeleste.cs:1366-1367) and
+# particles truncate theirs (`Monocle/Particle.cs` Render). `true` keeps the
+# fractional positions -- the switch a smooth-motion presentation needs, at the
+# cost of no longer matching vanilla pixels.
+smooth_motion = false

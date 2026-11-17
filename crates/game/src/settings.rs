@@ -219,6 +219,13 @@ pub struct Settings {
     /// Matches SkinModHelper's `Character_ID`, which prefixes every player texture
     /// (`SkinModHelperModule.cs:205-222`).
     pub skin: String,
+    /// Draw at fractional world positions instead of snapping to whole pixels.
+    ///
+    /// `false` (the default) reproduces vanilla, which floors the player's
+    /// `RenderPosition` (`Player.Render`, pureCeleste.cs:1366-1367) and truncates particle
+    /// positions (`Monocle/Particle.cs` `Render`). `true` keeps the interpolated
+    /// positions, which is what a smooth-motion presentation needs.
+    pub smooth_motion: bool,
 }
 
 impl Settings {
@@ -226,6 +233,7 @@ impl Settings {
         Settings {
             keys: KeyBindings::empty(),
             skin: String::new(),
+            smooth_motion: false,
         }
     }
 
@@ -297,6 +305,11 @@ impl Settings {
                 self.skin = name.to_string();
             }
         }
+        // A rendering switch is a plain bool: a layer that names it wins, a layer that
+        // omits it keeps what is below (`Option` above, plain `bool` here).
+        if let Some(smooth) = layer.render.smooth_motion {
+            self.smooth_motion = smooth;
+        }
     }
 
     /// Write these settings to `file`, creating the parent directory if needed.
@@ -357,7 +370,13 @@ impl Settings {
              \n\
              # Player reskin namespace installed by `smh2releste`; empty means vanilla.\n\
              [skin]\n\
-             name = {}\n",
+             name = {}\n\
+             \n\
+             # Snap world positions to whole pixels while drawing, like vanilla\n\
+             # (Player.Render floors RenderPosition, pureCeleste.cs:1366-1367;\n\
+             # particles truncate theirs). `true` keeps the interpolated positions.\n\
+             [render]\n\
+             smooth_motion = {}\n",
             names(&self.keys.left),
             names(&self.keys.right),
             names(&self.keys.up),
@@ -366,6 +385,7 @@ impl Settings {
             names(&self.keys.dash),
             names(&self.keys.grab),
             quote(&self.skin),
+            self.smooth_motion,
         )
     }
 }
@@ -426,6 +446,21 @@ struct SettingsToml {
     keys: KeysToml,
     #[serde(default)]
     skin: SkinToml,
+    /// Rendering options.
+    #[serde(default)]
+    render: RenderToml,
+}
+
+/// Whether world positions are snapped to whole pixels while drawing.
+///
+/// Vanilla always snaps: the player draws through a floored RenderPosition
+/// (Player.Render, pureCeleste.cs:1366-1367) and particles truncate their position
+/// (Monocle/Particle.cs Render). The default false reproduces that exactly. Turning it
+/// on keeps the fractional positions, which is what an interpolated presentation needs,
+/// at the cost of no longer matching vanilla pixels.
+#[derive(Debug, Default, Clone, Deserialize)]
+struct RenderToml {
+    smooth_motion: Option<bool>,
 }
 
 /// `"ArrowLeft"` / `"KeyC"` / `"Escape"` ... -> `KeyCode`.
@@ -624,6 +659,29 @@ mod tests {
         assert_eq!(merged.skin, "Foxeline", "an empty name is not an override");
     }
 
+    /// The render switch is a plain bool: a layer that names it wins, a layer that
+    /// omits it keeps the value below, and the shipped default is vanilla (snap).
+    #[test]
+    fn smooth_motion_is_opt_in_and_layers_cleanly() {
+        let root = tmp("smooth-motion");
+        let file = root.join(CONFIG_FILE_NAME);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(!builtin().smooth_motion, "vanilla snaps to whole pixels");
+
+        std::fs::write(&file, "[render]\nsmooth_motion = true\n").unwrap();
+        assert!(Settings::load(&file).smooth_motion);
+
+        // A layer that does not mention [render] keeps the value from below.
+        let mut below = builtin().clone();
+        below.smooth_motion = true;
+        below.merge_file(&root.join("keys-only.toml"));
+        std::fs::write(&root.join("keys-only.toml"), "[keys]\njump = [\"Space\"]\n").unwrap();
+        below.merge_file(&root.join("keys-only.toml"));
+        assert!(below.smooth_motion, "an absent key is not an override");
+        assert_eq!(below.keys.jump, vec![KeyCode::Space]);
+    }
+
     /// Saving creates missing directories and round-trips through `load`.
     #[test]
     fn save_then_load_round_trips() {
@@ -640,6 +698,7 @@ mod tests {
                 grab: vec![KeyCode::KeyZ, KeyCode::KeyV],
             },
             skin: "Foxeline".to_string(),
+            smooth_motion: false,
         };
         settings.save(&file).expect("save");
         assert_eq!(Settings::load(&file), settings);

@@ -200,6 +200,7 @@ impl GameApp {
         let mut service = GameService::new(session, host, self.watcher.take(), Some(&gpu));
         service.skin = self.skin.clone();
         service.debug_open = self.debug_overlay_at_boot;
+        service.smooth_motion = self.settings.smooth_motion;
         self.kernel = Some(Kernel::new().with(service));
         self.gpu = Some(gpu);
         self.window = Some(window);
@@ -321,7 +322,18 @@ impl GameApp {
         if settings.keys != self.settings.keys {
             info!(path = %path.display(), "key bindings reloaded");
         }
+        if settings.smooth_motion != self.settings.smooth_motion {
+            info!(
+                smooth_motion = settings.smooth_motion,
+                "render: smooth motion changed"
+            );
+        }
         self.settings = settings;
+        if let Some(kernel) = self.kernel.as_mut() {
+            if let Some(service) = kernel.resolve_mut::<GameService>() {
+                service.smooth_motion = self.settings.smooth_motion;
+            }
+        }
         let wanted = resolve_skin(&self.settings.skin, self.skin_override.as_deref());
         if wanted == self.skin {
             return;

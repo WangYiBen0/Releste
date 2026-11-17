@@ -274,13 +274,15 @@ impl ParticleSystem {
     ///
     /// `Particle.Render` truncates the position to whole pixels and draws the source
     /// sprite scaled about its **centre** (`Monocle/Particle.cs:139-166`), so the quad
-    /// top-left is `floor(position) - origin_in_trim * size`.
+    /// top-left is `floor(position) - origin_in_trim * size`. `smooth_motion` keeps the
+    /// fractional position instead (`crate::settings::Settings::smooth_motion`).
     pub(crate) fn push_draws(
         &self,
         out: &mut Vec<SpriteDraw>,
         session: &Session,
         gpu: &GpuRenderer,
         layer: i32,
+        smooth_motion: bool,
     ) {
         let mut resolved: [Option<ResolvedSource>; SOURCES.len()] = [None; SOURCES.len()];
         for (slot, name) in SOURCES.iter().enumerate() {
@@ -310,11 +312,19 @@ impl ParticleSystem {
                 continue;
             };
             let (px, py) = particle.position.to_f32s();
+            // Vanilla `Vector2 position = new Vector2((int)Position.X, (int)Position.Y);`
+            // (Monocle/Particle.cs Render): a positive position truncates the same way
+            // `floor` does. `smooth_motion` keeps the fractional position.
+            let (px, py) = if smooth_motion {
+                (px, py)
+            } else {
+                (px.trunc(), py.trunc())
+            };
             let size = particle.size.to_f32();
             out.push(
                 SpriteDraw::new(
                     atlas_id,
-                    Vec2::from_f32s(px.trunc() - origin.0 * size, py.trunc() - origin.1 * size),
+                    Vec2::from_f32s(px - origin.0 * size, py - origin.1 * size),
                     Vec2::from_f32s(fw * size, fh * size),
                     uv,
                 )

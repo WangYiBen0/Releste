@@ -136,6 +136,11 @@ pub struct GameService {
     shake: crate::shake::Shake,
     /// Dust/particle ring buffer (vanilla `Level.Particles`, 400 slots, Depth -8000).
     particles: crate::particles::ParticleSystem,
+    /// Draw at fractional positions instead of snapping to whole pixels
+    /// (`crate::settings::Settings::smooth_motion`). `false` is vanilla: the player
+    /// floors `RenderPosition` (pureCeleste.cs:1366-1367) and particles truncate theirs
+    /// (`Monocle/Particle.cs` Render).
+    pub smooth_motion: bool,
 }
 
 impl GameService {
@@ -196,6 +201,7 @@ impl GameService {
             debug_open: false,
             shake: crate::shake::Shake::new(),
             particles: crate::particles::ParticleSystem::new(),
+            smooth_motion: false,
         }
     }
 
@@ -338,6 +344,7 @@ impl GameService {
             &self.session,
             gpu,
             releste_render::Layer::Effects.value(),
+            self.smooth_motion,
         );
         for draw in dust {
             if batch.push(draw).is_err() && !self.overflow_warned {
@@ -364,7 +371,15 @@ impl GameService {
     /// This frame's player draws (hair + body, position interpolated by alpha).
     fn player_draws(&self, gpu: &GpuRenderer, alpha: f32) -> Vec<SpriteDraw> {
         let a = Fx::from_f32(alpha.clamp(0.0, 1.0));
-        let pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
+        let mut pos = self.player.prev_pos + (self.player.pos - self.player.prev_pos) * a;
+        // Vanilla snaps the sprite to whole pixels once per frame and draws everything
+        // from there: `Vector2 renderPosition = Sprite.RenderPosition;
+        // Sprite.RenderPosition = Sprite.RenderPosition.Floor();` (Player.Render,
+        // pureCeleste.cs:1366-1367, restored after the hair passes `base.Render()`).
+        // `[render] smooth_motion = true` keeps the interpolated subpixel position instead.
+        if !self.smooth_motion {
+            pos = pos.floor();
+        }
         self.session.player_draws(
             &|id| gpu.texture_size(id),
             pos,
