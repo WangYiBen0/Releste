@@ -120,10 +120,18 @@ pub fn origin_in_trim(sprite: &Sprite, frame_origin: (f32, f32)) -> (f32, f32) {
 /// is the **live** segment count (`PlayerSprite.HairCount`, 4 normally and 5 with two dashes),
 /// not a constant.
 /// **the x scale of index 0 is `Facing`** (bangs mirror with facing), not `num`.
-pub fn hair_scale(index: usize, facing: f32, count: usize) -> (f32, f32) {
+///
+/// Only the **x** factor carries `Math.Abs(Sprite.Scale.X)`: the returned pair is
+/// `new Vector2(((index == 0) ? (float)Facing : num) * Math.Abs(Sprite.Scale.X), num)`
+/// (111201-111205). The y factor stays `num`, so a squashed player
+/// (`Scale.X = 0.6` on a spring) narrows its hair horizontally without shortening it
+/// vertically -- and mirroring comes from `Facing` alone, never from the sign of
+/// `Scale.X`.
+pub fn hair_scale(index: usize, facing: f32, count: usize, sprite_scale_x: f32) -> (f32, f32) {
     let i = index as f32;
     let num = 0.25 + (1.0 - i / count as f32) * 0.75;
-    (if index == 0 { facing } else { num }, num)
+    let x = if index == 0 { facing } else { num };
+    (x * sprite_scale_x.abs(), num)
 }
 
 /// `HairOffset` of one hair strand: the `hair` table at `Graphics/Sprites.xml:96`.
@@ -441,6 +449,26 @@ impl AnimationTable {
 mod tests {
     use super::*;
 
+    /// `GetHairScale`: both components ride on `Math.Abs(Sprite.Scale.X)`
+    /// (111201-111205), so a squashed player squashes its hair.
+    #[test]
+    fn hair_scale_rides_on_the_sprite_x_scale() {
+        // Full-size player, facing right: bangs are 1.0, the tail narrows.
+        assert_eq!(hair_scale(0, 1.0, 4, 1.0), (1.0, 1.0));
+        assert_eq!(hair_scale(3, 1.0, 4, 1.0), (0.4375, 0.4375));
+        // Facing left mirrors only the bangs; the tail keeps `num`.
+        assert_eq!(hair_scale(0, -1.0, 4, 1.0), (-1.0, 1.0));
+        assert_eq!(hair_scale(1, -1.0, 4, 1.0), (0.8125, 0.8125));
+        // `Scale.X = 0.6` (a spring squash) narrows the hair horizontally only: the y
+        // factor stays `num` (111201-111205).
+        assert_eq!(hair_scale(0, 1.0, 4, 0.6), (0.6, 1.0));
+        let tail = hair_scale(3, 1.0, 4, 0.6);
+        assert!((tail.0 - 0.2625).abs() < 1e-6, "{} {tail:?}", tail.0);
+        assert_eq!(tail.1, 0.4375);
+        // A negative Scale.X (never produced today) uses its magnitude, not its sign:
+        // the mirroring comes from `Facing` alone.
+        assert_eq!(hair_scale(0, -1.0, 4, -0.6), (-0.6, 1.0));
+    }
     fn sprite(w: i16, h: i16) -> Sprite {
         Sprite {
             name: "tilesets\\snow".into(),

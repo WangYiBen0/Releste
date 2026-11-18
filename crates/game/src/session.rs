@@ -1181,8 +1181,9 @@ impl Session {
         // First draw all outlines for every node (4 copies at +/-1px), then draw the base
         // color from tail to head (111179-111197) -- two passes, not alternating per node.
         for (i, (name, node)) in pieces.iter().enumerate() {
-            let scale = sprites::hair_scale(i, facing, count);
-            let Some(base) = self.hair_piece(tex_size, name.as_ref(), *node, scale, border) else {
+            let piece_scale = sprites::hair_scale(i, facing, count, scale[0]);
+            let Some(base) = self.hair_piece(tex_size, name.as_ref(), *node, piece_scale, border)
+            else {
                 continue;
             };
             for (dx, dy) in outline_offsets {
@@ -1192,8 +1193,9 @@ impl Session {
             }
         }
         for (i, (name, node)) in pieces.iter().enumerate().rev() {
-            let scale = sprites::hair_scale(i, facing, count);
-            if let Some(mut d) = self.hair_piece(tex_size, name.as_ref(), *node, scale, hair_color)
+            let piece_scale = sprites::hair_scale(i, facing, count, scale[0]);
+            if let Some(mut d) =
+                self.hair_piece(tex_size, name.as_ref(), *node, piece_scale, hair_color)
             {
                 d.layer = Layer::PlayerHair.value() + 1; // base color on top of the outline
                 out.push(d);
