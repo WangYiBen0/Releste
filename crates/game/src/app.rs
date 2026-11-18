@@ -201,6 +201,7 @@ impl GameApp {
         service.skin = self.skin.clone();
         service.debug_open = self.debug_overlay_at_boot;
         service.smooth_motion = self.settings.smooth_motion;
+        service.screen_shake = self.settings.screen_shake;
         self.kernel = Some(Kernel::new().with(service));
         self.gpu = Some(gpu);
         self.window = Some(window);
@@ -328,10 +329,17 @@ impl GameApp {
                 "render: smooth motion changed"
             );
         }
+        if settings.screen_shake != self.settings.screen_shake {
+            info!(
+                screen_shake = ?settings.screen_shake,
+                "render: screen shake changed"
+            );
+        }
         self.settings = settings;
         if let Some(kernel) = self.kernel.as_mut() {
             if let Some(service) = kernel.resolve_mut::<GameService>() {
                 service.smooth_motion = self.settings.smooth_motion;
+                service.screen_shake = self.settings.screen_shake;
             }
         }
         let wanted = resolve_skin(&self.settings.skin, self.skin_override.as_deref());

@@ -369,6 +369,7 @@ fn run_headless(
     }
     service.debug_open = args.debug_overlay;
     service.smooth_motion = settings.smooth_motion;
+    service.screen_shake = settings.screen_shake;
 
     let mut kernel = Kernel::new().with(service);
     let mut trace = match &args.trace {

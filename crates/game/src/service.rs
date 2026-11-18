@@ -141,6 +141,9 @@ pub struct GameService {
     /// floors `RenderPosition` (pureCeleste.cs:1366-1367) and particles truncate theirs
     /// (`Monocle/Particle.cs` Render).
     pub smooth_motion: bool,
+    /// How hard the screen shakes (vanilla `Settings.Instance.ScreenShake`); see
+    /// [`crate::settings::ScreenShake`] and [`crate::shake::Shake::amount`].
+    pub screen_shake: crate::settings::ScreenShake,
 }
 
 impl GameService {
@@ -202,6 +205,7 @@ impl GameService {
             shake: crate::shake::Shake::new(),
             particles: crate::particles::ParticleSystem::new(),
             smooth_motion: false,
+            screen_shake: crate::settings::ScreenShake::Full,
         }
     }
 
@@ -509,6 +513,7 @@ impl GameService {
         // Shake requests (vanilla `Level.DirectionalShake`, 114209-114216) and the shake
         // tick (113702-113731: re-rolled on `OnRawInterval(0.04f)`, amplitude
         // `Ceiling(shakeTimer * 10)`, timer drained by the raw delta).
+        self.shake.amount = self.screen_shake;
         if let Some((dir, time)) = self.player.take_shake_request() {
             self.shake.directional(dir, time);
         }

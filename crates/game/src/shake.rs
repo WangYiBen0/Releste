@@ -94,6 +94,13 @@ pub(crate) struct Shake {
     last_directional: i32,
     /// Current integer offset added to the render camera (vanilla `ShakeVector`).
     vector: Vec2,
+    /// How hard the shake is applied (vanilla `Settings.Instance.ScreenShake`).
+    ///
+    /// `Half` collapses the rolled vector to its sign and drains the timer 1.5x faster;
+    /// `Off` never starts a shake at all. Both are checked in `Level.Shake`/
+    /// `DirectionalShake` and in the `Level.Update` shake block
+    /// (`pureCeleste.cs:113702-113731`).
+    pub(crate) amount: crate::settings::ScreenShake,
     rng: SplitMix64,
 }
 
@@ -106,6 +113,7 @@ impl Shake {
             direction: Vec2::ZERO,
             last_directional: 0,
             vector: Vec2::ZERO,
+            amount: crate::settings::ScreenShake::Full,
             rng: SplitMix64::new(0x5AFE_5EED_1234_5678),
         }
     }
@@ -113,6 +121,11 @@ impl Shake {
     /// `Level.DirectionalShake(dir, time)`: shake along an axis, alternating sign each
     /// roll (`pureCeleste.cs:114219-114229`).
     pub(crate) fn directional(&mut self, dir: Vec2, time: Fx) {
+        // `if (Settings.Instance.ScreenShake != ScreenshakeAmount.Off)` (114208-114216):
+        // with the shake turned off vanilla never even arms the timer.
+        if self.amount == crate::settings::ScreenShake::Off {
+            return;
+        }
         self.direction = dir.safe_normalized();
         self.last_directional = 0;
         self.timer = self.timer.max(time);
@@ -121,6 +134,9 @@ impl Shake {
     /// `Level.Shake(time)`: ambient (non-directional) shake (`pureCeleste.cs:114204-114214`).
     #[allow(dead_code)]
     pub(crate) fn ambient(&mut self, time: Fx) {
+        if self.amount == crate::settings::ScreenShake::Off {
+            return;
+        }
         self.direction = Vec2::ZERO;
         self.timer = self.timer.max(time);
     }
@@ -149,8 +165,25 @@ impl Shake {
                 }
                 -self.direction * Fx::from_int(self.last_directional * amplitude)
             };
+            // `if (Settings.Instance.ScreenShake == ScreenshakeAmount.Half) { float x =
+            // Math.Sign(ShakeVector.X); float y = Math.Sign(ShakeVector.Y);
+            // ShakeVector = new Vector2(x, y); }` (113711-113716).
+            if self.amount == crate::settings::ScreenShake::Half {
+                self.vector = Vec2::new(
+                    Fx::from_int(self.vector.x.signum()),
+                    Fx::from_int(self.vector.y.signum()),
+                );
+            }
         }
-        self.timer -= dt;
+        // `float num3 = ((ScreenShake == Half) ? 1.5f : 1f); shakeTimer -=
+        // Engine.RawDeltaTime * num3;` (113718-113720): the half setting also drains the
+        // timer faster, so the shake is both smaller and shorter.
+        let rate = if self.amount == crate::settings::ScreenShake::Half {
+            Fx::from_ratio(3, 2)
+        } else {
+            Fx::one()
+        };
+        self.timer -= dt * rate;
     }
 
     /// The offset to add to the render camera, already floored to whole pixels
@@ -236,6 +269,42 @@ mod tests {
             assert!(shake.offset().x.abs() <= limit);
             assert!(shake.offset().y.abs() <= limit);
         }
+    }
+
+    /// `Half` collapses the rolled vector to its sign and drains the timer 1.5x faster
+    /// (`pureCeleste.cs:113711-113720`), so the shake is both 1px and shorter.
+    #[test]
+    fn half_shake_collapses_to_a_one_pixel_twitch() {
+        let mut shake = Shake::new();
+        shake.amount = crate::settings::ScreenShake::Half;
+        shake.directional(Vec2::new(Fx::one(), Fx::zero()), Fx::from_ratio(1, 4));
+        shake.update(DT);
+        assert_eq!(
+            shake.offset(),
+            Vec2::new(Fx::from_int(-1), Fx::zero()),
+            "Half keeps only the sign of the rolled amplitude (113711-113716)"
+        );
+        // 0.25s at the 1.5x drain rate is spent after ~10 ticks instead of 15.
+        for _ in 0..14 {
+            shake.update(DT);
+        }
+        assert!(
+            !shake.active(),
+            "the 1.5x drain shortens the shake (113720)"
+        );
+    }
+
+    /// `Off` never arms the timer at all (`Level.DirectionalShake`, 114208-114216).
+    #[test]
+    fn off_never_starts_a_shake() {
+        let mut shake = Shake::new();
+        shake.amount = crate::settings::ScreenShake::Off;
+        shake.directional(Vec2::new(Fx::one(), Fx::zero()), Fx::from_ratio(1, 2));
+        assert!(!shake.active());
+        shake.ambient(Fx::from_ratio(1, 2));
+        assert!(!shake.active());
+        shake.update(DT);
+        assert_eq!(shake.offset(), Vec2::ZERO);
     }
 
     /// `Math.Max` semantics: a long shake is not shortened by a later short one.

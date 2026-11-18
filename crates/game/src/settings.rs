@@ -226,6 +226,8 @@ pub struct Settings {
     /// positions (`Monocle/Particle.cs` `Render`). `true` keeps the interpolated
     /// positions, which is what a smooth-motion presentation needs.
     pub smooth_motion: bool,
+    /// How hard the screen shakes (vanilla `Settings.ScreenShake`).
+    pub screen_shake: ScreenShake,
 }
 
 impl Settings {
@@ -234,6 +236,7 @@ impl Settings {
             keys: KeyBindings::empty(),
             skin: String::new(),
             smooth_motion: false,
+            screen_shake: ScreenShake::Full,
         }
     }
 
@@ -310,6 +313,11 @@ impl Settings {
         if let Some(smooth) = layer.render.smooth_motion {
             self.smooth_motion = smooth;
         }
+        if let Some(name) = &layer.render.screen_shake {
+            if let Some(amount) = ScreenShake::parse(name) {
+                self.screen_shake = amount;
+            }
+        }
     }
 
     /// Write these settings to `file`, creating the parent directory if needed.
@@ -376,7 +384,8 @@ impl Settings {
              # (Player.Render floors RenderPosition, pureCeleste.cs:1366-1367;\n\
              # particles truncate theirs). `true` keeps the interpolated positions.\n\
              [render]\n\
-             smooth_motion = {}\n",
+             smooth_motion = {}\n\
+             screen_shake = \"{}\"\n",
             names(&self.keys.left),
             names(&self.keys.right),
             names(&self.keys.up),
@@ -386,6 +395,11 @@ impl Settings {
             names(&self.keys.grab),
             quote(&self.skin),
             self.smooth_motion,
+            match self.screen_shake {
+                ScreenShake::Full => "full",
+                ScreenShake::Half => "half",
+                ScreenShake::Off => "off",
+            },
         )
     }
 }
@@ -451,6 +465,40 @@ struct SettingsToml {
     render: RenderToml,
 }
 
+/// How hard the screen shakes, mirroring vanilla `ScreenshakeAmount`.
+///
+/// Vanilla ships three levels (`Celeste/ScreenshakeAmount.cs`): `Full` rolls the
+/// amplitude, `Half` collapses `ShakeVector` to its sign (a 1px twitch) and `Off`
+/// refuses the shake entirely, in `Level.Shake`/`DirectionalShake`. The default here is
+/// `Full` like vanilla; the other two exist because the 2px roll is much more
+/// noticeable on a high-DPI window than on the original 320x180 canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenShake {
+    /// Vanilla `ScreenshakeAmount.Full`.
+    #[default]
+    Full,
+    /// Vanilla `ScreenshakeAmount.Half`: the offset keeps its sign, not its size.
+    Half,
+    /// Vanilla `ScreenshakeAmount.Off`: no shake at all.
+    Off,
+}
+
+impl ScreenShake {
+    /// Parse a config value; an unknown word warns and keeps `None`.
+    fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "full" => Some(Self::Full),
+            "half" => Some(Self::Half),
+            "off" => Some(Self::Off),
+            other => {
+                warn!(value = other, "unknown screen_shake value (full/half/off)");
+                None
+            }
+        }
+    }
+}
+
 /// Whether world positions are snapped to whole pixels while drawing.
 ///
 /// Vanilla always snaps: the player draws through a floored RenderPosition
@@ -461,6 +509,7 @@ struct SettingsToml {
 #[derive(Debug, Default, Clone, Deserialize)]
 struct RenderToml {
     smooth_motion: Option<bool>,
+    screen_shake: Option<String>,
 }
 
 /// `"ArrowLeft"` / `"KeyC"` / `"Escape"` ... -> `KeyCode`.
@@ -676,7 +725,7 @@ mod tests {
         let mut below = builtin().clone();
         below.smooth_motion = true;
         below.merge_file(&root.join("keys-only.toml"));
-        std::fs::write(&root.join("keys-only.toml"), "[keys]\njump = [\"Space\"]\n").unwrap();
+        std::fs::write(root.join("keys-only.toml"), "[keys]\njump = [\"Space\"]\n").unwrap();
         below.merge_file(&root.join("keys-only.toml"));
         assert!(below.smooth_motion, "an absent key is not an override");
         assert_eq!(below.keys.jump, vec![KeyCode::Space]);
@@ -699,6 +748,7 @@ mod tests {
             },
             skin: "Foxeline".to_string(),
             smooth_motion: false,
+            screen_shake: ScreenShake::Half,
         };
         settings.save(&file).expect("save");
         assert_eq!(Settings::load(&file), settings);

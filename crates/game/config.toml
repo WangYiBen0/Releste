@@ -33,3 +33,8 @@ name = ""
 # fractional positions -- the switch a smooth-motion presentation needs, at the
 # cost of no longer matching vanilla pixels.
 smooth_motion = false
+
+# Screen shake strength: "full" (vanilla), "half" (the offset keeps its sign
+# only, and the shake also ends 1.5x faster) or "off". The 2px roll of "full" is
+# much more noticeable on a high-DPI window than on the original canvas.
+screen_shake = "full"
