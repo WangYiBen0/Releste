@@ -11,12 +11,13 @@ repository only carries text sources.
 # (see references/README.md)
 cargo run -p releste-content-pipeline -- \
     --source assets-src \
-    --output assets \
+    --output . \
+    --namespace Gameplay \
     --only maps \
     --verify
 ```
 
-The converted maps land in `assets/maps/`.
+The converted maps land in `maps/Gameplay/`.
 
 ## Authoring one yourself
 
@@ -25,10 +26,10 @@ The converted maps land in `assets/maps/`.
 cargo run -p releste-editor
 
 # Open an existing map
-cargo run -p releste-editor -- assets/maps/1-ForsakenCity.map
+cargo run -p releste-editor -- maps/Gameplay/1-ForsakenCity.map
 
 # Only check that it loads (no GPU / display needed)
-cargo run -p releste-editor -- --check assets/maps/1-ForsakenCity.map
+cargo run -p releste-editor -- --check maps/Gameplay/1-ForsakenCity.map
 ```
 
 After the editor saves, `releste-reload`'s `FileWatcher` fires once the debounce

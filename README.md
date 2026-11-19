@@ -71,7 +71,8 @@ cargo build --workspace
 cargo test --workspace             # 254 tests
 cargo run -p releste-editor
 cargo run -p releste-net-server -- --port 7777
-cargo run -p releste-content-pipeline -- --source references/Celeste/Content --output assets --verify
+cargo run -p releste-content-pipeline -- \
+    --source references/Celeste/Content --output . --namespace Gameplay --verify
 # Repackage an Everest Skin Mod Helper skin into the shipped `resources/<namespace>/`
 # layout (ROADMAP Appendix C). Accepts a `.zip` or an extracted mod directory;
 # `--namespace` is the id `--skin` selects and defaults to the archive / folder name.
@@ -79,6 +80,14 @@ cargo run -p releste-content-pipeline --bin smh2releste -- \
     path/to/Skin.zip --resources-root resources --namespace MySkin
 cargo r -- --skin MySkin           # play with that skin
 ```
+
+The conversion command writes the normal development runtime directly into the
+repository root: `resources/Gameplay/{atlas,audio,dialog,skins}` and
+`maps/Gameplay/*.map`. Together with the tracked `plugins/` directory and the
+optional user-provided `libs/`, this is the Appendix C layout. After conversion,
+`cargo r` needs neither `--root` nor `--map`; old scenario files that use a bare
+map name still resolve inside a single namespace. Use `--flat` only when
+intentionally producing the legacy layout.
 
 ## Crate layout
 
@@ -205,7 +214,7 @@ ignored by `.gitignore` and actively blocked by the pre-commit
 `restricted-content` hook):
 
 - `references/` (~13 GB): vanilla Celeste executables / DLLs / decompiled source
-- `assets/`, `assets-src/`: art / audio / maps derived from vanilla assets
+- `assets/`, `assets-src/`, `resources/`, `maps/Gameplay/`: art / audio / maps derived from vanilla assets
 - `libfmod.so` and other shared libraries: FMOD is proprietary, supply your own
 - our own binary formats such as `.map`
 - any build output
@@ -305,7 +314,7 @@ cd .fmod && ln -sf libfmod.so.10 libfmod.so && cd ..
 
 RELESTE_FMOD_ALLOW_MISSING=1 \
 RELESTE_FMOD_STUDIO_LIB="$PWD/.fmod/libfmodstudio.so" \
-RELESTE_FMOD_BANKS="$PWD/assets/audio" \
+RELESTE_FMOD_BANKS="$PWD/resources/Gameplay/audio" \
 LD_LIBRARY_PATH="$PWD/.fmod" \
   cargo test -p releste-audio --features fmod full_studio_pipeline -- --nocapture
 ```

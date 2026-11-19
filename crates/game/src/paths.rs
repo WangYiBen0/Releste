@@ -124,17 +124,42 @@ impl Paths {
     }
 
     /// Full path of one map. `name` may include `.map` or omit it.
+    ///
+    /// Explicit paths and namespaced names are used as written. A bare name keeps
+    /// old scenario files working: prefer a flat map, then search `maps/<namespace>/`
+    /// in lexical namespace order. Ambiguous bare names produce a warning; callers
+    /// should use `<namespace>/<name>` to select one explicitly.
     pub fn map(&self, name: &str) -> PathBuf {
         let file = if name.ends_with(".map") {
             name.to_string()
         } else {
             format!("{name}.map")
         };
-        if Path::new(&file).is_absolute() {
-            PathBuf::from(file)
-        } else {
-            self.maps.join(file)
+        let path = Path::new(&file);
+        if path.is_absolute() {
+            return path.to_path_buf();
         }
+        let direct = self.maps.join(path);
+        if direct.is_file() || path.components().count() != 1 {
+            return direct;
+        }
+        let mut candidates: Vec<PathBuf> = std::fs::read_dir(&self.maps)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path().join(path))
+            .filter(|candidate| candidate.is_file())
+            .collect();
+        candidates.sort();
+        if candidates.len() > 1 {
+            tracing::warn!(
+                map = file,
+                chosen = ?candidates[0],
+                "ambiguous unqualified map name; using the first namespace"
+            );
+        }
+        candidates.into_iter().next().unwrap_or(direct)
     }
 
     /// The default map: the **lexicographically smallest** `.map` under [`Paths::maps`].
@@ -385,6 +410,19 @@ mod tests {
         assert_eq!(p.default_map().as_deref(), Some("Alchemy/a-map.map"));
         let name = p.default_map().expect("a default map");
         assert!(p.map(&name).is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bare_map_name_resolves_inside_a_namespace() {
+        let root = std::env::temp_dir().join("releste-paths-bare-namespaced");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("maps/Gameplay")).unwrap();
+        std::fs::write(root.join("maps/Gameplay/a-map.map"), b"RELMAP").unwrap();
+
+        let p = Paths::resolve(Some(&root));
+        assert_eq!(p.map("a-map"), root.join("maps/Gameplay/a-map.map"));
+        assert_eq!(p.map("a-map.map"), root.join("maps/Gameplay/a-map.map"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -29,6 +29,11 @@ fmod*.dll
 # Derivated by original Celeste contents (art / audio / map)
 /assets/
 /assets-src/
+/resources/
+/maps/Gameplay/
+
+# User-provided native libraries
+/libs/
 
 # Binaries and archives
 *.exe

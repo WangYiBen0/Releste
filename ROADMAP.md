@@ -315,7 +315,7 @@ The whole feel lives here - this is what "close to vanilla" means.
 
 ### 4.3 Areas
 
-Load all converted areas from `assets/maps/`, room transitions, checkpoints, and the overworld.
+Load all converted areas from `maps/<namespace>/`, room transitions, checkpoints, and the overworld.
 
 Acceptance: **playable from Area 1 start to a C-side completion**, no editor needed, no crash across a full session.
 

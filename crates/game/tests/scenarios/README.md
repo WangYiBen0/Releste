@@ -59,5 +59,5 @@ cargo run --bin releste -- --script <scenario>.toml   # writes [scenario] trace
 # names (vx = px/tick, vx_ps = px/s)
 ```
 
-These scenarios need the converted assets (`assets/maps/`, `assets/atlas/`),
+These scenarios need the converted assets (`maps/Gameplay/`, `resources/Gameplay/atlas/`),
 which are gitignored: run them on a dev machine, not in the nix sandbox.
