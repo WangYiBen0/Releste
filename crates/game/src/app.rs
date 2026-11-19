@@ -554,7 +554,17 @@ fn watch_settings(
             Some(watcher)
         }
         Err(e) => {
-            warn!(error = %e, "settings hot-reload disabled");
+            // A missing settings directory is normal on a fresh install: there is
+            // simply nothing to hot-reload yet. Only report an actual watcher failure
+            // for a directory that exists; this is not a disabled-feature warning.
+            if files
+                .iter()
+                .any(|file| file.parent().is_some_and(|parent| parent.is_dir()))
+            {
+                warn!(error = %e, "settings hot-reload disabled");
+            } else {
+                info!("settings hot-reload idle: no settings directory exists yet");
+            }
             None
         }
     }
