@@ -541,33 +541,38 @@ fn resolve_skin(setting: &str, override_name: Option<&str>) -> crate::skin::Play
 /// Watch every settings layer (the user config and `<root>/settings.toml`) for writes.
 ///
 /// A layer may not exist yet, so the watcher watches its parent directory and matches by
-/// path (see `FileWatcher::new_files`). Failing to watch is not fatal: the game keeps the
-/// settings it already resolved.
+/// path (see `FileWatcher::new_files`). A parent directory that does not exist yet is
+/// skipped: one missing user directory must not disable the other existing layers.
 fn watch_settings(
     config: &crate::settings::ConfigLocation,
     paths: &Paths,
 ) -> Option<releste_reload::FileWatcher> {
-    let files = config.layers(paths.root());
+    let files = settings_files_with_existing_parents(config.layers(paths.root()));
+    if files.is_empty() {
+        info!("settings hot-reload idle: no settings directory exists yet");
+        return None;
+    }
     match releste_reload::FileWatcher::new_files(&files, SETTINGS_DEBOUNCE_MS) {
         Ok(watcher) => {
             info!(files = files.len(), "watching settings for changes");
             Some(watcher)
         }
         Err(e) => {
-            // A missing settings directory is normal on a fresh install: there is
-            // simply nothing to hot-reload yet. Only report an actual watcher failure
-            // for a directory that exists; this is not a disabled-feature warning.
-            if files
-                .iter()
-                .any(|file| file.parent().is_some_and(|parent| parent.is_dir()))
-            {
-                warn!(error = %e, "settings hot-reload disabled");
-            } else {
-                info!("settings hot-reload idle: no settings directory exists yet");
-            }
+            warn!(error = %e, "settings hot-reload disabled");
             None
         }
     }
+}
+
+/// Keep settings layers whose parent can actually be watched.
+fn settings_files_with_existing_parents(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    files
+        .into_iter()
+        .filter(|file| match file.parent() {
+            Some(parent) => parent.as_os_str().is_empty() || parent.is_dir(),
+            None => true,
+        })
+        .collect()
 }
 
 /// Write compact RGBA8 pixels as a PNG; create the parent directory if it is missing.
@@ -709,5 +714,25 @@ fn pollster_block_on<F: std::future::Future>(fut: F) -> F::Output {
             Poll::Ready(v) => return v,
             Poll::Pending => std::thread::yield_now(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_watch_skips_only_missing_parent_directories() {
+        let temp = std::env::temp_dir().join("releste-app-settings-watch");
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join("root")).unwrap();
+        let existing = temp.join("root/settings.toml");
+        let missing = temp.join("missing/config.toml");
+        let relative = PathBuf::from("settings.toml");
+
+        let files =
+            settings_files_with_existing_parents(vec![missing, existing.clone(), relative.clone()]);
+        assert_eq!(files, vec![existing, relative]);
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }
