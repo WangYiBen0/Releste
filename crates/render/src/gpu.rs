@@ -82,6 +82,36 @@ impl Default for GpuRendererConfig {
     }
 }
 
+/// Creates the wgpu instance this backend uses.
+///
+/// Two deviations from `wgpu::InstanceDescriptor::default()`, both to keep the log clean
+/// without hiding a real failure:
+///
+/// - **`Backends::PRIMARY`** (Vulkan / Metal / D3D12, no GLES). Probing GLES on Wayland
+///   makes `wgpu_hal::gles::egl` log `Re-initializing Gles context due to Wayland window`
+///   on every start, and every GPU that can run this engine speaks a primary backend.
+/// - **`InstanceFlags::empty()`** turns off `VALIDATION` and `DEBUG`. A debug build otherwise
+///   requests `VK_LAYER_KHRONOS_validation`, and when the layer is not installed the Vulkan
+///   loader answers every probe with a `[WARN]` (including the `return code -9` line from
+///   `libvulkan_dzn.so`). The flags only control layers, not error reporting: validation
+///   *errors* (/warnings wgpu raises itself) still reach us as `RenderError`.
+///
+/// `WGPU_VALIDATION=1` restores the default descriptor, so a developer who *does* have the
+/// layer installed can still get GPU-side validation without a rebuild.
+fn new_instance() -> wgpu::Instance {
+    if std::env::var_os("WGPU_VALIDATION").is_some_and(|v| v != "0") {
+        return wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
+    }
+    wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        flags: wgpu::InstanceFlags::empty(),
+        ..Default::default()
+    })
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -149,10 +179,7 @@ impl GpuRenderer {
         window: std::sync::Arc<winit::window::Window>,
         config: GpuRendererConfig,
     ) -> Result<Self, RenderError> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let instance = new_instance();
 
         let surface = instance
             .create_surface(window)
@@ -648,6 +675,15 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
+            // Clip to the game area, so nothing can paint into the letterbox bars. Vanilla
+            // does not need this (it blits one 320x180 frame buffer), but the engine draws
+            // straight into the window: a backdrop sized for the camera's half extent reaches
+            // past the bar edge at the sub-pixel level, and an oversized sprite would draw
+            // over the bar entirely. The scissor rect is the same rect `base_to_ndc` maps
+            // `0..320, 0..180` onto, so the visible result is unchanged.
+            let (gx, gy, gw, gh) = camera.game_area(self.viewport);
+            pass.set_scissor_rect(gx, gy, gw, gh);
+
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -1004,10 +1040,7 @@ mod tests {
     /// compiled here. Skipped when the environment has no adapter (headless containers).
     #[test]
     fn sprite_shader_compiles_for_both_entry_points() {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let instance = new_instance();
         let Some(adapter) = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,

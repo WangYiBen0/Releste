@@ -22,10 +22,23 @@ use crate::mapbin::{BinValue, MapBin, MapBinElement};
 pub struct PipelineConfig {
     /// Source directory (vanilla Celeste assets).
     pub source: PathBuf,
-    /// Output directory.
+    /// Output directory (the runtime root).
     pub output: PathBuf,
     /// Convert only these categories (empty = all).
     pub only: Vec<String>,
+    /// Namespace for the material pack (ROADMAP Appendix C rule 1).
+    ///
+    /// One string names both `resources/<namespace>/` and `maps/<namespace>/`, so the
+    /// art and the rooms that consume it always resolve together. It matches the atlas
+    /// name a map declares in its tileset (`Gameplay` for the vanilla chapters), which is
+    /// why that is the default. Ignored when [`PipelineConfig::flat`] is set.
+    pub namespace: String,
+    /// Write the **legacy flat** layout (`atlas/`, `maps/`, `dialog/`, `audio/` under
+    /// `output`) instead of the namespaced one.
+    ///
+    /// Only for regenerating an existing pre-namespace tree; new content uses the
+    /// namespaced layout.
+    pub flat: bool,
 }
 
 /// Report for one run.
@@ -74,6 +87,11 @@ impl Pipeline {
     pub fn run(&mut self) -> Result<PipelineReport, PipelineError> {
         std::fs::create_dir_all(&self.config.output)
             .map_err(|e| PipelineError::io(self.config.output.display(), e))?;
+        // Both roots are created up front, so an empty category (no skins, say) still
+        // leaves a tree the game can resolve instead of a missing namespace.
+        for root in [self.resources_root(), self.maps_root()] {
+            std::fs::create_dir_all(&root).map_err(|e| PipelineError::io(root.display(), e))?;
+        }
 
         if self.wants("atlas") {
             self.convert_atlases()?;
@@ -100,9 +118,39 @@ impl Pipeline {
         self.config.only.is_empty() || self.config.only.iter().any(|c| c == category)
     }
 
+    /// `resources/<namespace>` (or `output` itself in the legacy flat layout).
+    ///
+    /// Everything under `resources/` is one material pack: art, dialog and audio must land
+    /// in the same namespace directory (ROADMAP Appendix C rule 1).
+    fn resources_root(&self) -> PathBuf {
+        if self.config.flat {
+            self.config.output.clone()
+        } else {
+            self.config
+                .output
+                .join("resources")
+                .join(&self.config.namespace)
+        }
+    }
+
+    /// `maps/<namespace>` (or `output` itself in the legacy flat layout).
+    ///
+    /// Maps live outside `resources/` on purpose: rooms are authored data, art is derived
+    /// content, and `.gitignore` treats them differently (Appendix C rule 6).
+    fn maps_root(&self) -> PathBuf {
+        if self.config.flat {
+            self.config.output.clone()
+        } else {
+            self.config.output.join("maps").join(&self.config.namespace)
+        }
+    }
+
     /// Ensure the output path does not escape the output directory.
-    fn safe_out(&self, rel: &Path) -> Result<PathBuf, PipelineError> {
-        let joined = self.config.output.join(rel);
+    ///
+    /// `base` is the tree the path is relative to: `resources/<ns>` for an atlas/dialog/audio
+    /// payload and `maps/<ns>` for a room, so each category lands in its Appendix C place.
+    fn safe_out_in(&self, base: &Path, rel: &Path) -> Result<PathBuf, PipelineError> {
+        let joined = base.join(rel);
         // Normalize: reject `..` components.
         for comp in rel.components() {
             if matches!(comp, std::path::Component::ParentDir) {
@@ -110,6 +158,16 @@ impl Pipeline {
             }
         }
         Ok(joined)
+    }
+
+    /// Shorthand for a material-pack entry (`atlas/`, `dialog/`, `audio/`).
+    fn safe_out(&self, rel: &Path) -> Result<PathBuf, PipelineError> {
+        self.safe_out_in(&self.resources_root(), rel)
+    }
+
+    /// Shorthand for a room entry (`maps/*.map`).
+    fn safe_map_out(&self, rel: &Path) -> Result<PathBuf, PipelineError> {
+        self.safe_out_in(&self.maps_root(), rel)
     }
 
     // ---------- Atlases ----------
@@ -550,7 +608,8 @@ impl Pipeline {
                 .unwrap_or_else(|| "unknown".into());
 
             let rel = PathBuf::from(format!("maps/{stem}.map"));
-            let out = self.safe_out(&rel)?;
+            // Rooms go to `maps/<namespace>/`, beside `resources/<namespace>/`.
+            let out = self.safe_map_out(&rel)?;
             if let Some(parent) = out.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| PipelineError::io(parent.display(), e))?;

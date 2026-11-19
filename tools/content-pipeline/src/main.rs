@@ -43,6 +43,15 @@ struct Args {
     /// After writing, read every `.map` back to confirm the runtime loader can parse it.
     #[arg(long)]
     verify: bool,
+
+    /// Namespace for the material pack (ROADMAP Appendix C rule 1).
+    #[arg(long, default_value = "Gameplay")]
+    namespace: String,
+
+    /// Write the legacy flat layout (atlas/, maps/, dialog/, audio/ under
+    /// `--output`) instead of the namespaced one.
+    #[arg(long)]
+    flat: bool,
 }
 
 fn main() -> ExitCode {
@@ -59,6 +68,8 @@ fn main() -> ExitCode {
         source: args.source.clone(),
         output: args.output.clone(),
         only: args.only.clone(),
+        namespace: args.namespace.clone(),
+        flat: args.flat,
     };
 
     let mut pipeline = Pipeline::new(config);

@@ -118,6 +118,31 @@ impl Camera {
         self.base_to_ndc(self.world_to_screen(world), viewport)
     }
 
+    /// The **game area** inside a viewport, in physical pixels: `(x, y, width, height)`.
+    ///
+    /// This is the letterboxed 320x180 rectangle the camera maps onto; everything outside it
+    /// is the black bar. `base_to_ndc` and this function must agree, so both derive the
+    /// scale from the smaller of the two axis ratios.
+    ///
+    /// Vanilla has no such rectangle -- it renders the 320x180 frame buffer and blits it
+    /// centred, so nothing can paint outside the game area. The engine draws straight into the
+    /// window, so the renderer scissors to this rect instead (`Celeste/Game.cs` letterbox).
+    pub fn game_area(&self, viewport: (u32, u32)) -> (u32, u32, u32, u32) {
+        let vw = viewport.0.max(1) as f32;
+        let vh = viewport.1.max(1) as f32;
+        let scale = (vw / self.base_size.0).min(vh / self.base_size.1);
+        // Round the extent up and the offset down, so the game area never loses a row or
+        // column to truncation (a bar one pixel too wide is more visible than one too thin).
+        let w = (self.base_size.0 * scale).ceil().max(1.0);
+        let h = (self.base_size.1 * scale).ceil().max(1.0);
+        let x = ((vw - w) * 0.5).floor().max(0.0);
+        let y = ((vh - h) * 0.5).floor().max(0.0);
+        // A scissor rect must stay inside the target, and wgpu rejects one that does not.
+        let w = w.min(vw - x).max(1.0);
+        let h = h.min(vh - y).max(1.0);
+        (x as u32, y as u32, w as u32, h as u32)
+    }
+
     /// Base (320x180) pixel size -> NDC size, without any camera zoom.
     ///
     /// Used by screen-space draws (vanilla backdrops: `BackdropRenderer.Matrix = Identity`,
@@ -208,6 +233,38 @@ mod tests {
         // Viewport wider than 16:9 -> black bars on the sides, center stays centered
         let (x, _y) = cam.world_to_ndc(Vec2::ZERO, (1000, 360));
         assert!(x.abs() < 1e-5);
+    }
+
+    /// The game area is the letterboxed 320x180 rect, and it has to line up with what
+    /// `base_to_ndc` maps the base viewport onto -- otherwise the scissor would cut real
+    /// content or leave a bar uncovered.
+    #[test]
+    fn game_area_matches_the_ndc_mapping() {
+        for vp in [(640u32, 360u32), (1280, 720), (1000, 360), (300, 700)] {
+            let cam = Camera::at(Vec2::ZERO);
+            let (x, y, w, h) = cam.game_area(vp);
+            // The scissor rect stays inside the target, or wgpu rejects it.
+            assert!(x + w <= vp.0, "{vp:?} -> {x}+{w}");
+            assert!(y + h <= vp.1, "{vp:?} -> {y}+{h}");
+            // The bar is symmetric within a pixel (the extent is rounded up).
+            let right = vp.0 - (x + w);
+            let bottom = vp.1 - (y + h);
+            assert!(right.abs_diff(x) <= 1, "{vp:?}: left {x} right {right}");
+            assert!(bottom.abs_diff(y) <= 1, "{vp:?}: top {y} bottom {bottom}");
+            // Base (0,0) lands on the game area's top-left corner; (320,180) on its
+            // bottom-right. Allow one pixel for the round-up.
+            let (nx, ny) = cam.base_to_ndc(Vec2::ZERO, vp);
+            let px = (nx + 1.0) * 0.5 * vp.0 as f32;
+            let py = (1.0 - ny) * 0.5 * vp.1 as f32;
+            assert!((px - x as f32).abs() <= 1.0, "{vp:?}: px {px} x {x}");
+            assert!((py - y as f32).abs() <= 1.0, "{vp:?}: py {py} y {y}");
+        }
+    }
+
+    #[test]
+    fn game_area_is_the_whole_viewport_at_the_base_size() {
+        let cam = Camera::new();
+        assert_eq!(cam.game_area((320, 180)), (0, 0, 320, 180));
     }
 
     #[test]

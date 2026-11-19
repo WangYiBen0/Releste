@@ -46,18 +46,24 @@ impl Paths {
     }
 
     /// Build Paths under `root` (the concrete choices for maps/atlas/plugins).
+    ///
+    /// The atlas directory is looked up in the order of ROADMAP Appendix C then the
+    /// two legacy layouts, so one binary runs against a shipped tree and a dev tree:
+    ///
+    /// 1. `resources/<namespace>/atlas` -- the shipped layout. The first namespace
+    ///    (alphabetically) that actually holds an `atlas/` wins, so an unrelated
+    ///    directory under `resources/` (a font pack, say) never hides the art.
+    /// 2. `atlas/` -- the flat layout the pipeline wrote before namespaces existed.
+    /// 3. `assets/atlas` -- the dev tree, kept working until it is migrated.
     fn under(root: &Path) -> Self {
         let maps = maps_dir_under(root);
-        let atlas = if root.join("atlas").is_dir() {
-            root.join("atlas")
-        } else if root.join("resources").is_dir() {
-            // Appendix C: resources/<namespace>/atlas -- take the first namespace.
-            first_dir(&root.join("resources"))
-                .map(|ns| ns.join("atlas"))
-                .unwrap_or_else(|| root.join("assets").join("atlas"))
-        } else {
-            root.join("assets").join("atlas")
-        };
+        let atlas = namespace_atlas(root).unwrap_or_else(|| {
+            if root.join("atlas").is_dir() {
+                root.join("atlas")
+            } else {
+                root.join("assets").join("atlas")
+            }
+        });
         let plugins = root.join("plugins");
 
         Paths {
@@ -232,15 +238,21 @@ fn collect_map_names(dir: &Path, base: &Path, out: &mut Vec<String>) {
     }
 }
 
-fn first_dir(dir: &Path) -> Option<PathBuf> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+/// `resources/<namespace>/atlas` for the first namespace (alphabetically) that has one.
+///
+/// Appendix C rule 1: the namespace string is shared by `maps/<ns>/` and
+/// `resources/<ns>/`, so a room and the art it names resolve together. Picking the
+/// first namespace with an actual `atlas/` directory rather than the first directory
+/// keeps a stray `resources/fonts/` from shadowing the art.
+fn namespace_atlas(root: &Path) -> Option<PathBuf> {
+    let mut namespaces: Vec<PathBuf> = std::fs::read_dir(root.join("resources"))
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_dir())
+        .filter(|p| p.join("atlas").is_dir())
         .collect();
-    entries.sort();
-    entries.into_iter().next()
+    namespaces.sort();
+    namespaces.into_iter().next().map(|ns| ns.join("atlas"))
 }
 
 #[cfg(test)]
@@ -321,6 +333,27 @@ mod tests {
     ///
     /// The engine never hardcodes a map name: the shipped tree decides
     /// which map opens first, and this rule keeps that decision reproducible.
+    /// Appendix C: `resources/<namespace>/atlas` wins over the flat `assets/atlas`, and a
+    /// namespace without an `atlas/` (a font pack) must not shadow one that has it.
+    #[test]
+    fn the_shipped_resources_layout_wins_over_the_dev_tree() {
+        let root = std::env::temp_dir().join("releste-paths-resources");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("resources/aaa/fonts")).unwrap();
+        std::fs::create_dir_all(root.join("resources/Gameplay/atlas")).unwrap();
+        std::fs::create_dir_all(root.join("assets/atlas")).unwrap();
+
+        let p = Paths::resolve(Some(&root));
+        assert!(
+            p.atlas_dir().ends_with("resources/Gameplay/atlas"),
+            "expected the namespace atlas, got {:?}",
+            p.atlas_dir()
+        );
+        // The skins live beside the atlas in the same namespace (Appendix C).
+        assert!(p.skins_dir().ends_with("resources/Gameplay/skins"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn default_map_is_the_smallest_map() {
         let root = std::env::temp_dir().join("releste-paths-default-map");
