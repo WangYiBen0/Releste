@@ -9,6 +9,7 @@
 
 mod app;
 mod backdrop;
+mod console;
 mod devtools;
 mod filmstrip;
 use releste_kernel::log as logging;
@@ -85,6 +86,10 @@ struct Args {
     /// `~` toggles it at runtime; this flag exists so a `--screenshot` run can capture it.
     #[arg(long)]
     debug_overlay: bool,
+
+    /// Start with the interactive debug console open.
+    #[arg(long)]
+    console: bool,
 
     /// Simulate without a window, print a frame report, and exit.
     #[arg(long)]
@@ -344,7 +349,8 @@ fn run(args: &Args) -> anyhow::Result<()> {
         config,
         args.skin.clone(),
     )
-    .with_debug_overlay(args.debug_overlay);
+    .with_debug_overlay(args.debug_overlay)
+    .with_console(args.console);
     app.run()
 }
 

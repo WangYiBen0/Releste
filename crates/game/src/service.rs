@@ -266,7 +266,13 @@ impl GameService {
     ///
     /// `alpha` in [0, 1] is the interpolation progress from the previous tick to this one; the player position is
     /// linearly interpolated `prev_pos` -> `pos` from it, avoiding 60Hz simulation jitter on a 144Hz screen.
-    pub fn render(&mut self, gpu: &mut GpuRenderer, alpha: f32, batch: &mut SpriteBatch) {
+    pub fn render(
+        &mut self,
+        gpu: &mut GpuRenderer,
+        alpha: f32,
+        batch: &mut SpriteBatch,
+        console: &crate::console::DebugConsole,
+    ) {
         // The clear color comes from the map style (`<Style color=...>` -> `MapStyle::background_color`).
         gpu.set_clear_color(self.session.clear_color());
 
@@ -358,10 +364,10 @@ impl GameService {
         }
         // The debug overlay sits at `Layer::Ui`, above every game layer, and is rebuilt
         // from the interpolated camera each frame so the readout tracks the drawn frame.
-        if self.debug_open {
+        if self.debug_open || console.is_open() {
             let camera = Camera::at(self.camera_pos(alpha));
             let mut overlay = Vec::new();
-            crate::overlay::push_overlay(&mut overlay, self, gpu, &camera, alpha);
+            crate::overlay::push_overlay(&mut overlay, self, gpu, &camera, alpha, console);
             for draw in overlay {
                 if batch.push(draw).is_err() && !self.overflow_warned {
                     self.overflow_warned = true;

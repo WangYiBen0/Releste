@@ -72,6 +72,8 @@ pub struct GameApp {
     rendered: u64,
     /// Open the `~` debug overlay as soon as the service exists (`--debug-overlay`).
     debug_overlay_at_boot: bool,
+    /// Interactive debug console; it owns its input and output history.
+    console: crate::console::DebugConsole,
     /// A fatal error accumulated during asynchronous phases such as screenshots; propagated by `run` after the event loop ends.
     fatal: Option<anyhow::Error>,
 }
@@ -119,6 +121,7 @@ impl GameApp {
             screenshot_saved: false,
             rendered: 0,
             debug_overlay_at_boot: false,
+            console: crate::console::DebugConsole::default(),
             fatal: None,
         }
     }
@@ -126,6 +129,14 @@ impl GameApp {
     /// Start with the debug overlay already open (see `--debug-overlay`).
     pub fn with_debug_overlay(mut self, open: bool) -> Self {
         self.debug_overlay_at_boot = open;
+        self
+    }
+
+    /// Start with the interactive console open (`--console`).
+    pub fn with_console(mut self, open: bool) -> Self {
+        if open {
+            self.console.toggle();
+        }
         self
     }
 
@@ -240,18 +251,48 @@ impl GameApp {
         // `TranslateKeys` 101708's physical-key semantics = winit `PhysicalKey`).
         // Enter = vanilla Pause (101642); ESC = the vanilla menu key (`Input.ESC`,
         // 110396), which the engine reuses as the pause toggle. Dash/grab etc. are added after Phase 4.1.
-        if code == KeyCode::Escape || code == KeyCode::Enter {
+        if !self.console.is_open() && (code == KeyCode::Escape || code == KeyCode::Enter) {
             if down {
                 self.toggle_pause();
             }
             return;
         }
-        // `~` toggles the debug overlay: player hitbox + a text readout. Vanilla opens its
-        // console on OemTilde/Oem8 and draws the hitbox pass only while it is open, so one
-        // key covers both halves here too.
+        // `~` opens the interactive debug console. While it is open, keys edit its
+        // command line instead of moving the player (the same input-capture rule as the
+        // editor's text fields); Enter submits, Up/Down recall history and Escape closes.
         if code == KeyCode::Backquote {
             if down {
-                self.toggle_overlay();
+                self.console.toggle();
+            }
+            return;
+        }
+        if self.console.is_open() {
+            if !down {
+                return;
+            }
+            match code {
+                KeyCode::Escape => self.console.toggle(),
+                KeyCode::Enter => {
+                    let result = self.console.submit();
+                    if let Some(on) = result.overlay {
+                        if let Some(kernel) = self.kernel.as_mut() {
+                            if let Some(service) = kernel.resolve_mut::<GameService>() {
+                                service.debug_open = on;
+                            }
+                        }
+                    }
+                    if result.close {
+                        self.console.toggle();
+                    }
+                }
+                KeyCode::Backspace => self.console.backspace(),
+                KeyCode::ArrowUp => self.console.previous(),
+                KeyCode::ArrowDown => self.console.next(),
+                _ => {
+                    if let Some(text) = event.logical_key.to_text() {
+                        self.console.text(text);
+                    }
+                }
             }
             return;
         }
@@ -290,22 +331,6 @@ impl GameApp {
             info!("paused");
         } else {
             info!("resumed");
-        }
-    }
-
-    /// Toggle the `~` debug overlay (hitboxes + readout; a pure render flag).
-    fn toggle_overlay(&mut self) {
-        let Some(kernel) = self.kernel.as_mut() else {
-            return;
-        };
-        let Some(service) = kernel.resolve_mut::<GameService>() else {
-            return;
-        };
-        service.debug_open = !service.debug_open;
-        if service.debug_open {
-            info!("debug overlay on");
-        } else {
-            info!("debug overlay off");
         }
     }
 
@@ -402,6 +427,12 @@ impl GameApp {
 
         self.accumulator += wall;
 
+        // Console input is captured, so the game must not advance from held movement
+        // keys while the command line is open. This is render/input state only; no
+        // simulation state is changed or rewound (AGENTS.md 4.5).
+        if self.console.is_open() {
+            self.keys = Input::default();
+        }
         let step = Duration::from_secs_f64(FIXED_DT.to_f64());
         let mut steps = 0u32;
         while self.accumulator >= step && steps < MAX_CATCHUP {
@@ -452,7 +483,7 @@ impl GameApp {
         let Some(service) = kernel.resolve_mut::<GameService>() else {
             return;
         };
-        service.render(gpu, self.alpha, &mut self.batch);
+        service.render(gpu, self.alpha, &mut self.batch, &self.console);
         let camera = service.render_camera(self.alpha);
         if let Err(e) = gpu.render(&self.batch, &camera) {
             error!(error = %e, "render failed");
@@ -481,7 +512,7 @@ impl GameApp {
         let Some(service) = kernel.resolve_mut::<GameService>() else {
             anyhow::bail!("game service is gone");
         };
-        service.render(gpu, self.alpha, &mut self.batch);
+        service.render(gpu, self.alpha, &mut self.batch, &self.console);
         let camera = service.render_camera(self.alpha);
         let (width, height, pixels) = gpu
             .capture_pixels(&self.batch, &camera)

@@ -59,6 +59,7 @@ pub(crate) fn push_overlay(
     gpu: &GpuRenderer,
     camera: &Camera,
     alpha: f32,
+    console: &crate::console::DebugConsole,
 ) {
     let Some((pixel_group, pixel_sprite)) = service.session.atlas.sprite(PIXEL_SPRITE) else {
         return;
@@ -90,7 +91,8 @@ pub(crate) fn push_overlay(
         HITBOX,
     );
 
-    // Text readout at the top-left corner.
+    // Text readout at the top-left corner. The interactive console takes the
+    // bottom strip, so the player state stays visible above it.
     let Some((font_group, font_sprite)) = service.session.atlas.sprite(FONT_SPRITE) else {
         return;
     };
@@ -126,6 +128,42 @@ pub(crate) fn push_overlay(
             screen_quad(
                 out, camera, font_atlas, uv, zoom, x, y, GLYPH_W, GLYPH_H, TEXT,
             );
+        }
+    }
+
+    // The interactive console is rendered in the same base-pixel coordinate system
+    // as the readout. Keep it below the readout rather than replacing the hitbox.
+    if console.is_open() {
+        let console_lines = console.display_lines();
+        let visible = 6usize;
+        let start = console_lines.len().saturating_sub(visible);
+        let rows = console_lines.len().min(visible) as f32;
+        let panel_y = 180.0 - PAD * 2.0 - rows * LINE_H;
+        let panel_h = PAD * 2.0 + rows * LINE_H;
+        screen_quad(
+            out,
+            camera,
+            pixel_atlas,
+            pixel_uv,
+            zoom,
+            0.0,
+            panel_y,
+            320.0,
+            panel_h,
+            PANEL,
+        );
+        for (row, line) in console_lines.iter().skip(start).enumerate() {
+            let y = panel_y + PAD + row as f32 * LINE_H;
+            for (col, ch) in line.chars().enumerate() {
+                let Some(cell) = glyph_cell(ch) else {
+                    continue;
+                };
+                let uv = glyph_uv(font_sprite, cell, tex);
+                let x = PAD + col as f32 * ADVANCE;
+                screen_quad(
+                    out, camera, font_atlas, uv, zoom, x, y, GLYPH_W, GLYPH_H, TEXT,
+                );
+            }
         }
     }
 }
