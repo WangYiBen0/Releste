@@ -124,7 +124,7 @@ impl Fx {
     /// shifted left by `FRACTIONAL_BITS`, and the guess `2^ceil(bits/2)` halves the digit
     /// count each step, so six iterations exhaust a 32-bit input. No `f32` anywhere
     /// (AGENTS.md 15.7); used by [`crate::Vec2::length`] and the hair segment clamp
-    /// (vanilla `Vector2.SafeNormalize`, `pureCeleste.cs:111133`).
+    /// (vanilla `Vector2.SafeNormalize`, `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:79`).
     pub fn sqrt(self) -> Self {
         if self.0 <= 0 {
             return Fx::zero();

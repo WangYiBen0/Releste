@@ -8,7 +8,7 @@
 # `--config PATH` and RELESTE_CONFIG_FILE replace the chain with that one file.
 #
 # Key names are winit `KeyCode` names and bind by physical position (vanilla
-# `TranslateKeys`, pureCeleste.cs:101708). An action may list several keys.
+# `TranslateKeys`, references/Celeste.exe.cs.d/Celeste/Settings.cs:288). An action may list several keys.
 # Delete a line here to inherit the value from the next layer down instead.
 
 [keys]
@@ -28,7 +28,7 @@ name = ""
 
 [render]
 # Snap world positions to whole pixels while drawing, like vanilla: the player
-# draws through a floored `RenderPosition` (pureCeleste.cs:1366-1367) and
+# draws through a floored `RenderPosition` (references/Celeste.exe.cs.d/Celeste/Player.cs:1366-1367) and
 # particles truncate theirs (`Monocle/Particle.cs` Render). `true` keeps the
 # fractional positions -- the switch a smooth-motion presentation needs, at the
 # cost of no longer matching vanilla pixels.

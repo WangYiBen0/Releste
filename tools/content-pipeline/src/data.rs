@@ -27,7 +27,7 @@
 //! = RGBA8), so premultiplication is part of the content itself. Keep it as-is when converting to PNG; the
 //! renderer can restore it with `PREMULTIPLIED_ALPHA_BLENDING`.
 //!
-//! Reference: `references/pureCeleste.cs:25469-25547` (the `.data` branch).
+//! Reference: `references/Celeste.exe.cs.d/Monocle/VirtualTexture.cs:77-155` (the `.data` branch).
 //!
 //! # Provenance
 //! Original formats are only allowed in `tools/content-pipeline` (AGENTS.md 4.6 / 12):

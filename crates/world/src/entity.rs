@@ -61,10 +61,10 @@ pub struct EntityData {
     pub properties: BTreeMap<String, FieldValue>,
     /// Entity nodes (appended in v2, the `node` child element).
     ///
-    /// Vanilla `EntityData.Nodes` (`pureCeleste.cs:113135-113198`); the three
+    /// Vanilla `EntityData.Nodes` (`references/Celeste.exe.cs.d/Celeste/EntityData.cs:100-163`); the three
     /// most common consumers: `IntroCrusher` landing point
-    /// (`106324-106327`), `Wire` polyline (`106674-106704`), `Bridge` piers
-    /// (`107679`).
+    /// (`references/Celeste.exe.cs.d/Celeste/IntroCrusher.cs:25-28`), `Wire` polyline (`references/Celeste.exe.cs.d/Celeste/Wire.cs:7-37`), `Bridge` piers
+    /// (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:7`).
     ///
     /// The coordinates are in the **same coordinate space** as `x`/`y` (room
     /// local, may extend beyond the room bounds): vanilla consumers write

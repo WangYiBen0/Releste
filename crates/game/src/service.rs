@@ -19,13 +19,13 @@ use crate::session::Session;
 /// Debounce window for `FileWatcher`, ROADMAP step 10: 100ms.
 const WATCH_DEBOUNCE_MS: u64 = 100;
 /// Camera follow coefficient (chases 1/4 of the target each tick).
-/// Vanilla camera follow coefficient (`Player.Update` 120137-120145):
+/// Vanilla camera follow coefficient (`Player.Update` references/Celeste.exe.cs.d/Celeste/Player.cs:1886-1894):
 /// `pos += (target - pos) * (1 - 0.01^dt)`; with dt = 1/60 the coefficient is ~0.0739,
 /// taking 19/256 = 0.0742 (the closest rational within the Fx 1/256 step).
 const CAMERA_LERP: Fx = Fx::from_ratio(19, 256);
 
 /// Room transition duration 0.65s = 39 ticks (`Level.NextTransitionDuration`,
-/// pureCeleste.cs:113847, Reset 115428).
+/// references/Celeste.exe.cs.d/Celeste/Level.cs:57, Reset references/Celeste.exe.cs.d/Celeste/Level.cs:1638).
 const TRANSITION_TICKS: u32 = 39;
 
 /// In-progress room transition (an explicit state version of the vanilla `Level.transition` coroutine).
@@ -101,7 +101,7 @@ pub struct GameService {
     watcher: Option<FileWatcher>,
     static_draws: Vec<SpriteDraw>,
     /// The **previous room** static batch kept during a transition (vanilla calls
-    /// `UnloadEntities` on the old-room entities only when the transition ends, 115415/115432 -- while the
+    /// `UnloadEntities` on the old-room entities only when the transition ends, references/Celeste.exe.cs.d/Celeste/Level.cs:1625/references/Celeste.exe.cs.d/Celeste/Level.cs:1642 -- while the
     /// screen transition is running the old room's tiles/entities must keep rendering, they must not vanish early).
     transition_statics: Option<Vec<SpriteDraw>>,
     static_dirty: bool,
@@ -118,7 +118,7 @@ pub struct GameService {
     /// to, matching SkinModHelper's `GetHairTexture` override).
     pub skin: crate::skin::PlayerHairSkin,
     /// In-progress room transition; while `Some`, entities are frozen and only the player glide and camera pan run
-    /// (vanilla `Level.Update`'s Transitioning branch, 115659-115668).
+    /// (vanilla `Level.Update`'s Transitioning branch, references/Celeste.exe.cs.d/Celeste/Level.cs:1869-1878).
     transition: Option<RoomTransition>,
     overflow_warned: bool,
     reloads: u64,
@@ -132,13 +132,13 @@ pub struct GameService {
     ///
     /// The vector is applied to the **render** camera only (`camera_pos`), never to
     /// `self.camera` -- vanilla restores `Camera.Position` in `Level.AfterRender`
-    /// (pureCeleste.cs:114204-114208), so the simulation never sees the offset.
+    /// (references/Celeste.exe.cs.d/Celeste/Level.cs:414-418), so the simulation never sees the offset.
     shake: crate::shake::Shake,
     /// Dust/particle ring buffer (vanilla `Level.Particles`, 400 slots, Depth -8000).
     particles: crate::particles::ParticleSystem,
     /// Draw at fractional positions instead of snapping to whole pixels
     /// (`crate::settings::Settings::smooth_motion`). `false` is vanilla: the player
-    /// floors `RenderPosition` (pureCeleste.cs:1366-1367) and particles truncate theirs
+    /// floors `RenderPosition` (references/Celeste.exe.cs.d/Celeste/Player.cs:1366-1367) and particles truncate theirs
     /// (`Monocle/Particle.cs` Render).
     pub smooth_motion: bool,
     /// How hard the screen shakes (vanilla `Settings.Instance.ScreenShake`); see
@@ -154,10 +154,10 @@ impl GameService {
         watcher: Option<FileWatcher>,
         gpu: Option<&GpuRenderer>,
     ) -> Self {
-        // Vanilla: `new Player(Session.RespawnPoint.Value, ...)` (115105),
+        // Vanilla: `new Player(Session.RespawnPoint.Value, ...)` (references/Celeste.exe.cs.d/Celeste/Level.cs:1315),
         // Position = spawn anchor = hitbox bottom-center; our Player stores the hitbox
         // top-left -> top-left = anchor - (W/2, H) (hitbox 8x11, offset (-4,-11),
-        // 118856).
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:605).
         let player = Player::new(session.spawn - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H));
         let spawn_room = session.spawn_room.clone();
         let current_room = spawn_room.clone();
@@ -212,7 +212,7 @@ impl GameService {
     /// Vanilla camera center: `Player.CameraTarget` is the camera **center** of `Position + (-160,-90)`
     /// clamped into `[Left+160, Right-160] x [Top+90, Bottom-90]`
     /// (equivalent to vanilla clamping the camera top-left into `[Left, Top, Right-320, Bottom-180]`
-    /// and adding half a screen back, `pureCeleste.cs:119108-119111`).
+    /// and adding half a screen back, `references/Celeste.exe.cs.d/Celeste/Player.cs:857-860`).
     ///
     /// The clamp uses XNA `MathHelper.Clamp(v, min, max)` per-value semantics -- when max <
     /// min (room narrower/shorter than the view), the center is **not** used: a value left of center gives min, right gives max.
@@ -320,14 +320,14 @@ impl GameService {
             }
         }
         // Parallax backgrounds/foregrounds depend on the camera position and are rebuilt each frame from the interpolated camera
-        // (`Parallax.Render`, `pureCeleste.cs:112163-112236`).
+        // (`Parallax.Render`, `references/Celeste.exe.cs.d/Celeste/Parallax.cs:42-115`).
         for draw in self.session.backdrop_draws(gpu, self.camera_pos(alpha)) {
             if batch.push(draw).is_err() && !self.overflow_warned {
                 self.overflow_warned = true;
                 warn!("sprite batch full; backdrop draw dropped");
             }
         }
-        // The grass decals sway per frame (`Decal.Banner`, `Decal.cs:12-68`): every
+        // The grass decals sway per frame (`Decal.Banner`, `references/Celeste.exe.cs.d/Celeste/Decal.cs:12-68`): every
         // 1-px slice gets its own sine offset, so they cannot be cached with the
         // static list and are emitted here on the decal layers.
         for draw in self
@@ -347,7 +347,7 @@ impl GameService {
         }
         // Dust particles sit at `Layer::Effects`, i.e. in front of the player: vanilla
         // `Level.Particles` has Depth -8000 versus the player's -10000, and larger Depth
-        // draws first (`Monocle/EntityList.cs:26`), so the dust renders on top.
+        // draws first (`references/Celeste.exe.cs.d/Monocle/EntityList.cs:26`), so the dust renders on top.
         let mut dust = Vec::new();
         self.particles.push_draws(
             &mut dust,
@@ -385,7 +385,7 @@ impl GameService {
         // Vanilla snaps the sprite to whole pixels once per frame and draws everything
         // from there: `Vector2 renderPosition = Sprite.RenderPosition;
         // Sprite.RenderPosition = Sprite.RenderPosition.Floor();` (Player.Render,
-        // pureCeleste.cs:1366-1367, restored after the hair passes `base.Render()`).
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:1366-1367, restored after the hair passes `base.Render()`).
         // `[render] smooth_motion = true` keeps the interpolated subpixel position instead.
         if !self.smooth_motion {
             pos = pos.floor();
@@ -412,9 +412,9 @@ impl GameService {
             self.prev_camera.position + (self.camera.position - self.prev_camera.position) * a;
         // The screen shake is a render-only offset: vanilla adds `ShakeVector` to
         // `Camera.Position` in `BeforeRender` and floors it, then restores the position in
-        // `AfterRender` (pureCeleste.cs:114087-114091, 114204-114208). Flooring matters
+        // `AfterRender` (references/Celeste.exe.cs.d/Celeste/Level.cs:297-301, references/Celeste.exe.cs.d/Celeste/Level.cs:414-418). Flooring matters
         // because the offset is an integer pixel count and the parallax layers floor the
-        // camera again themselves (`Parallax.Render`, 112163-112236).
+        // camera again themselves (`Parallax.Render`, references/Celeste.exe.cs.d/Celeste/Parallax.cs:42-115).
         (base + self.shake.offset()).floor()
     }
 
@@ -474,28 +474,28 @@ impl GameService {
     /// One simulation tick: during a transition only advance the coroutine; otherwise physics -> camera -> transition check ->
     /// backdrop visibility refresh.
     fn simulate_tick(&mut self) {
-        // Vanilla `Celeste.Freeze(0.05f)` (dash startup, 122540): the whole scene freezes for
+        // Vanilla `Celeste.Freeze(0.05f)` (dash startup, references/Celeste.exe.cs.d/Celeste/Player.cs:4289): the whole scene freezes for
         // 0.05s = 3 ticks (`Engine.FreezeTimer`, Update does not run meanwhile).
         if self.player.freeze_ticks > 0 {
             self.player.freeze_ticks -= 1;
             return;
         }
         // Entities are frozen during a transition (vanilla `Level.Update`'s Transitioning branch,
-        // 115659-115668 runs only the transition coroutine), only the player glide and camera pan run.
+        // references/Celeste.exe.cs.d/Celeste/Level.cs:1869-1878 runs only the transition coroutine), only the player glide and camera pan run.
         if self.transition.is_some() {
             self.advance_transition();
         } else {
             self.player.update(&self.input, &self.session);
-            // UpdateSprite + Sprite.Update (120068/119824: per-frame animation advance).
+            // UpdateSprite + Sprite.Update (references/Celeste.exe.cs.d/Celeste/Player.cs:1817/references/Celeste.exe.cs.d/Celeste/Player.cs:1573: per-frame animation advance).
             self.player
                 .update_visuals(&self.session.anims, &self.input, &self.session.doc.rooms);
             self.update_camera();
-            // EnforceBounds: transition triggering/bounds clamping, after physics (120168).
+            // EnforceBounds: transition triggering/bounds clamping, after physics (references/Celeste.exe.cs.d/Celeste/Player.cs:1917).
             self.check_room_transition();
         }
 
         // Backdrop visibility refreshes every tick (the cadence of vanilla `Backdrop.Update`,
-        // 109468-109489); room filtering uses the current room name (`Session.Level` semantics),
+        // references/Celeste.exe.cs.d/Celeste/Backdrop.cs:134-155); room filtering uses the current room name (`Session.Level` semantics),
         // and during a transition it is kept or lit per the InstantIn/InstantOut rules.
         let transitioning = self.transition.is_some();
         let room = self.current_room.clone();
@@ -504,20 +504,20 @@ impl GameService {
         // Animated backdrops (snow) advance once per scene update, right after the
         // visibility refresh -- vanilla drives both from `BackdropRenderer.Update` via
         // `Scene.Update`, which is also skipped during a freeze and while paused
-        // (`Monocle/Engine.cs:264-273`, `Monocle/Scene.cs:75-82`).
+        // (`references/Celeste.exe.cs.d/Monocle/Engine.cs:264-273`, `references/Celeste.exe.cs.d/Monocle/Scene.cs:75-82`).
         self.session
             .update_backdrop_effects(Fx::from_bits(Fx::DT_ONE_SIXTIETH));
 
         // Dust bursts requested by the player this tick, then the particle update
         // (vanilla `Level.Update` runs `Particles.Update()` once per scene update,
-        // 113915-113922). Both sit after the physics branch so a tick's emissions are
+        // references/Celeste.exe.cs.d/Celeste/Level.cs:125-132). Both sit after the physics branch so a tick's emissions are
         // visible immediately, and after the freeze early-return so a frozen tick does
         // not advance them (`Engine.FreezeTimer` skips `Scene.Update`).
         self.particles.emit(self.player.dust());
         self.particles.update(Fx::from_bits(Fx::DT_ONE_SIXTIETH));
 
-        // Shake requests (vanilla `Level.DirectionalShake`, 114209-114216) and the shake
-        // tick (113702-113731: re-rolled on `OnRawInterval(0.04f)`, amplitude
+        // Shake requests (vanilla `Level.DirectionalShake`, references/Celeste.exe.cs.d/Celeste/Level.cs:419-426) and the shake
+        // tick (references/Celeste.exe.cs.d/Celeste/VertexLight.cs:110-139: re-rolled on `OnRawInterval(0.04f)`, amplitude
         // `Ceiling(shakeTimer * 10)`, timer drained by the raw delta).
         self.shake.amount = self.screen_shake;
         if let Some((dir, time)) = self.player.take_shake_request() {
@@ -538,7 +538,7 @@ impl GameService {
         }
     }
 
-    /// Regular-tick camera follow (vanilla `Player.Update` 120133-120146):
+    /// Regular-tick camera follow (vanilla `Player.Update` references/Celeste.exe.cs.d/Celeste/Player.cs:1882-1895):
     /// Target = the player anchor clamped inside the current room, approached exponentially.
     fn update_camera(&mut self) {
         // Player anchor = hitbox bottom-center (vanilla Position semantics).
@@ -550,7 +550,7 @@ impl GameService {
     }
 
     /// Transition triggering and bounds clamping from vanilla `Level.EnforceBounds`
-    /// (pureCeleste.cs:116517-116607). When the player hitbox crosses the current room bounds and the probe point lands in another
+    /// (references/Celeste.exe.cs.d/Celeste/Level.cs:2727-2817). When the player hitbox crosses the current room bounds and the probe point lands in another
     /// room -> start a transition; otherwise clamp per vanilla (hard clamp left/right, 24px margin on top).
     ///
     /// When both sides are out of bounds at once only one triggers, per the vanilla if/else priority: left -> right -> top -> bottom.
@@ -594,7 +594,7 @@ impl GameService {
             }
         }
 
-        // Top: the center crosses the room top edge (119560-119577); with no target room clamp to
+        // Top: the center crosses the room top edge (references/Celeste.exe.cs.d/Celeste/Player.cs:1309-1326); with no target room clamp to
         // 24px above the top (letting the player peek upward).
         if center.y.to_f32() < top {
             let probe = center + Vec2::from_f32s(0.0, -12.0);
@@ -610,8 +610,8 @@ impl GameService {
                 }
             }
         } else if p_bottom > bottom {
-            // Bottom: transition only when nothing solid is 4px below the feet (116589-116598); vanilla dies when
-            // out of bounds at the bottom without a transition (116599-116606); death is not implemented yet, so world clamping is kept.
+            // Bottom: transition only when nothing solid is 4px below the feet (references/Celeste.exe.cs.d/Celeste/Level.cs:2799-2808); vanilla dies when
+            // out of bounds at the bottom without a transition (references/Celeste.exe.cs.d/Celeste/Level.cs:2809-2816); death is not implemented yet, so world clamping is kept.
             let probe = center + Vec2::from_f32s(0.0, 12.0);
             let grounded_below =
                 self.player
@@ -636,7 +636,7 @@ impl GameService {
             .map(|r| r.name.clone())
     }
 
-    /// Start a transition (the preparation part of vanilla `Level.TransitionRoutine` 115282-115423):
+    /// Start a transition (the preparation part of vanilla `Level.TransitionRoutine` references/Celeste.exe.cs.d/Celeste/Level.cs:1492-1633):
     /// `Session.Level` switches to the new room immediately (the world/static batch is then rebuilt from the new room),
     /// and the player glide endpoint and camera start/end points are computed.
     fn start_transition(&mut self, next_room: String, direction: (f32, f32)) {
@@ -652,7 +652,7 @@ impl GameService {
         };
         let nb = next.bounds;
         let dir = Vec2::from_f32s(direction.0, direction.1);
-        // dirPad: direction * 4, for straight down it is * 12 (115345-115349).
+        // dirPad: direction * 4, for straight down it is * 12 (references/Celeste.exe.cs.d/Celeste/Level.cs:1555-1559).
         let dir_pad = if direction == (0.0, 1.0) {
             dir * Fx::from_int(12)
         } else {
@@ -663,14 +663,14 @@ impl GameService {
         let (dir_x, _) = direction;
         let mut player_to = self.player.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H);
         if dir_x != 0.0 {
-            // A horizontal transition first pulls the endpoint out of the floor (115351-115355).
+            // A horizontal transition first pulls the endpoint out of the floor (references/Celeste.exe.cs.d/Celeste/Level.cs:1561-1565).
             let nb_bottom = nb.y + nb.h;
             while player_to.y.to_f32() >= nb_bottom {
                 player_to.y -= Fx::one();
             }
         }
         // Keep gliding along the direction until it lands in the new room (the padded check with dirPad,
-        // `IsInBounds(Vector2, Vector2)` 116641-116657).
+        // `IsInBounds(Vector2, Vector2)` references/Celeste.exe.cs.d/Celeste/Level.cs:2851-2867).
         let mut guard = 0u32;
         while !Self::in_bounds_padded(player_to, dir_pad, &nb) {
             player_to += dir;
@@ -693,7 +693,7 @@ impl GameService {
             "room transition"
         );
         // Vanilla unloads the old room's entities only when the transition ends (`UnloadEntities(toRemove)`,
-        // 115415; `UnloadEntities` 115432) -- the old room keeps rendering while the animation runs.
+        // references/Celeste.exe.cs.d/Celeste/Level.cs:1625; `UnloadEntities` references/Celeste.exe.cs.d/Celeste/Level.cs:1642) -- the old room keeps rendering while the animation runs.
         self.transition_statics = Some(std::mem::take(&mut self.static_draws));
         self.current_room = next_room;
         // hitbox top-left = bottom-center - (W/2, H).
@@ -706,7 +706,7 @@ impl GameService {
         });
     }
 
-    /// Vanilla `IsInBounds(Vector2, Vector2 dirPad)` (116641-116657):
+    /// Vanilla `IsInBounds(Vector2, Vector2 dirPad)` (references/Celeste.exe.cs.d/Celeste/Level.cs:2851-2867):
     /// whether the room rect contains the point after inset by the positive components of `dirPad` (right/bottom open intervals).
     fn in_bounds_padded(p: Vec2, dir_pad: Vec2, b: &releste_map::RectDef) -> bool {
         let zero = Fx::zero();
@@ -720,7 +720,7 @@ impl GameService {
     }
 
     /// Advance a transition (the per-frame part of vanilla `TransitionRoutine` + `Player.TransitionTo`
-    /// 120551-120566): the player glides toward the endpoint at 60 px/s (no collision, X first then Y),
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:2300-2315): the player glides toward the endpoint at 60 px/s (no collision, X first then Y),
     /// and the camera eases with CubeOut over 0.65s, snapping directly when > 0.9.
     ///
     /// All entities freeze during a transition (`Level.Update`'s Transitioning branch runs only
@@ -743,19 +743,19 @@ impl GameService {
         let reached = self.player.pos == t.player_to;
 
         // The hair chain keeps advancing rigidly while the player glides, matching vanilla
-        // `Player.TransitionTo -> UpdateHair(applyGravity:false)` (120551-120552): node 0
+        // `Player.TransitionTo -> UpdateHair(applyGravity:false)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2300-2301): node 0
         // follows the gliding head, the rest are only clamped (SimulateMotion=false), so the
         // hair drags behind as Madeline is carried across the seam instead of staying frozen
-        // at the pre-transition pose (the body animation is correctly frozen, 115659-115668).
+        // at the pre-transition pose (the body animation is correctly frozen, references/Celeste.exe.cs.d/Celeste/Level.cs:1869-1878).
         self.player.update_hair_rigid(&self.session.anims);
 
-        // cameraAt = Approach(cameraAt, 1, dt / 0.65) (115366).
+        // cameraAt = Approach(cameraAt, 1, dt / 0.65) (references/Celeste.exe.cs.d/Celeste/Level.cs:1576).
         // Easing is a render-side presentation (allowed by AGENTS.md 15.7); compute it in f32 then convert back to Fx.
         t.ticks += 1;
         let at = (t.ticks as f32 / TRANSITION_TICKS as f32).min(1.0);
         let eased = 1.0 - (1.0 - at).powi(3); // Ease.CubeOut
         let eased_fx = Fx::from_f32(eased);
-        // Vanilla snaps on the **raw** progress, not on the eased value (`Level.cs:1576`:
+        // Vanilla snaps on the **raw** progress, not on the eased value (`references/Celeste.exe.cs.d/Celeste/Level.cs:1576`:
         // `cameraAt = Calc.Approach(cameraAt, 1f, ...); if (cameraAt > 0.9f) Camera.Position = cameraTo;`).
         // Testing `eased > 0.9` instead fires at cameraAt ~0.536, i.e. tick 21 of 39, which teleports the
         // last ~10% of the pan in a single frame -- the whole parallax backdrop jumps by tens of pixels.
@@ -774,7 +774,7 @@ impl GameService {
             // Transition ends: the old-room entities are unloaded only here (the camera is now entirely in the new room, so
             // dropping the old batch is invisible, just like vanilla UnloadEntities).
             self.transition_statics = None;
-            // Vanilla runs `player.OnTransition()` here (pureCeleste.cs:115416) right after
+            // Vanilla runs `player.OnTransition()` here (references/Celeste.exe.cs.d/Celeste/Level.cs:1626) right after
             // the old room's UnloadEntities: it refills the dash and stamina and re-arms the
             // wall slide. Without it a wave dash across a room seam kept the spent dash.
             self.player.on_transition();
@@ -921,7 +921,7 @@ mod tests {
             service.player.pos,
             spawn_before - Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H),
             "the player was left untouched by the reload (AGENTS.md 4.3); \
-             the spawn anchor converts to a hitbox top-left per pureCeleste 115105/118856"
+             the spawn anchor converts to a hitbox top-left per vanilla references/Celeste.exe.cs.d/Celeste/Level.cs:1315/references/Celeste.exe.cs.d/Celeste/Player.cs:605"
         );
 
         let _ = std::fs::remove_dir_all(paths.root());
@@ -1021,8 +1021,8 @@ mod tests {
         );
     }
 
-    /// Crossing a room seam must run `player.OnTransition()` (pureCeleste.cs:115416,
-    /// 120540-120547) and refill the spent dash. Regression: a wave dash over a seam used
+    /// Crossing a room seam must run `player.OnTransition()` (references/Celeste.exe.cs.d/Celeste/Level.cs:1626,
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:2289-2296) and refill the spent dash. Regression: a wave dash over a seam used
     /// to carry the spent dash into the next room -- high horizontal speed, no refill.
     #[test]
     fn crossing_a_seam_refills_the_dash() {
@@ -1055,7 +1055,7 @@ mod tests {
         assert!(service.transition.is_none(), "the glide must finish");
         assert_eq!(
             service.player.dashes, service.player.max_dashes,
-            "crossing the seam refills the dash (OnTransition/RefillDash, 115416/120545)"
+            "crossing the seam refills the dash (OnTransition/RefillDash, references/Celeste.exe.cs.d/Celeste/Level.cs:1626/references/Celeste.exe.cs.d/Celeste/Player.cs:2295)"
         );
     }
 
@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     /// The transition camera must snap on the **raw** progress `cameraAt > 0.9`
-    /// (`Level.cs:1576`), not on `Ease.CubeOut(cameraAt) > 0.9`. The eased form crosses
+    /// (`references/Celeste.exe.cs.d/Celeste/Level.cs:1576`), not on `Ease.CubeOut(cameraAt) > 0.9`. The eased form crosses
     /// 0.9 at `cameraAt ~= 0.536` (tick 21 of 39), which teleports the last ~10% of the
     /// pan in one frame -- observed as the whole parallax backdrop jumping tens of pixels
     /// mid-transition, because `Parallax.Render` is driven entirely by `Camera.Position`.
@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     /// During a room transition the body stays frozen but the hair chain keeps advancing
-    /// rigidly (`Player.TransitionTo -> UpdateHair(applyGravity:false)`, 120551-120552):
+    /// rigidly (`Player.TransitionTo -> UpdateHair(applyGravity:false)`, references/Celeste.exe.cs.d/Celeste/Player.cs:2300-2301):
     /// node 0 re-anchors to the gliding head each tick instead of freezing at the
     /// pre-transition pose.
     #[test]
@@ -1193,7 +1193,7 @@ mod tests {
         let before = service.player.hair_nodes()[0];
         let head_before = service.player.pos;
 
-        // The player glides toward the next room (X first, then Y, 120553-120556). After a
+        // The player glides toward the next room (X first, then Y, references/Celeste.exe.cs.d/Celeste/Player.cs:2302-2305). After a
         // handful of ticks the hair root (node 0) must have moved with the head rather than
         // staying at the pre-transition value -- the observable proof that the chain is still
         // being updated (rigidly) during the glide.

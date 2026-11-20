@@ -10,7 +10,7 @@
 //! Only rectangles and PNGs that actually exist in the atlas are drawn, so the
 //! sheet shows exactly the frames the engine would draw. It is the quickest way
 //! to judge "are these the vanilla frames, in the vanilla order?" -- but the
-//! verdict still belongs to `Sprites.xml` and `references/pureCeleste.cs`,
+//! verdict still belongs to `Sprites.xml` and `references/Celeste.exe.cs.d`,
 //! not to your eyes.
 //!
 //! Companion tool of `.agents/skills/releste-vanilla-audit` section 6.5.

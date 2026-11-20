@@ -1,19 +1,20 @@
 ---
 name: releste-vanilla-audit
-description: Use when writing or reviewing Releste code that ports Celeste behavior (Player, camera, transitions, backdrops, tiles) - audits every behavior line against references/pureCeleste.cs with line citations, and runs the repo's full gate including `nix flake check` before any commit. Also use when the user asks to audit, align with vanilla, or for zero deviation.
+description: Use when writing or reviewing Releste code that ports Celeste behavior (Player, camera, transitions, backdrops, tiles) - audits every behavior line against references/Celeste.exe.cs.d with path and line citations, and runs the repo's full gate including `nix flake check` before any commit. Also use when the user asks to audit, align with vanilla, or for zero deviation.
 ---
 
 # Releste vanilla-parity audit
 
-`references/pureCeleste.cs` (131,320 lines, decompiled) is the **behavioural
+`references/Celeste.exe.cs.d` (918 files, decompiled) is the **behavioural
 authority**. The rule in this repository: every behavioural line must point
-back to a vanilla line number. Work through the steps below in order.
+back to a vanilla file and line number. Work through the steps below in order.
 
 ## 1. Line-by-line alignment
 
 1. For every behavioural line in the files under review (constants, formulas,
-   state transitions, draw order), find its source in `pureCeleste.cs` and note
-   it as `// pureCeleste.cs:LINE` or `(pureCeleste.cs:LINE-LINE)`.
+   state transitions, draw order), find its split source and cite the full
+   repository-relative path as `// references/Celeste.exe.cs.d/Celeste/Player.cs:LINE`
+   (add `-LINE` for a range).
    **A behavioural line with no source is a violation**: either add the source
    or write "engine-specific + reason" in the comment.
 2. **Tick conversion**: vanilla runs at 60Hz with `Speed` in px/s. This engine
@@ -85,10 +86,9 @@ Two gotchas that cost real time:
 - px/s not divided by 60; `Fx` built from f32 constants instead of exact ratios
   (15.7).
 - Release-speed cut, coyote/buffer frame counts made up - always look them up in
-  pureCeleste (`VirtualButton.BufferTime` 110376, `jumpGraceTimer` 119832).
+  the split source (`VirtualButton.BufferTime`, `Player.jumpGraceTimer`).
 - Camera/transition/backdrop "reasonable guesses" - vanilla has a source for all
-  of them (camera 120133-120146; transitions 115282-115423; EnforceBounds
-  116517-116607; backdrops 112163-112906).
+  of them; use `citation_audit --find` to locate the exact method and line.
 - `HashMap` in structures that need byte determinism (use `BTreeMap`, E.8).
 
 ## 6. Debugging tools (LLM-friendly, machine-readable)
@@ -114,13 +114,14 @@ citation; the tool checks that the snippet really occurs inside the cited line
 range (whitespace-normalised):
 
 ```rust
-// pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`
+// references/Celeste.exe.cs.d/Celeste/Player.cs:2151 `Math.Abs(Speed.X) <= 25f && moveX == 0`
 ```
 
 A citation without a snippet is reported as `unchecked` (listed, but unable to
-catch drift). Bare line numbers (`(122042-122048)` without the file name) are
-invisible to the tool - write new and edited citations as the full
-`pureCeleste.cs:LINE`, with a snippet whenever possible.
+catch drift). Bare line numbers without the file name are invisible to the
+tool - write new and edited citations as the full
+`references/Celeste.exe.cs.d/<relative>.cs:LINE`, with a snippet whenever
+possible.
 
 ### 6.2 Per-tick trace `--trace`
 
@@ -132,7 +133,8 @@ The first line is a self-describing banner (`releste.trace.v1`), then one JSON
 object per tick: `tick/room/x/y/vx/vy/vx_ps/vy_ps/on_ground/facing/state/
 dashes/stamina/ducking/anim/anim_frame/last_anim/move_x/var_jump/jump_buffer/
 coyote`. The `*_ps` fields are vanilla units (px/s) - read those when comparing
-against `pureCeleste.cs`. Keep plugins off (`--no-plugins`) for reproducibility.
+against `references/Celeste.exe.cs.d`. Keep plugins off (`--no-plugins`) for
+reproducibility.
 
 ### 6.3 Scenario replay `--script`
 
@@ -164,4 +166,4 @@ cargo run -p releste-render --example walk_cycle_sheet -- .devtmp/walk-cycle.png
 
 Assembles the atlas' real frames into one magnified contact sheet - the fastest
 way to see whether an animation uses the vanilla frames. The verdict still
-belongs to `Sprites.xml` / `pureCeleste.cs`.
+belongs to `Sprites.xml` / `references/Celeste.exe.cs.d`.

@@ -1,9 +1,9 @@
 # Wave dash: dash down-diagonal on the ground (hyper), then jump inside the dash window
 # as it converts to the duck slide. The SuperJump ducked branch launches with
-#   Speed.X = 260 * 1.25 = 325 px/s -> 5.4167 px/tick (pureCeleste.cs:120748 + 120756)
-#   Speed.Y = -105 * 0.5 = -52.5 px/s -> -0.875 px/tick (120749 + 120757)
-# and `varJumpSpeed = Speed.Y` is assigned *after* the duck branch (120767), so the
-# held-jump varJump clamp (Speed.Y = min(Speed.Y, varJumpSpeed), 122134) keeps vertical
+#   Speed.X = 260 * 1.25 = 325 px/s -> 5.4167 px/tick (references/Celeste.exe.cs.d/Celeste/Player.cs:2497 + references/Celeste.exe.cs.d/Celeste/Player.cs:2505)
+#   Speed.Y = -105 * 0.5 = -52.5 px/s -> -0.875 px/tick (references/Celeste.exe.cs.d/Celeste/Player.cs:2498 + references/Celeste.exe.cs.d/Celeste/Player.cs:2506)
+# and `varJumpSpeed = Speed.Y` is assigned *after* the duck branch (references/Celeste.exe.cs.d/Celeste/Player.cs:2516), so the
+# held-jump varJump clamp (Speed.Y = min(Speed.Y, varJumpSpeed), references/Celeste.exe.cs.d/Celeste/Player.cs:3883) keeps vertical
 # pinned at -52.5 for the whole window.
 #
 # Regression: varJumpSpeed used to be set before the duck branch, so the clamp yanked the
@@ -40,16 +40,16 @@ jump = true
 [[expect]]
 tick = 11
 state = 2
-vx = 3.394             # 240/sqrt(2) x1.2 = the duck slide (121582)
+vx = 3.394             # 240/sqrt(2) x1.2 = the duck slide (references/Celeste.exe.cs.d/Celeste/Player.cs:3331)
 
 [[expect]]
 tick = 12
 state = 0              # SuperJump returns to Normal
-vx = 5.4167            # 325 px/s ducked hyper (120748 x 1.25)
-vy = -0.875            # -52.5 px/s ducked hyper (120749 x 0.5)
+vx = 5.4167            # 325 px/s ducked hyper (references/Celeste.exe.cs.d/Celeste/Player.cs:2497 x 1.25)
+vy = -0.875            # -52.5 px/s ducked hyper (references/Celeste.exe.cs.d/Celeste/Player.cs:2498 x 0.5)
 
 [[expect]]
 tick = 14
 state = 0
 vx = 5.233             # still high horizontal through the varJump window
-vy = -0.875            # vertical stays pinned at -52.5 (122134 x varJumpSpeed=-52.5, 120767)
+vy = -0.875            # vertical stays pinned at -52.5 (references/Celeste.exe.cs.d/Celeste/Player.cs:3883 x varJumpSpeed=-52.5, references/Celeste.exe.cs.d/Celeste/Player.cs:2516)

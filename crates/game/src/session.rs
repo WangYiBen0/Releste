@@ -24,26 +24,26 @@ type SpriteUv = ((f32, f32), (f32, f32));
 /// World pixels per tile (320 / 40 = 8px for `lvl_-1`).
 const TILE: f32 = sprites::TILE_PX as f32;
 
-/// Draw layer for `introCrusher`: vanilla `Depth = -10501` (`pureCeleste.cs:106324`),
-/// where smaller values draw in front -- ahead of SolidTiles' -10000 (`124913`), with
+/// Draw layer for `introCrusher`: vanilla `Depth = -10501` (`references/Celeste.exe.cs.d/Celeste/IntroCrusher.cs:25`),
+/// where smaller values draw in front -- ahead of SolidTiles' -10000 (`references/Celeste.exe.cs.d/Celeste/SolidTiles.cs:19`), with
 /// the player (`0`) further back still, but in front of the foreground parallax layer
 /// that is drawn last. The engine layer order (smaller value draws first) uses
 /// `Effects(300) < this layer < Foreground(500)`.
 const LAYER_INTRO_CRUSHER: i32 = Layer::Foreground.value() - 100;
 
 /// The fallback atlas vanilla consults when a `atlas="game"` texture is absent from
-/// Gameplay (`MapData.cs:345-362`): `GFX.Misc`. The content pipeline writes it as one
+/// Gameplay (`references/Celeste.exe.cs.d/Celeste/MapData.cs:345-362`): `GFX.Misc`. The content pipeline writes it as one
 /// `png` group per sprite.
 const MISC_ATLAS: &str = "Misc";
 
 /// Draw layer for `wire` (`above=false`): vanilla `Depth = 2000`
-/// (`pureCeleste.cs:106687`) -- drawn after the background layer and before the
+/// (`references/Celeste.exe.cs.d/Celeste/Wire.cs:20`) -- drawn after the background layer and before the
 /// terrain and the player (in vanilla, smaller values draw in front). The engine layer
 /// order (smaller value draws first) places it between
 /// `BgTiles(-500)` and `Tiles(0)`.
 const LAYER_WIRE: i32 = Layer::BgTiles.value() + 100;
 
-/// Draw layer for `wire above=true`: vanilla `Depth = -8500` (`106692`) -- before the
+/// Draw layer for `wire above=true`: vanilla `Depth = -8500` (`references/Celeste.exe.cs.d/Celeste/Wire.cs:25`) -- before the
 /// player and after the terrain. The engine draws terrain after the player, so the two
 /// vanilla orders cannot both hold; take "before the player, before the crusher and the
 /// foreground": after `Player(200)` and before `LAYER_INTRO_CRUSHER(400)` /
@@ -51,7 +51,7 @@ const LAYER_WIRE: i32 = Layer::BgTiles.value() + 100;
 const LAYER_WIRE_ABOVE: i32 = Layer::Player.value() + 150;
 
 /// Draw layer for `BridgeTile`: vanilla sets no Depth -> `Entity.Depth` defaults to
-/// `0` (property at `pureCeleste.cs:12997`), the same depth as the player; the engine
+/// `0` (property at `references/Celeste.exe.cs.d/Monocle/Entity.cs:30`), the same depth as the player; the engine
 /// uses `Entities(100)` -- after the terrain and before the player (the planks lie in
 /// front of the terrain and Madeline walks over them).
 const LAYER_BRIDGE: i32 = Layer::Entities.value();
@@ -59,7 +59,7 @@ const LAYER_BRIDGE: i32 = Layer::Entities.value();
 /// Draw layer for the `bgtiles` decoration overlay.
 ///
 /// Vanilla does **not** give `bgtiles` its own depth: the loader overlays the grid
-/// **into** the background tile grid (`LevelLoader`, `77244-77248`:
+/// **into** the background tile grid (`LevelLoader`, `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:283-287`:
 /// `backgroundTiles.Tiles.Overlay(GFX.SceneryTiles, tiles, ...)`), so those cells stop
 /// showing the autotiled `bgDirt` tile and show the scenery tile instead, all at
 /// `BackgroundTiles.Depth = 10000`. The engine keeps them as a separate pass, so this
@@ -67,7 +67,7 @@ const LAYER_BRIDGE: i32 = Layer::Entities.value();
 /// paint over it.
 const LAYER_BG_SCENERY: i32 = Layer::BgTiles.value() + 20;
 
-/// Draw layer for `bgdecals`: vanilla `Depth = 9000` (`pureCeleste.cs:115083-115086`).
+/// Draw layer for `bgdecals`: vanilla `Depth = 9000` (`references/Celeste.exe.cs.d/Celeste/Level.cs:1293-1296`).
 ///
 /// Vanilla draws the **larger** depth first, so `BackgroundTiles` (10000) and its
 /// `bgtiles` overlay are behind the background decals (9000), and both are behind
@@ -77,13 +77,13 @@ const LAYER_BG_DECAL: i32 = Layer::BgTiles.value() + 50;
 
 /// Draw layer for the `fgtiles` decoration overlay.
 ///
-/// Vanilla overlays `fgtiles` **into** the solid tile grid (`LevelLoader`, `77249-77254`:
+/// Vanilla overlays `fgtiles` **into** the solid tile grid (`LevelLoader`, `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:288-293`:
 /// `solidTiles.Tiles.Overlay(GFX.SceneryTiles, tiles, ...)`), so the decorations are drawn
 /// cell by cell among the solid tiles. The engine keeps them in a separate pass, so they
 /// go immediately after `Tiles(0)`: in front of the terrain, behind the entities.
 const LAYER_FG_SCENERY: i32 = Layer::Tiles.value() + 50;
 
-/// Draw layer for `fgdecals`: vanilla `Depth = -10500` (`pureCeleste.cs:115079-115082`).
+/// Draw layer for `fgdecals`: vanilla `Depth = -10500` (`references/Celeste.exe.cs.d/Celeste/Level.cs:1289-1292`).
 ///
 /// In vanilla the smaller depth draws in front, so the foreground decals are in front of
 /// the player (`0`) and of the `wire above` (-8500), but behind the `introCrusher`
@@ -94,8 +94,8 @@ const LAYER_FG_DECAL: i32 = Layer::Foreground.value() - 120;
 /// The 16-segment polyline of one `Wire`: returns `(start, length, rotation radians)`
 /// per segment.
 ///
-/// Follows `Wire.Render` (`pureCeleste.cs:106699-106710`): control point = midpoint of
-/// the two ends sagged 24px (`106702`); points come from the quadratic Bezier
+/// Follows `Wire.Render` (`references/Celeste.exe.cs.d/Celeste/Wire.cs:32-43`): control point = midpoint of
+/// the two ends sagged 24px (`references/Celeste.exe.cs.d/Celeste/Wire.cs:35`); points come from the quadratic Bezier
 /// `GetPoint(i/16)` (Everest `Patches/Monocle/SimpleCurve.cs:22-28`); each segment is
 /// a `Draw.Line` that uses the previous segment's end as its start. Wind sway is taken
 /// as 0 (see the [`Session::push_wire`] docs).
@@ -126,7 +126,7 @@ fn wire_segments(from: (f32, f32), to: (f32, f32)) -> Vec<((f32, f32), f32, f32)
     out
 }
 
-/// Vanilla `Bridge`'s `tileSizes` table (`pureCeleste.cs:107719-107729`):
+/// Vanilla `Bridge`'s `tileSizes` table (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:47-57`):
 /// `(image x, width, height)`; `y` is always 0.
 const BRIDGE_TILE_SIZES: [(i16, i16, i16); 11] = [
     (0, 16, 52),
@@ -145,10 +145,10 @@ const BRIDGE_TILE_SIZES: [(i16, i16, i16); 11] = [
 /// The vertical strips one `BridgeTile` should draw: `(image x, image y, width,
 /// height, y relative to the deck)`.
 ///
-/// Follows the `BridgeTile` constructor (`pureCeleste.cs:107836-107890`): a width-16
-/// end cap is cut along its height into 24 + 12 + 12 + ... (`107854-107863`), while the
-/// rest is a single strip (`107866-107873`); both flatten the image y to `-8`
-/// (`107874-107878`).
+/// Follows the `BridgeTile` constructor (`references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:8-62`): a width-16
+/// end cap is cut along its height into 24 + 12 + 12 + ... (`references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:26-35`), while the
+/// rest is a single strip (`references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:38-45`); both flatten the image y to `-8`
+/// (`references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:46-50`).
 fn bridge_tile_strips(cell_x: i16, cell_w: i16, cell_h: i16) -> Vec<(i16, i16, i16, i16, f32)> {
     let mut out = Vec::new();
     if cell_w == 16 {
@@ -169,16 +169,16 @@ fn bridge_tile_strips(cell_x: i16, cell_w: i16, cell_h: i16) -> Vec<(i16, i16, i
 /// The cell-by-cell layout of one `Bridge`: `(deck x, image x, width, height,
 /// visible)`.
 ///
-/// Follows `Bridge.Added` (`pureCeleste.cs:107704-107731`): starting at `Position`,
+/// Follows `Bridge.Added` (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:32-59`): starting at `Position`,
 /// advance cell by cell along `width`, cycling through `tileSizes`; when `num` falls in
 /// `2..=7` vanilla picks a wood-grain strip with `Calc.Random.Next(6)` (seeded by
-/// `PushRandom(1)`, `107721`), and those 6 candidates are **all 8px wide**, so the
+/// `PushRandom(1)`, `references/Celeste.exe.cs.d/Celeste/Bridge.cs:49`), and those 6 candidates are **all 8px wide**, so the
 /// engine just takes them by index -- the stepping matches vanilla cell for cell, and
 /// only the image pattern of the 8px strips becomes a fixed sequence.
 ///
 /// Returns **all** cells and marks with a `bool` whether each falls in the gap, because
 /// vanilla "advances the cursor first, then decides whether to `level.Add`"
-/// (`107722-107726`): the gap width still counts toward the stepping, and dropping the
+/// (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:50-54`): the gap width still counts toward the stepping, and dropping the
 /// gap cells outright would shift every plank after the gap.
 fn bridge_cells(start_x: f32, width: i32, gap: (f32, f32)) -> Vec<(f32, i16, i16, i16, bool)> {
     let (gap_start, gap_end) = gap;
@@ -196,10 +196,10 @@ fn bridge_cells(start_x: f32, width: i32, gap: (f32, f32)) -> Vec<(f32, i16, i16
 
 /// The draw flags a `parallax` backdrop resolves to: `(flip_x, flip_y, additive)`.
 ///
-/// `Parallax.Render` (`112208-112218`) derives a single `SpriteEffects` value from the
+/// `Parallax.Render` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:87-97`) derives a single `SpriteEffects` value from the
 /// two booleans (`FlipX && FlipY` -> both, otherwise whichever is set), which the
 /// engine expresses as two independent UV swaps; and `ParseBackdrop`
-/// (`112658-112673`) lowercases `blendmode` before comparing it with `"additive"`, so
+/// (`references/Celeste.exe.cs.d/Celeste/MapData.cs:383-398`) lowercases `blendmode` before comparing it with `"additive"`, so
 /// the mode is matched case-insensitively here too.
 fn parallax_flags(bd: &Backdrop) -> (bool, bool, bool) {
     (
@@ -210,10 +210,10 @@ fn parallax_flags(bd: &Backdrop) -> (bool, bool, bool) {
 }
 
 /// The effective color of a single `Backdrop`: all-zero is treated as "unset" and
-/// takes vanilla's default white (starting from `112789`
-/// `backdrop.Color = Color.White`; `112790-112796` only override it when
+/// takes vanilla's default white (starting from `references/Celeste.exe.cs.d/Celeste/MapData.cs:514`
+/// `backdrop.Color = Color.White`; `references/Celeste.exe.cs.d/Celeste/MapData.cs:515-521` only override it when
 /// `HasAttr("color")`); otherwise, as vanilla does, scale it once by `alpha`
-/// (`112798-112804` `backdrop.Color *= alpha`).
+/// (`references/Celeste.exe.cs.d/Celeste/MapData.cs:523-525` `backdrop.Color *= child.AttrFloat("alpha");`).
 fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
     let c = bd.effective_color();
     [
@@ -228,21 +228,21 @@ fn backdrop_tint(bd: &Backdrop) -> [f32; 4] {
 /// size, compute the top-left corner (screen coordinates) of every piece to draw this
 /// frame. A pure function, so it is easy to unit-test against vanilla.
 ///
-/// Step by step against `Parallax.Render` (`pureCeleste.cs:112163-112236`):
-/// 1. `v = (Camera.Position + CameraOffset).Floor()` (`112165`). The engine has no
+/// Step by step against `Parallax.Render` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:42-115`):
+/// 1. `v = (Camera.Position + CameraOffset).Floor()` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:44`). The engine has no
 ///    `Backdrop.CameraOffset` concept yet (`CameraOffset` is a field unique to
-///    `Parallax`, default `Vector2.Zero`, `112129-112130`), so it uses the camera
+///    `Parallax`, default `Vector2.Zero`, `references/Celeste.exe.cs.d/Celeste/Parallax.cs:8-9`), so it uses the camera
 ///    position directly.
-/// 2. `p = (Position - v*Scroll).Floor()` (`112166`), where `Position` is the
-///    accumulator that `Parallax.Update` advances by `Speed * dt` (`112149-112151`).
-/// 3. If `LoopX`/`LoopY`: two `while` loops fold `p.X`/`p.Y` back (`112185-112206`), in
+/// 2. `p = (Position - v*Scroll).Floor()` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:45`), where `Position` is the
+///    accumulator that `Parallax.Update` advances by `Speed * dt` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:28-30`).
+/// 3. If `LoopX`/`LoopY`: two `while` loops fold `p.X`/`p.Y` back (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:64-85`), in
 ///    the same order as vanilla (first `<0` add, then `>0` subtract); with `!Loop`
 ///    nothing is folded.
-/// 4. A double `for` tiles out to `320x180` (`112220-112234`) -- **condition first**,
+/// 4. A double `for` tiles out to `320x180` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:99-113`) -- **condition first**,
 ///    outer X and inner Y: when the start is off-screen (`p.X >= 320` or `p.Y >= 180`)
 ///    that axis draws nothing; with `!LoopY` the inner loop `break`s after one piece,
 ///    and with `!LoopX` the outer loop `break`s after one column. Each piece is
-///    `Texture.Draw(pos, Vector2.Zero, color, 1, 0, flip)` (`112224`), with origin
+///    `Texture.Draw(pos, Vector2.Zero, color, 1, 0, flip)` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:103`), with origin
 ///    `Vector2.Zero` (top-left of the cropped sub-image) and scale `1`.
 fn parallax_tiles(
     bd: &Backdrop,
@@ -311,7 +311,7 @@ struct BackdropCtx<'a> {
 }
 
 /// Background / foreground parallax texture tiling (`Parallax.Render`,
-/// `pureCeleste.cs:112163-112236`).
+/// `references/Celeste.exe.cs.d/Celeste/Parallax.cs:42-115`).
 ///
 /// The geometry goes through [`parallax_tiles`] (a pure function with reference unit
 /// tests); this function only does texture lookup, tinting and conversion to
@@ -323,24 +323,24 @@ struct BackdropCtx<'a> {
 ///   `DrawOffset = (-origin_x, -origin_y)` for a trimmed sub-image, the piece lands at
 ///   `pos - (origin_x, origin_y)`. The tiling geometry itself ([`parallax_tiles`]) works
 ///   in frame coordinates, and this function applies that trim offset when it builds the
-///   [`SpriteDraw`] (`MTexture`, `109722-109790`).
+///   [`SpriteDraw`] (`MTexture`, `references/Celeste.exe.cs.d/Monocle/MTexture.cs:181-184`).
 /// - `blendmode="additive"` selects the backend's second pipeline
 ///   (`SpriteDraw::additive` -> `wgpu` `src + dst`), matching `BlendState.Additive`
-///   (`112658-112673`). `FlipX`/`FlipY` map to `SpriteDraw::with_flip_x`/`...
+///   (`references/Celeste.exe.cs.d/Celeste/MapData.cs:383-398`). `FlipX`/`FlipY` map to `SpriteDraw::with_flip_x`/`...
 ///   with_flip_y` exactly as `Parallax.Render` derives `SpriteEffects`
-///   (`112208-112218`). The horizontal drift driven by `WindMultiplier` (`112157`) is
+///   (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:87-97`). The horizontal drift driven by `WindMultiplier` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:31`) is
 ///   still unported because `Level.Wind` is not modelled yet; no map in the asset set
 ///   sets a non-zero `wind`.
-/// - `fadeIn` (`DoFadeIn`, `112153-112160`) and `FadeX`/`FadeY` (`Fader`,
-///   `109343-109378`) are not ported yet: 0-Intro's `ParseBackdrop` (`112651`
+/// - `fadeIn` (`DoFadeIn`, `references/Celeste.exe.cs.d/Celeste/Parallax.cs:32-39`) and `FadeX`/`FadeY` (`Fader`,
+///   `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:9-44`) are not ported yet: 0-Intro's `ParseBackdrop` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:376`
 ///   `DoFadeIn = bool.Parse(child.Attr("fadeIn", "false"))`) defaults to `false`, so
 ///   `fadeIn` is always `Visible ? 1 : 0` and is `1` once in the scene (no transition);
 ///   the current `Service` does not track `Visible`, so it stays `1` here; `FadeX`/
 ///   `FadeY` only have a value with `<apply fade=...>`, which 0-Intro never uses.
-/// - The `Parallax.Alpha` (`112141`) field is never written by `ParseBackdrop` (the
-///   `alpha` attribute is only multiplied into `backdrop.Color`, `112798-112804`) and
+/// - The `Parallax.Alpha` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:20`) field is never written by `ParseBackdrop` (the
+///   `alpha` attribute is only multiplied into `backdrop.Color`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:523-529`) and
 ///   defaults to `1` -> in `Render`, `num = fadeIn*Alpha*FadeAlphaMultiplier = 1` and
-///   `color *= num` never triggers (`112167-112179`), so using `effective_color()`
+///   `color *= num` never triggers (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:46-58`), so using `effective_color()`
 ///   directly is equivalent.
 fn push_backdrops(
     out: &mut Vec<SpriteDraw>,
@@ -395,14 +395,14 @@ fn push_backdrops(
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
         let (w, h) = (f32::from(sprite.w), f32::from(sprite.h));
         let tint = backdrop_tint(bd);
-        // Vanilla's early exit for `color.A <= 1` (`112181-112184`) -- equivalent to
+        // Vanilla's early exit for `color.A <= 1` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:60-63`) -- equivalent to
         // alpha <= 1/255.
         if tint[3] <= 1.0 / 255.0 {
             continue;
         }
 
         // `Position` for this slot: parsed `x`/`y` plus the `Speed` drift accumulated
-        // since the map loaded (`Parallax.Update`, `112149-112151`).
+        // since the map loaded (`Parallax.Update`, `references/Celeste.exe.cs.d/Celeste/Parallax.cs:28-30`).
         let drift = drifts.get(i).copied().unwrap_or(Vec2::ZERO);
         let position = (bd.x + drift.x.to_f32(), bd.y + drift.y.to_f32());
         let (flip_x, flip_y, additive) = parallax_flags(bd);
@@ -410,7 +410,7 @@ fn push_backdrops(
         // `origin - DrawOffset`; for a trimmed sub-image the packer stored
         // `DrawOffset = (origin_x, origin_y)`, so the piece is drawn with the crop offset
         // *added* to the tile origin, i.e. the untrimmed frame sits at the tile origin
-        // (`MTexture`, `109722-109790`). Releste used to skip the offset entirely, which
+        // (`MTexture`, `references/Celeste.exe.cs.d/Monocle/MTexture.cs:181-184`). Releste used to skip the offset entirely, which
         // drew every trimmed `bgs/00/bg*` sheet `origin_y` pixels (23/3/45/29) too high
         // and left the bottom of the viewport unpainted. Flipping mirrors the art inside
         // the same box (`SpriteDraw` swaps the UVs), so the offset does not change.
@@ -440,7 +440,7 @@ fn push_backdrops(
 /// Tint for foreground tiles / entities / background tiles.
 ///
 /// Every vanilla `TileGrid` uses the default `Color.White` + `Alpha = 1`
-/// (`pureCeleste.cs:11234`/`11242`; nothing in vanilla writes it), so this is white.
+/// (`references/Celeste.exe.cs.d/Monocle/TileGrid.cs:10`/`references/Celeste.exe.cs.d/Monocle/TileGrid.cs:18`; nothing in vanilla writes it), so this is white.
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// A loaded map session.
@@ -469,9 +469,9 @@ pub struct Session {
     /// Animation table (`Gameplay.sprites.toml`; missing = empty table, the player
     /// falls back to static frames).
     pub anims: crate::sprites::AnimationTable,
-    /// Visibility state per backdrop (vanilla `Backdrop.Visible`, `109366` starts as
+    /// Visibility state per backdrop (vanilla `Backdrop.Visible`, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:32` starts as
     /// `true`; `Backdrop.Update` refreshes it every frame from `IsVisible` plus the
-    /// transition rules, `109468-109489`). Index = backgrounds + foregrounds
+    /// transition rules, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:134-155`). Index = backgrounds + foregrounds
     /// concatenated in order.
     backdrop_visible: RefCell<Vec<bool>>,
     /// Self-animating backdrop effects (`snowfg` / `snowbg`), parallel to
@@ -480,8 +480,8 @@ pub struct Session {
     /// unimplemented), so this costs nothing per frame for normal maps.
     backdrop_effects: RefCell<Vec<Option<crate::backdrop::Effect>>>,
     /// Per-backdrop `Speed * dt` accumulation since the map loaded. Vanilla starts
-    /// `Backdrop.Position` at the parsed `x`/`y` (`109366`) and `Parallax.Update` adds
-    /// `Speed * dt` every tick (`112149-112151`), so the render position is
+    /// `Backdrop.Position` at the parsed `x`/`y` (`references/Celeste.exe.cs.d/Celeste/Backdrop.cs:32`) and `Parallax.Update` adds
+    /// `Speed * dt` every tick (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:28-30`), so the render position is
     /// `(x, y) + drift`; keeping only the drift means a hot reload that rewrites `x`/`y`
     /// applies immediately instead of restarting the scroll. Index = backgrounds +
     /// foregrounds concatenated in order, parallel to [`Session::backdrop_visible`].
@@ -489,7 +489,7 @@ pub struct Session {
     /// Keys that warn only once, to avoid spamming every frame.
     warned: RefCell<HashSet<String>>,
     /// Shared grass-banner clock in seconds (`Banner.sineTimer`): every banner adds
-    /// `Engine.DeltaTime * WindMultiplier` per tick (`Decal.cs:44-46`), and because
+    /// `Engine.DeltaTime * WindMultiplier` per tick (`references/Celeste.exe.cs.d/Celeste/Decal.cs:44-46`), and because
     /// `OnlyIfWindy` is false for the grass decals `WindMultiplier` stays at 1, so one
     /// accumulator shared by all of them is enough. Each banner's phase is seeded
     /// deterministically from its index (`Calc.Random.NextFloat()` in vanilla) and
@@ -497,13 +497,13 @@ pub struct Session {
     banner_time: RefCell<Fx>,
 }
 
-/// Bangs are the hair-root texture: `bangs[Sprite.HairFrame]` (111186, 111196), where
-/// `HairFrame` is the **metadata** frame (111351-111361, clamped to 0..2). The resolved
+/// Bangs are the hair-root texture: `bangs[Sprite.HairFrame]` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:132, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:142), where
+/// `HairFrame` is the **metadata** frame (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:145-155, clamped to 0..2). The resolved
 /// name now lives in [`crate::skin::PlayerHairSkin`], which also carries the vanilla
 /// fallback; see `skin.rs`.
 impl Session {
     /// Refresh backdrop visibility every frame (vanilla `Backdrop.Update`,
-    /// `109468-109489`).
+    /// `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:134-155`).
     ///
     /// Not transitioning: `Visible = IsVisible` ([`Session::backdrop_is_visible`], room
     /// filtering). During a transition: `InstantIn` lights up immediately and
@@ -543,7 +543,7 @@ impl Session {
     }
 
     /// Accumulate every `parallax` backdrop's `Speed * dt` drift for this tick
-    /// (vanilla `Parallax.Update`, `112149-112151`).
+    /// (vanilla `Parallax.Update`, `references/Celeste.exe.cs.d/Celeste/Parallax.cs:28-30`).
     ///
     /// A pure accumulator, so a hot reload that rewrites `<bg x=... speedx=...>` takes
     /// effect on the next frame; slots are matched positionally and the vector is only
@@ -568,21 +568,21 @@ impl Session {
     }
 
     /// Advance the self-animating backdrop effects by one tick (vanilla
-    /// `BackdropRenderer.Update` -> `Backdrop.Update`, `109468-109489` and
+    /// `BackdropRenderer.Update` -> `Backdrop.Update`, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:134-155` and
     /// `Snow.Update`).
     ///
     /// Runs once per simulation tick and only while the game is unpaused, matching
-    /// `Scene.Update`'s `if (!Paused)` guard (`Monocle/Scene.cs:75-82`). Slots whose kind
+    /// `Scene.Update`'s `if (!Paused)` guard (`references/Celeste.exe.cs.d/Monocle/Scene.cs:75-82`). Slots whose kind
     /// changed (a hot reload rewriting a `<bg>`/`<fg>` element) are rebuilt, so a map
     /// edit can add or drop snow without a restart.
     pub fn update_backdrop_effects(&self, dt: Fx) {
         // `Parallax.Update` drifts the whole position every tick, regardless of
-        // visibility (`112149-112151`): `Position += Speed * Engine.DeltaTime`, then
-        // `Position += WindMultiplier * Level.Wind * Engine.DeltaTime` (`112153-112157`,
+        // visibility (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:28-30`): `Position += Speed * Engine.DeltaTime`, then
+        // `Position += WindMultiplier * Level.Wind * Engine.DeltaTime` (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:31`,
         // still unported because `Level.Wind` is not modelled).
         self.advance_backdrop_drift(dt);
         // `Banner.Update` advances its `sineTimer` by `Engine.DeltaTime` every tick
-        // (`Decal.cs:44-46`); with `OnlyIfWindy = false` the wind branch is skipped, so
+        // (`references/Celeste.exe.cs.d/Celeste/Decal.cs:44-46`); with `OnlyIfWindy = false` the wind branch is skipped, so
         // `WindMultiplier` stays at 1 and one shared clock covers every banner. Skipping
         // the tick during a freeze falls out of the caller, exactly like vanilla's
         // early-returning `Level.Update`.
@@ -621,7 +621,7 @@ impl Session {
     }
 
     /// The 1x1 opaque-white quad the animated effects are drawn with (vanilla
-    /// `Draw.Pixel`, `Monocle/Draw.cs:11,28-34`): the engine reuses Gameplay's
+    /// `Draw.Pixel`, `references/Celeste.exe.cs.d/Monocle/Draw.cs:11,28-34`): the engine reuses Gameplay's
     /// `util\pixel` sprite instead of a dedicated virtual texture.
     fn pixel_quad(&self, gpu: &GpuRenderer) -> Option<(u32, SpriteUv)> {
         let (group, sprite) = self.atlas.sprite(crate::backdrop::PIXEL_SPRITE)?;
@@ -631,7 +631,7 @@ impl Session {
         Some((atlas_id, uv))
     }
 
-    /// The room-filtering part of vanilla `Backdrop.IsVisible` (`109438-109466`):
+    /// The room-filtering part of vanilla `Backdrop.IsVisible` (`references/Celeste.exe.cs.d/Celeste/Backdrop.cs:104-132`):
     /// `ExcludeFrom` / `OnlyIn` membership tests against the current room name
     /// (`Session.Level`). flag / dreaming / fade bands are not ported (the converter
     /// already warns about uncaptured properties).
@@ -761,7 +761,7 @@ impl Session {
         // `Character_ID` so its animation set can be aliased to `player` below. A skin
         // this build has no atlas for is not an error -- the player falls back to vanilla.
         // Vanilla resolves a backdrop texture declared as `atlas="game"` through Game
-        // first and then through **Misc** (`MapData.cs:345-362`), which is how the
+        // first and then through **Misc** (`references/Celeste.exe.cs.d/Celeste/MapData.cs:345-362`), which is how the
         // `purplesunset` / `mist` / `darkswamp` / `vignette` backdrops in the original
         // maps draw at all: they are not in Gameplay. Appending Misc as a second layer
         // reproduces that fallback, and it is appended BEFORE the skin so a reskin's own
@@ -942,7 +942,7 @@ impl Session {
         );
         // The background uses a **different** table (`BackgroundTiles.xml`) and vanilla
         // does not tint it (`TileGrid.Color` defaults to `Color.White`, `Alpha = 1`,
-        // 11234/11242; nothing in vanilla writes it) -- the previous blue-gray tint was a
+        // references/Celeste.exe.cs.d/Monocle/TileGrid.cs:10/references/Celeste.exe.cs.d/Monocle/TileGrid.cs:18; nothing in vanilla writes it) -- the previous blue-gray tint was a
         // home-made color cast.
         push_tiles(
             &mut out,
@@ -984,11 +984,11 @@ impl Session {
     }
 
     /// This frame's parallax background/foreground draws (`Parallax.Render`,
-    /// `pureCeleste.cs:112163-112236`).
+    /// `references/Celeste.exe.cs.d/Celeste/Parallax.cs:42-115`).
     ///
     /// **Rebuilt every frame** (unlike tiles/entities, which are cached per room): the
     /// tiling origin depends on the camera position
-    /// (`p = (Position - Camera.Position.Floor()*Scroll).Floor()`, `112165-112166`), so
+    /// (`p = (Position - Camera.Position.Floor()*Scroll).Floor()`, `references/Celeste.exe.cs.d/Celeste/Parallax.cs:44-45`), so
     /// any camera movement changes the whole layout. The counts are tiny (4 background
     /// images x a few tiles each), so the rebuild cost is negligible.
     ///
@@ -1044,11 +1044,11 @@ impl Session {
         out
     }
 
-    /// This frame's grass-banner draws (`Decal.Banner`, `Celeste/Decal.cs:12-68`).
+    /// This frame's grass-banner draws (`Decal.Banner`, `references/Celeste.exe.cs.d/Celeste/Decal.cs:12-68`).
     ///
     /// **Rebuilt every frame** (like [`Session::backdrop_draws`]): each 1-px slice of a
     /// banner sways on its own sine phase, so the slices cannot live in the cached
-    /// static list. Vanilla builds the slices once in `MakeBanner` (`Decal.cs:372-395`)
+    /// static list. Vanilla builds the slices once in `MakeBanner` (`references/Celeste.exe.cs.d/Celeste/Decal.cs:372-395`)
     /// and only recomputes the sway offsets per `Render`; recomputing the whole list
     /// here produces the same quads without keeping per-decal state.
     pub fn grass_draws(
@@ -1083,7 +1083,7 @@ impl Session {
         out
     }
 
-    /// The map style's clear color (`<Style color="#rrggbb">`, `pureCeleste.cs:112434`).
+    /// The map style's clear color (`<Style color="#rrggbb">`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:159`).
     pub fn clear_color(&self) -> [u8; 3] {
         self.doc.style.background_color
     }
@@ -1091,26 +1091,26 @@ impl Session {
     /// This frame's player draws: hair (a 4-node chain + bangs + black outline) behind
     /// the body.
     ///
-    /// Every part is checked against `pureCeleste.cs`:
-    /// - Anchor: `Player.Position` = hitbox bottom center (118856), i.e. `anchor`;
+    /// Every part is checked against `references/Celeste.exe.cs.d`:
+    /// - Anchor: `Player.Position` = hitbox bottom center (references/Celeste.exe.cs.d/Celeste/Player.cs:605), i.e. `anchor`;
     /// - Hair root: `Nodes\[0\] = Sprite.RenderPosition + (0,-9) + HairOffset*Facing`
-    ///   (111116). The idle animation does not define HairOffset -> the default (0,0) is
-    ///   used (111477 only assigns it when the yaml provides it); RenderPosition is the
+    ///   (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62). The idle animation does not define HairOffset -> the default (0,0) is
+    ///   used (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:271 only assigns it when the yaml provides it); RenderPosition is the
     ///   player position;
-    /// - Later nodes: `HairCount = 4` (111321); `AfterUpdate` (111118-111135)'s static
+    /// - Later nodes: `HairCount = 4` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:115); `AfterUpdate` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:64-81)'s static
     ///   placement node\[i\] = node\[i-1\] + ((0-Facing)*step, +2), where step is
     ///   2*StepInFacingPerSegment = 1 for i==1 and 0.5 otherwise (StepPerSegment
-    ///   = (0,2), 111074-111076); the <=3px constraint between nodes does not trigger
+    ///   = (0,2), references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:20-22); the <=3px constraint between nodes does not trigger
     ///   (|(-1,2)| ~ 2.24);
-    /// - Drawing (Render 111155+): `origin = (5,5)`; node\[0\] uses bangs\[0\], the
+    /// - Drawing (Render references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:101+): `origin = (5,5)`; node\[0\] uses bangs\[0\], the
     ///   rest use hair00; each piece first draws 4 black outline copies at +/-1px
-    ///   (`Border = Black`, 111159), then draws the base color in reverse order from
+    ///   (`Border = Black`, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:105), then draws the base color in reverse order from
     ///   HairCount-1..0 (`Color = AC3232`).
     /// - The body draws last (Layer::Player is above PlayerHair, guaranteed by layer
     ///   sort order).
     ///
     /// `nodes` is the simulated hair chain from [`crate::player::Player::hair_nodes`]
-    /// (vanilla `PlayerHair.Nodes`, 111088), in **world space**. The chain length is the
+    /// (vanilla `PlayerHair.Nodes`, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:34), in **world space**. The chain length is the
     /// live `PlayerSprite.HairCount` (4, or 5 while two dashes are stocked).
     ///
     /// Not ported yet: the four-direction body outline
@@ -1135,15 +1135,15 @@ impl Session {
         let body = self.body_draw(tex_size, anchor, flip_x, scale, body_sprite);
 
         // `PlayerHair.Render` returns immediately when the frame has no hair
-        // (`if (!Sprite.HasHair) return;`, 111157). `HasHair` is per **frame**
-        // (111363-111371), taken from the `<Metadata><Frames hair=...>` table
-        // (111452-111480) -- e.g. `fallPose` is `x|x|...` and draws none.
+        // (`if (!Sprite.HasHair) return;`, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:103). `HasHair` is per **frame**
+        // (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:157-165), taken from the `<Metadata><Frames hair=...>` table
+        // (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:246-274) -- e.g. `fallPose` is `x|x|...` and draws none.
         if !hair.has_hair || nodes.is_empty() {
             return body.into_iter().collect();
         }
 
         // Node 0 draws the bangs, the rest draw `hair00`; `Render` floors node 0
-        // (111179) so the head piece snaps to whole pixels instead of drifting with the
+        // (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:126) so the head piece snaps to whole pixels instead of drifting with the
         // player's subpixel position. A reskinned player first tries its prefixed
         // `<prefix>\characters\player\...` name and falls back to the vanilla name when
         // that texture is absent, matching SkinModHelper's `GetHairTexture` override
@@ -1179,7 +1179,7 @@ impl Session {
 
         let mut out = Vec::new();
         // First draw all outlines for every node (4 copies at +/-1px), then draw the base
-        // color from tail to head (111179-111197) -- two passes, not alternating per node.
+        // color from tail to head (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:126-143) -- two passes, not alternating per node.
         for (i, (name, node)) in pieces.iter().enumerate() {
             let piece_scale = sprites::hair_scale(i, facing, count, scale[0]);
             let Some(base) = self.hair_piece(tex_size, name.as_ref(), *node, piece_scale, border)
@@ -1206,7 +1206,7 @@ impl Session {
     }
 
     /// One hair piece: top-left = `node - origin within the sub-image * scale`
-    /// (Monocle `MTexture.Draw(position, origin, color, scale)` -> `14534-14537` hands
+    /// (Monocle `MTexture.Draw(position, origin, color, scale)` -> `references/Celeste.exe.cs.d/Monocle/MTexture.cs:186-189` hands
     /// `origin` to SpriteBatch; the scale acts around the origin).
     ///
     /// The origin must be computed **once per image**: `hair00` has `(1,1)` cropped away
@@ -1265,7 +1265,7 @@ impl Session {
         let origin = sprites::origin_in_trim(sprite, sprites::PLAYER_BODY_FRAME_ORIGIN);
         // Vanilla mirrors the player with a **negative `Scale.X`**, not with
         // `SpriteEffects.FlipHorizontally`: `Player.Render` multiplies the scale by `Facing`
-        // around `base.Render()` and undoes it afterwards (119641/119657). FNA mirrors a
+        // around `base.Render()` and undoes it afterwards (references/Celeste.exe.cs.d/Celeste/Player.cs:1390/references/Celeste.exe.cs.d/Celeste/Player.cs:1406). FNA mirrors a
         // negative-scaled quad **about the origin** (`GenerateVertexInfo`:
         // `cornerX = -originX * destinationW`), so the destination rect itself moves.
         // Swapping only the UVs would leave the quad where the unflipped sprite was, which is
@@ -1297,8 +1297,8 @@ impl Session {
     /// - Default (decal-like): the content **center** is placed at the entity position
     ///   (`MTexture.Draw(position)`);
     /// - `introCar`: two images, body and wheels, with the **bottom center** at the
-    ///   position (`pureCeleste.cs` IntroCar: `Origin = (W/2, H)`, the wheels drawn
-    ///   under the body);
+    ///   position (`references/Celeste.exe.cs.d/Celeste/IntroCar.cs:21-22` sets the body origin;
+    ///   `references/Celeste.exe.cs.d/Celeste/IntroCar.cs:37-39` sets the wheel origin);
     /// - `lamp`: takes the left half 16x80 sub-image, with the **bottom center** at the
     ///   position (`Lamp` likewise).
     ///
@@ -1325,8 +1325,8 @@ impl Session {
                     continue;
                 }
                 // Vanilla Hahaha only draws the `Ha` laugh bubbles generated on a timer by
-                // Update, and the `has` list is empty at spawn (`pureCeleste.cs:110944`,
-                // `111012-111035`): at scene t=0 it draws nothing. The engine has no such
+                // Update, and the `has` list is empty at spawn (`references/Celeste.exe.cs.d/Celeste/Hahaha.cs:19`,
+                // `references/Celeste.exe.cs.d/Celeste/Hahaha.cs:87-110`): at scene t=0 it draws nothing. The engine has no such
                 // simulation, so static rendering draws nothing either (there is no
                 // "missing sprite", so no warning).
                 "hahaha" => continue,
@@ -1412,10 +1412,10 @@ impl Session {
     /// `IntroCrusher`: vanilla has **no crushblock/Kevin texture at all**; its look is a
     /// whole box generated by an autotiler -- `GFX.FGAutotiler.GenerateBox('3',
     /// width/8, height/8)` stuffed into the entity's own TileGrid
-    /// (`pureCeleste.cs:106325`; GenerateBox itself is at `87832`: fill the whole box
+    /// (`references/Celeste.exe.cs.d/Celeste/IntroCrusher.cs:26`; GenerateBox itself is at `references/Celeste.exe.cs.d/Celeste/Autotiler.cs:210`: fill the whole box
     /// with the id, treat outside the box as empty per the default `Behaviour` --
     /// `CheckTile`'s `mapData == null` branch returns `EdgesExtend` = false,
-    /// `87985-87989`).
+    /// `references/Celeste.exe.cs.d/Celeste/Autotiler.cs:363-367`).
     ///
     /// Entity position = the box top-left (`Solid`'s `base(position, width, height)`);
     /// `Nodes[0]` is the landing point and only participates in the falling animation,
@@ -1490,16 +1490,16 @@ impl Session {
 
     /// `Wire`: vanilla has no dedicated texture -- `Render` draws 16 `Draw.Line`
     /// segments along a `SimpleCurve` (quadratic Bezier), each a 1px-tall horizontal bar
-    /// rotated by its angle (`pureCeleste.cs:106699-106710`). Control point = the
-    /// midpoint of the two ends sagged 24px (`106702`);
+    /// rotated by its angle (`references/Celeste.exe.cs.d/Celeste/Wire.cs:32-43`). Control point = the
+    /// midpoint of the two ends sagged 24px (`references/Celeste.exe.cs.d/Celeste/Wire.cs:35`);
     /// `GetPoint(t) = (1-t)^2*Begin + 2(1-t)t*Control + t^2*End` (Everest
-    /// `Patches/Monocle/SimpleCurve.cs:22-28`). Line color `595866` (`106676`); from/to
-    /// = entity and node coordinates + room offset (`106698`).
+    /// `Patches/Monocle/SimpleCurve.cs:22-28`). Line color `595866` (`references/Celeste.exe.cs.d/Celeste/Wire.cs:9`); from/to
+    /// = entity and node coordinates + room offset (`references/Celeste.exe.cs.d/Celeste/Wire.cs:31`).
     ///
     /// Static deviation: vanilla also adds wind sway to the control point,
-    /// `sin(sine + WindSineTimer*omega) * 8 * VisualWind` (`106701`) -- the phase comes
+    /// `sin(sine + WindSineTimer*omega) * 8 * VisualWind` (`references/Celeste.exe.cs.d/Celeste/Wire.cs:34`) -- the phase comes
     /// from a per-line random stream seeded by `new Random((int)min.X)`, and the
-    /// amplitude animates with `WindSineTimer` (`115689-115690`; at t=0
+    /// amplitude animates with `WindSineTimer` (`references/Celeste.exe.cs.d/Celeste/Level.cs:1899-1900`; at t=0
     /// `VisualWind=0.5`). The engine's static batch has no such time or random stream,
     /// so sway is taken as 0 (max deviation of 4px per line).
     fn push_wire(&self, out: &mut Vec<SpriteDraw>, room: &Room, e: &EntityData, gpu: &GpuRenderer) {
@@ -1526,7 +1526,7 @@ impl Session {
         };
         let uv = GpuRenderer::uv_for_sprite(sprite, Vec2::from_f32s(tw as f32, th as f32));
 
-        // Calc.HexToColor("595866") (106676).
+        // Calc.HexToColor("595866") (references/Celeste.exe.cs.d/Celeste/Wire.cs:9).
         let color = [89.0 / 255.0, 88.0 / 255.0, 102.0 / 255.0, 1.0];
         let layer = if matches!(e.properties.get("above"), Some(FieldValue::Bool(true))) {
             LAYER_WIRE_ABOVE
@@ -1534,7 +1534,7 @@ impl Session {
             LAYER_WIRE
         };
 
-        // 16 segments (106703-106709): each is a 1px-tall bar rotated from its start to
+        // 16 segments (references/Celeste.exe.cs.d/Celeste/Wire.cs:36-42): each is a 1px-tall bar rotated from its start to
         // its end.
         for ((sx, sy), len, angle) in wire_segments((fx, fy), (tx, ty)) {
             out.push(
@@ -1552,22 +1552,22 @@ impl Session {
     }
 
     /// `Bridge`: the bridge entity itself draws nothing -- in `Added` it generates a
-    /// `BridgeTile` per cell along its width (`pureCeleste.cs:107704-107731`), each cell
-    /// being one vertical strip of the `scenery/bridge` texture (`107846-107878`).
+    /// `BridgeTile` per cell along its width (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:32-59`), each cell
+    /// being one vertical strip of the `scenery/bridge` texture (`references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:18-50`).
     ///
     /// - Gap = the room x of the two nodes plus the room's left edge (vanilla
-    ///   `gapStartX += level.Bounds.Left`, `107713-107714`; nodes and entity share the
+    ///   `gapStartX += level.Bounds.Left`, `references/Celeste.exe.cs.d/Celeste/Bridge.cs:63-64`; nodes and entity share the
     ///   room coordinate system).
-    /// - The planking cycles through 11 sizes (`107719-107729`): for index `2..=7`
+    /// - The planking cycles through 11 sizes (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:47-57`): for index `2..=7`
     ///   vanilla takes a random wood-grain strip via `Calc.Random.Next(6)` (seeded by
     ///   `PushRandom(1)`), while the engine uses the index `num` directly -- those 6
     ///   candidates are all 8px wide, so the stepping matches vanilla cell for cell and
     ///   only the pattern of the 8px strips becomes a fixed sequence (that random stream
     ///   is not reproduced).
     /// - A 16px end cap is cut vertically into 24+12+12+..., each strip offset in Y by
-    ///   `num2 - 8` (`107854-107872`), with the remainder trimmed to 52px tall.
+    ///   `num2 - 8` (`references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:26-44`), with the remainder trimmed to 52px tall.
     /// - Vanilla `Update` plays a collapse once the player has crossed the bridge
-    ///   (`107733+`); static rendering draws the complete bridge.
+    ///   (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:61+`); static rendering draws the complete bridge.
     fn push_bridge(
         &self,
         out: &mut Vec<SpriteDraw>,
@@ -1767,10 +1767,10 @@ fn push_tiles(
 /// indexes.
 ///
 /// Vanilla builds it once as `SceneryTiles = new Tileset(Game["tilesets/scenery"], 8, 8)`
-/// (`GFX.cs:133`) and the level loader overlays it onto the tile grids
-/// (`LevelLoader`, `77244-77254`). It is **not** autotiled: the CSV holds a flat tile
+/// (`references/Celeste.exe.cs.d/Celeste/GFX.cs:133`) and the level loader overlays it onto the tile grids
+/// (`LevelLoader`, `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:283-293`). It is **not** autotiled: the CSV holds a flat tile
 /// index, and `Tileset[index]` maps it to `(index % columns, index / columns)`
-/// (`Monocle/Tileset.cs:15-25`).
+/// (`references/Celeste.exe.cs.d/Monocle/Tileset.cs:15-25`).
 const SCENERY_SPRITE: &str = "tilesets/scenery";
 
 /// Decode one stored scenery cell back to its flat `tilesets/scenery` index.
@@ -1785,7 +1785,7 @@ fn scenery_index(value: u16) -> Option<u32> {
 /// Draw one decoration grid (`bgtiles` / `fgtiles`) from the shared scenery sheet.
 ///
 /// Vanilla overlays the grid onto the already-built tile grid and renders it cell by
-/// cell (`TileGrid.Overlay`, `Monocle/TileGrid.cs:47-58`, then `RenderAt`,
+/// cell (`TileGrid.Overlay`, `references/Celeste.exe.cs.d/Monocle/TileGrid.cs:47-58`, then `RenderAt`,
 /// `:145-190`), so each cell is a plain 8x8 sprite at `room.bounds + (tx*8, ty*8)`.
 /// A grid whose `is_empty()` holds is skipped without looking up the atlas.
 fn push_scenery(
@@ -1813,7 +1813,7 @@ fn push_scenery(
         return; // texture not uploaded; load_atlas already warned
     };
     let tex = Vec2::from_f32s(tw as f32, th as f32);
-    // `Tileset[index]` wraps at the sheet width (`Monocle/Tileset.cs:15-25`).
+    // `Tileset[index]` wraps at the sheet width (`references/Celeste.exe.cs.d/Monocle/Tileset.cs:15-25`).
     let columns = (u32::try_from(sheet.w).unwrap_or(1) / sprites::TILE_PX as u32).max(1);
 
     for ty in 0..grid.height {
@@ -1856,7 +1856,7 @@ fn push_decals(
 ) {
     for decal in decals {
         if is_banner_decal(&decal.texture) {
-            // `Decal.Added` (`Celeste/Decal.cs:164-176`) replaces the static
+            // `Decal.Added` (`references/Celeste.exe.cs.d/Celeste/Decal.cs:164-176`) replaces the static
             // `DecalImage` of the four `generic/grass_a..d` decals with a swaying
             // `Banner` component (`MakeBanner(2f, 2f, 1, 0.05f, easeDown: false, -2f)`),
             // so they must not join the cached static list; [`Session::grass_draws`]
@@ -1904,12 +1904,12 @@ fn push_decals(
     }
 }
 
-/// `Decal.Added` (`Celeste/Decal.cs:164-176`) lowercases the decal name, strips the
+/// `Decal.Added` (`references/Celeste.exe.cs.d/Celeste/Decal.cs:164-176`) lowercases the decal name, strips the
 /// `decals/` prefix and maps `generic/grass_a..d` to `MakeBanner(2f, 2f, 1, 0.05f,
 /// easeDown: false, -2f)` -- those four render as swaying banners, not static images.
 fn is_banner_decal(texture: &str) -> bool {
     // `Decal.Added` compares the full path after `Name.ToLower().Replace("decals/",
-    // "")` (`Celeste/Decal.cs:165-176`), so `scenery/grass_a` stays a static image
+    // "")` (`references/Celeste.exe.cs.d/Celeste/Decal.cs:165-176`), so `scenery/grass_a` stays a static image
     // exactly like in vanilla; the trailing `.png` some sources add is ignored
     // (`format.rs` documents that vanilla strips it).
     let name = texture.to_ascii_lowercase().replace('\\', "/");
@@ -1923,7 +1923,7 @@ fn is_banner_decal(texture: &str) -> bool {
 
 /// Emits one quad per visible 1-px slice of every `generic/grass_*` decal in the list.
 ///
-/// Provenance (`Decal.MakeBanner`, `Celeste/Decal.cs:372-395`, and `Banner.Render`,
+/// Provenance (`Decal.MakeBanner`, `references/Celeste.exe.cs.d/Celeste/Decal.cs:372-395`, and `Banner.Render`,
 /// `:52-65`): vanilla slices the decal texture with `GetSubtexture(0, i, Width, 1)` for
 /// `i` in `0..Height`, where `MTexture.Height` is the **frame** height -- so the empty
 /// rows the trim cut away still count in `list.Count` and lower every slice's
@@ -1963,7 +1963,7 @@ fn push_grass_banners(
             continue;
         };
         // `MTexture.GetSubtexture` clamps each slice against the parent's clip rect
-        // (`MTexture.cs:130-140`); the loop bounds below reproduce those clamps with
+        // (`references/Celeste.exe.cs.d/Monocle/MTexture.cs:130-140`); the loop bounds below reproduce those clamps with
         // the atlas numbers instead of building intermediate textures.
         let (ox, oy) = sprite.origin();
         let (fw, fh) = sprite.frame_size();
@@ -1977,7 +1977,7 @@ fn push_grass_banners(
         let sx = decal.scale_x.abs();
         let sy = decal.scale_y.abs();
         let flip_x = decal.scale_x < 0.0;
-        // `sineTimer = Calc.Random.NextFloat()` per banner (`Decal.cs:21`); seeded
+        // `sineTimer = Calc.Random.NextFloat()` per banner (`references/Celeste.exe.cs.d/Celeste/Decal.cs:21`); seeded
         // deterministically from the decal's identity instead, so replays and headless
         // screenshots stay stable.
         let phase = banner_phase(room_index, foreground, index);
@@ -1995,13 +1995,13 @@ fn push_grass_banners(
             if ch <= 0.0 {
                 continue;
             }
-            // The slice's own `DrawOffset` (`GetSubtexture`, `MTexture.cs:141-146`) is
+            // The slice's own `DrawOffset` (`GetSubtexture`, `references/Celeste.exe.cs.d/Monocle/MTexture.cs:141-146`) is
             // subtracted from the passed origin: `(Width/2 - max(ox, 0), Height/2 - i -
             // max(oy - i, 0))`.
             let origin_x = fw * 0.5 - ox.max(0.0);
             let origin_y = fh * 0.5 - i - (oy - i).max(0.0);
             // `num = (1 - i / list.Count) * WindMultiplier` with `WindMultiplier = 1`
-            // (`Decal.cs:53-56`, `OnlyIfWindy = false`).
+            // (`references/Celeste.exe.cs.d/Celeste/Decal.cs:53-56`, `OnlyIfWindy = false`).
             let num = Fx::one() - Fx::from_ratio(i as i32, count as i32);
             let x = (sine_timer * Fx::from_int(2) + Fx::from_ratio(i as i32, 20)).sin()
                 * num
@@ -2027,7 +2027,7 @@ fn push_grass_banners(
 }
 
 /// Deterministic banner phase in `[0, 1)` seconds, standing in for vanilla's
-/// `sineTimer = Calc.Random.NextFloat()` (`Decal.cs:21`). Mixing the room index, the
+/// `sineTimer = Calc.Random.NextFloat()` (`references/Celeste.exe.cs.d/Celeste/Decal.cs:21`). Mixing the room index, the
 /// layer and the decal index through the same constants as [`crate::backdrop`]'s
 /// `SplitMix64` keeps the draw pass stateless (`&self`) while giving every banner its
 /// own phase.
@@ -2043,15 +2043,16 @@ fn banner_phase(room_index: usize, foreground: bool, decal_index: usize) -> Fx {
 
 /// Vanilla's starting room and spawn point, each step with provenance:
 ///
-/// 1. **Starting room**: `pureCeleste.cs:112564` `MapData.StartLevel() =>
+/// 1. **Starting room**: `references/Celeste.exe.cs.d/Celeste/MapData.cs:289` `MapData.StartLevel() =>
 ///    GetAt(Vector2.Zero)` -- the first room containing the **world origin (0,0)**
-///    (`GetAt`, 112569, tests Bounds containment in order and returns null when nothing
+///    (`GetAt`, references/Celeste.exe.cs.d/Celeste/MapData.cs:294, tests Bounds containment in order and returns null when nothing
 ///    matches; here it falls back to the first room and warns, an engine robustness
 ///    difference).
-/// 2. **Spawn point**: `115101` `Session.RespawnPoint = DefaultSpawnPoint`, `114080`
-///    `DefaultSpawnPoint => Spawns.ClosestTo((Bounds.Left, Bounds.Bottom))` (`101280`
-///    `GetSpawnPoint`) -- the spawn point closest to the room's **bottom-left corner**.
-/// 3. **Anchor semantics**: `115105` `new Player(Session.RespawnPoint.Value, ...)` --
+/// 2. **Spawn point**: `references/Celeste.exe.cs.d/Celeste/Level.cs:1311` `Session.RespawnPoint = DefaultSpawnPoint`,
+///    `references/Celeste.exe.cs.d/Celeste/Level.cs:290` `public Vector2 DefaultSpawnPoint => GetSpawnPoint(new Vector2(Bounds.Left, Bounds.Bottom))`
+///    delegates to `references/Celeste.exe.cs.d/Celeste/Session.cs:256-258` `return LevelData.Spawns.ClosestTo(from);` --
+///    the spawn point closest to the room's **bottom-left corner**.
+/// 3. **Anchor semantics**: `references/Celeste.exe.cs.d/Celeste/Level.cs:1315` `Player player = new Player(Session.RespawnPoint.Value, spriteMode);` --
 ///    the spawn point is the hitbox **bottom center** (feet, see
 ///    `player::PLAYER_H_PX`).
 ///
@@ -2088,9 +2089,7 @@ fn vanilla_start(doc: &MapDocument) -> (Vec2, String) {
         .iter()
         .find(|r| r.bounds.to_rect().contains(origin))
         .or_else(|| {
-            warn!(
-                "no room contains the world origin (pureCeleste StartLevel); using the first room"
-            );
+            warn!("no room contains the world origin (vanilla StartLevel); using the first room");
             doc.rooms.first()
         });
     let Some(room) = room else {
@@ -2239,8 +2238,8 @@ mod tests {
     }
 
     /// Room filtering + transition visibility semantics (vanilla `Backdrop.Update`,
-    /// `pureCeleste.cs:109468-109489`; `IsVisible`'s `OnlyIn` / `ExcludeFrom` branches,
-    /// 109456-109465).
+    /// `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:134-155`; `IsVisible`'s `OnlyIn` / `ExcludeFrom` branches,
+    /// references/Celeste.exe.cs.d/Celeste/Backdrop.cs:122-131).
     #[test]
     fn backdrop_room_filter_and_transition_visibility() {
         let mut session = seam_session();
@@ -2260,7 +2259,7 @@ mod tests {
         // Transition into lvl_0: InstantIn defaults to true -> matching images become
         // visible immediately; non-matching images have no InstantOut -> they **keep**
         // the previous frame's visibility (vanilla Update does only these two checks
-        // during a transition and leaves the rest untouched, 109470-109483).
+        // during a transition and leaves the rest untouched, references/Celeste.exe.cs.d/Celeste/Backdrop.cs:136-149).
         session.update_backdrop_visibility("lvl_0", true);
         let vis = session.backdrop_visible.borrow();
         assert!(vis[0], "without InstantOut the excluded backdrop lingers");
@@ -2352,7 +2351,7 @@ mod tests {
     /// 320x137 (`bgs\00\bg0` in `Gameplay.atlas`): after converting the origin through
     /// `Position - Floor(cam)*Scroll` it must cover the whole 320-wide screen, and with
     /// `loopy=false` there is only one row -- consistent with `Parallax.Render`
-    /// 112185-112234.
+    /// references/Celeste.exe.cs.d/Celeste/Parallax.cs:64-113.
     #[test]
     fn parallax_loop_x_without_loop_y_tiles_one_row() {
         let bd = parallax_bd(-24.0, -64.0, (0.15, 0.05), (true, false));
@@ -2366,7 +2365,7 @@ mod tests {
 
         // Floor(cam) = (176, 92) -> px = Floor(-24 - 26.4) = -51 and
         // py = Floor(-64 - 4.6) = -69; the loopx fold is vanilla's two while loops
-        // (first <0 add, then >0 subtract, 112185-112195) -> -51 is returned unchanged.
+        // (first <0 add, then >0 subtract, references/Celeste.exe.cs.d/Celeste/Parallax.cs:64-74) -> -51 is returned unchanged.
         assert_eq!(
             tiles,
             vec![(-51.0, -69.0), (269.0, -69.0)],
@@ -2406,7 +2405,7 @@ mod tests {
         assert!(tiles.iter().all(|(x, y)| *x < 320.0 && *y < 180.0));
     }
 
-    /// The `for` condition comes first (`112220`/`112222`): when the origin is
+    /// The `for` condition comes first (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:99`/`references/Celeste.exe.cs.d/Celeste/Parallax.cs:101`): when the origin is
     /// off-screen that axis draws nothing; when it is on-screen and neither axis loops,
     /// exactly one piece is drawn.
     #[test]
@@ -2439,8 +2438,8 @@ mod tests {
     }
 
     /// `ParseBackdrop` lowercases `blendmode` and only then compares it with
-    /// `"additive"` (`112658-112673`); both flip bits travel independently
-    /// (`112208-112218`).
+    /// `"additive"` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:383-398`); both flip bits travel independently
+    /// (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:87-97`).
     #[test]
     fn backdrop_flags_follow_parse_backdrop() {
         let mut bd = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
@@ -2464,7 +2463,7 @@ mod tests {
     }
 
     /// `Parallax.Update` drifts `Position` by `Speed * dt` every tick
-    /// (`112149-112151`), independently of visibility, and a hot reload that rewrites
+    /// (`references/Celeste.exe.cs.d/Celeste/Parallax.cs:28-30`), independently of visibility, and a hot reload that rewrites
     /// `speedx` takes effect on the next tick.
     #[test]
     fn parallax_speed_drifts_the_position_each_tick() {
@@ -2516,8 +2515,8 @@ mod tests {
         );
     }
 
-    /// Color: all-zero = vanilla's default white (`112789`/`effective_color`); the
-    /// `alpha` attribute folds into Color (`112798-112804` `Color *= alpha`).
+    /// Color: all-zero = vanilla's default white (`references/Celeste.exe.cs.d/Celeste/MapData.cs:514`/`effective_color`); the
+    /// `alpha` attribute folds into Color (`references/Celeste.exe.cs.d/Celeste/MapData.cs:523-525` `backdrop.Color *= child.AttrFloat("alpha");`).
     #[test]
     fn backdrop_tint_matches_parse_semantics() {
         let mut bd = parallax_bd(0.0, 0.0, (1.0, 1.0), (true, true));
@@ -2585,7 +2584,7 @@ mod tests {
         );
     }
 
-    /// The deck's cell stepping must match vanilla (`107719-107729`): each cell is 8px
+    /// The deck's cell stepping must match vanilla (`references/Celeste.exe.cs.d/Celeste/Bridge.cs:47-57`): each cell is 8px
     /// or 16px and the total = `width`; cells inside the gap are skipped but the cursor
     /// still advances.
     #[test]
@@ -2649,7 +2648,7 @@ mod tests {
     }
 
     /// A 16px end cap is cut vertically into 24 + 12 + 12 + ..., the rest is one strip;
-    /// both flatten to y = -8 (`BridgeTile`, `107854-107878`).
+    /// both flatten to y = -8 (`BridgeTile`, `references/Celeste.exe.cs.d/Celeste/BridgeTile.cs:26-50`).
     #[test]
     fn bridge_tile_strips_split_wide_ends_only() {
         let wide = bridge_tile_strips(0, 16, 52);
@@ -2797,7 +2796,7 @@ frame_h = 9
 
     /// Left and right facing must be mirror images about `Player.Position`.
     ///
-    /// Vanilla flips by negating `Sprite.Scale.X` (119641/119657) and FNA mirrors a
+    /// Vanilla flips by negating `Sprite.Scale.X` (references/Celeste.exe.cs.d/Celeste/Player.cs:1390/references/Celeste.exe.cs.d/Celeste/Player.cs:1406) and FNA mirrors a
     /// negative-scaled quad about its origin; flipping only the UVs (which is what
     /// `SpriteEffects.FlipHorizontally` does) leaves the quad in place and breaks the
     /// mirror for every frame whose trimmed content is not centred on the origin.
@@ -2850,7 +2849,7 @@ frame_h = 9
     /// Left and right facing must be mirror images about `Player.Position`.
     ///
     /// Vanilla flips the player by negating `Sprite.Scale.X` (`Player.Render` multiplies the
-    /// scale by `Facing` around `base.Render()`, pureCeleste.cs:119641/119657) and FNA
+    /// scale by `Facing` around `base.Render()`, references/Celeste.exe.cs.d/Celeste/Player.cs:1390/references/Celeste.exe.cs.d/Celeste/Player.cs:1406) and FNA
     /// mirrors a negative-scaled quad **about the origin**; swapping only the UVs (which is
     /// what `SpriteEffects.FlipHorizontally` does) leaves the quad in place, so every frame
     /// whose trimmed content is not centred on the origin came out asymmetric.
@@ -2859,7 +2858,7 @@ frame_h = 9
     ///
     /// Provenance: `tools/content-pipeline/src/pipeline.rs`, `csv_tileset` stores
     /// `value + 1`; vanilla's CSV uses `-1` for "no tile" and `Tileset[index]` indexes
-    /// flat (`Monocle/Tileset.cs:15-25`).
+    /// flat (`references/Celeste.exe.cs.d/Monocle/Tileset.cs:15-25`).
     #[test]
     fn scenery_cells_decode_to_flat_tileset_indices() {
         assert_eq!(scenery_index(0), None, "0 means empty, not index -1");
@@ -2872,7 +2871,7 @@ frame_h = 9
     /// offset, folding the flat index into `(col, row)` of the shared scenery sheet.
     ///
     /// Vanilla overlays the same grid onto the tile layer and renders `tileset[index]`
-    /// per cell (`LevelLoader`, `77244-77254`; `Monocle/Tileset.cs:15-25`).
+    /// per cell (`LevelLoader`, `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:283-293`; `references/Celeste.exe.cs.d/Monocle/Tileset.cs:15-25`).
     #[test]
     fn scenery_grid_draws_one_tile_per_non_empty_cell() {
         use releste_render::atlas::{Sprite, TextureGroup, TextureKind};
@@ -2971,7 +2970,7 @@ frame_h = 9
     /// mirrors them about that centre.
     ///
     /// Vanilla: `DecalImage.Render` -> `MTexture.DrawCentered(Position, White, scale)`,
-    /// which passes `Center - DrawOffset` as the origin (`MTexture.cs:206-234`), and
+    /// which passes `Center - DrawOffset` as the origin (`references/Celeste.exe.cs.d/Monocle/MTexture.cs:206-234`), and
     /// `Center` is `Width / 2, Height / 2` of the **frame**, not of the cropped rect.
     #[test]
     fn decals_are_centred_on_their_frame_and_mirror_about_the_centre() {
@@ -3078,7 +3077,7 @@ frame_h = 9
     }
 
     /// The four `generic/grass_a..d` decals are bannered by `Decal.Added`
-    /// (`Decal.cs:164-176`), so they must never join the cached static list.
+    /// (`references/Celeste.exe.cs.d/Celeste/Decal.cs:164-176`), so they must never join the cached static list.
     #[test]
     fn grass_decals_do_not_join_the_static_list() {
         assert!(is_banner_decal("decals/generic/grass_a"));
@@ -3122,7 +3121,7 @@ frame_h = 9
     }
 
     /// Vanilla slices the banner decal into 1-px frame rows (`MakeBanner`,
-    /// `Decal.cs:372-395`): the empty trim rows still count in `list.Count`, each
+    /// `references/Celeste.exe.cs.d/Celeste/Decal.cs:372-395`): the empty trim rows still count in `list.Count`, each
     /// visible slice stacks directly below the previous one, and the slice's quad is
     /// one pixel of the cropped art (`GetRelativeRect` clamps).
     #[test]
@@ -3180,7 +3179,7 @@ frame_h = 9
     }
 
     /// `Banner.Update` advances `sineTimer` by `Engine.DeltaTime` per tick
-    /// (`Decal.cs:44-46`) and `Banner.Render` shifts slice `i` by
+    /// (`references/Celeste.exe.cs.d/Celeste/Decal.cs:44-46`) and `Banner.Render` shifts slice `i` by
     /// `sin(sineTimer * 2 + i * 0.05) * num * 2 + num * -2` (`:53-62`): the shared
     /// clock must move the slices, and deterministically per decal.
     #[test]

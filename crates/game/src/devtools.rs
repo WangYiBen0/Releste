@@ -44,7 +44,7 @@ pub const TRACE_SCHEMA: &str = "releste.trace.v1";
 /// Player state snapshot for one tick.
 ///
 /// Positions are px; velocities are given both in px/tick (the engine's
-/// internal unit) and px/s (vanilla's unit in `pureCeleste.cs`), so a line can
+/// internal unit) and px/s (vanilla's unit in `references/Celeste.exe.cs.d`), so a line can
 /// be compared against the reference directly.
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot<'a> {

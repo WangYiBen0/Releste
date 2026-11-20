@@ -192,7 +192,7 @@ impl Paths {
     /// **Background** tile definitions (converted from `Graphics/BackgroundTiles.xml`).
     ///
     /// This and [`Paths::tilesets`] are two independent tables: the same id maps to different
-    /// textures on each side (two independent vanilla `Autotiler`s, `pureCeleste.cs:110116-110117`).
+    /// textures on each side (two independent vanilla `Autotiler`s, `references/Celeste.exe.cs.d/Celeste/GFX.cs:131-132`).
     pub fn bg_tilesets(&self) -> PathBuf {
         self.atlas.join("bg_tilesets.toml")
     }

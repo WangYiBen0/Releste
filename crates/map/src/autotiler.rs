@@ -12,17 +12,17 @@ use crate::format::Tileset;
 use crate::tilesets::{tile_char, TilesetDef, TilesetsDoc};
 
 /// Out-of-grid (out-of-bounds) probe behavior, corresponding to vanilla `Autotiler.Behaviour.EdgesExtend`
-/// (`pureCeleste.cs:87693`).
+/// (`references/Celeste.exe.cs.d/Celeste/Autotiler.cs:71`).
 ///
 /// Mask matching relies on the 3x3 neighborhood, so how out-of-bounds is treated decides which tile an edge cell gets:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Oob {
     /// Edge extension: an out-of-bounds probe clamps to the edge cell and reads it (the room-tile behavior of `GenerateMap`,
-    /// the `EdgesExtend` branch of `CheckTile`/`GetTile`, `87986-87996` / `88017-88031`).
+    /// the `EdgesExtend` branch of `CheckTile`/`GetTile`, `references/Celeste.exe.cs.d/Celeste/Autotiler.cs:364-374` / `references/Celeste.exe.cs.d/Celeste/Autotiler.cs:395-409`).
     Extend,
     /// Out-of-bounds is empty: anything outside the grid counts as empty (the default `Behaviour` of `GenerateBox`
-    /// -- it returns `EdgesExtend` = false when `mapData == null`, `87985-87989`;
-    /// the `IntroCrusher` box uses exactly this, `106322 -> 87832`).
+    /// -- it returns `EdgesExtend` = false when `mapData == null`, `references/Celeste.exe.cs.d/Celeste/Autotiler.cs:363-367`;
+    /// the `IntroCrusher` box uses exactly this, `references/Celeste.exe.cs.d/Celeste/IntroCrusher.cs:23 -> references/Celeste.exe.cs.d/Celeste/Autotiler.cs:210`).
     Empty,
 }
 
@@ -56,7 +56,7 @@ pub fn generate_with(tiles: &Tileset, defs: &TilesetsDoc, oob: Oob) -> Vec<(u32,
     out
 }
 
-/// 3x3 adjacency array (`Autotiler.cs:295-321`).
+/// 3x3 adjacency array (`references/Celeste.exe.cs.d/Celeste/Autotiler.cs:295-321`).
 ///
 /// All nine probes go through `neighbor_connects` with no out-of-bounds short-circuit -- how out-of-bounds
 /// is decided by `oob` (`Oob::Extend` clamps to the edge cell = the room behavior of `GenerateMap`;
@@ -93,7 +93,7 @@ fn adjacency(tiles: &Tileset, tx: u32, ty: u32, def: &TilesetDef, oob: Oob) -> [
 /// Whether the tile at `(x, y)` connects to `def`'s tileset (`CheckTile`).
 ///
 /// Out of bounds: `Oob::Empty` simply does not connect (the `!EdgesExtend` branch of `CheckTile`,
-/// `87990-87993`); `Oob::Extend` clamps to the edge cell and reads it (`87995-88001`).
+/// `references/Celeste.exe.cs.d/Celeste/Autotiler.cs:368-371`); `Oob::Extend` clamps to the edge cell and reads it (`references/Celeste.exe.cs.d/Celeste/Autotiler.cs:373-379`).
 /// An empty cell inside the grid does not connect.
 fn neighbor_connects(tiles: &Tileset, x: i32, y: i32, def: &TilesetDef, oob: Oob) -> bool {
     let w = tiles.width as i32;
@@ -122,7 +122,7 @@ fn pick(
     let all_solid = adjacency.iter().all(|&v| v == 1);
 
     let candidates = if all_solid {
-        // 2-away probe (`Autotiler.cs:316-331`): any failure -> padding.
+        // 2-away probe (`references/Celeste.exe.cs.d/Celeste/Autotiler.cs:316-331`): any failure -> padding.
         let far = [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)];
         let padded = far
             .iter()

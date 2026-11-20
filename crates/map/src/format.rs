@@ -6,19 +6,19 @@
 //! one `v_n -> v_{n+1}` migration.
 //!
 //! Appended in v2 relative to v1 (all at the end of their respective structs):
-//! - [`MapDocument::style`] -- area-level parallax background (`<Style>`, `pureCeleste.cs:112428-112449`);
-//! - [`Room::bg_decals`] / [`Room::fg_decals`] -- decals (`113467-113497`);
-//! - [`Room::bg_scenery`] / [`Room::fg_scenery`] -- `Scenery` decoration layer overrides (`77244-77253`);
+//! - [`MapDocument::style`] -- area-level parallax background (`<Style>`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:153-174`);
+//! - [`Room::bg_decals`] / [`Room::fg_decals`] -- decals (`references/Celeste.exe.cs.d/Celeste/LevelData.cs:268-298`);
+//! - [`Room::bg_scenery`] / [`Room::fg_scenery`] -- `Scenery` decoration layer overrides (`references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:283-292`);
 //! - [`EntityData::nodes`] -- entity nodes (the `introCrusher` endpoint, the `wire` polyline, the `bridge` piers).
 //!
 //! Appended in v3 relative to v2 (all at the end of [`Backdrop`]):
 //! - [`Backdrop::only_in`] / [`Backdrop::exclude_from`] -- room filtering
-//!   (vanilla `Backdrop.OnlyIn` / `ExcludeFrom`, `109406-109409`, from
-//!   `only=` / `exclude=`, `112860-112873`; wildcards are expanded at conversion time, see
-//!   `ParseLevelsList`, `113019-113036`);
+//!   (vanilla `Backdrop.OnlyIn` / `ExcludeFrom`, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:72-75`, from
+//!   `only=` / `exclude=`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:585-598`; wildcards are expanded at conversion time, see
+//!   `ParseLevelsList`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:744-761`);
 //! - [`Backdrop::instant_in`] / [`Backdrop::instant_out`] -- transition visibility
-//!   (vanilla `InstantIn` / `InstantOut`, `109411-109418`, from
-//!   `instantIn=` / `instantOut=`, `112895-112905`).
+//!   (vanilla `InstantIn` / `InstantOut`, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:77-84`, from
+//!   `instantIn=` / `instantOut=`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:620-630`).
 //!
 //! At the same time `properties` / `Props.fields` moves from `HashMap` to `BTreeMap`:
 //! `HashMap` iterates in `RandomState` order, so two serializations of the same map
@@ -61,7 +61,7 @@ pub struct MapStyle {
     /// Clear color (RGB).
     ///
     /// Vanilla default is `Color.Black`; only `<Style color="...">` overrides it
-    /// (default at `pureCeleste.cs:112310`, override at `112432-112435`).
+    /// (default at `references/Celeste.exe.cs.d/Celeste/MapData.cs:35`, override at `references/Celeste.exe.cs.d/Celeste/MapData.cs:157-160`).
     #[serde(default)]
     pub background_color: [u8; 3],
     /// Backgrounds drawn **after** the world (vanilla `<Backgrounds>`).
@@ -77,8 +77,8 @@ pub struct MapStyle {
 /// `kind` is the vanilla element name (`"parallax"`, `"snowBg"`, `"snowFg"`...);
 /// the engine decides behavior from it; every field not written in the file falls back to the vanilla default.
 ///
-/// Default value sources: `pureCeleste.cs:109341-109430` (`Backdrop` field defaults),
-/// `112620-112900` (`ParseBackdrop` per-attribute overrides).
+/// Default value sources: `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:7-96` (`Backdrop` field defaults),
+/// `references/Celeste.exe.cs.d/Celeste/MapData.cs:345-625` (`ParseBackdrop` per-attribute overrides).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Backdrop {
     /// Element name (compared lowercased, same as `ParseBackdrop`).
@@ -86,7 +86,7 @@ pub struct Backdrop {
     /// Texture name (`parallax texture="..."`).
     #[serde(default)]
     pub texture: String,
-    /// Source atlas of the texture: `"game"` / `"gui"` / `"misc"` (`112635-112646`).
+    /// Source atlas of the texture: `"game"` / `"gui"` / `"misc"` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:360-371`).
     #[serde(default)]
     pub atlas: String,
     /// Position (`x` / `y`, default 0).
@@ -120,23 +120,23 @@ pub struct Backdrop {
     /// Wind multiplier (`wind`).
     #[serde(default)]
     pub wind: f32,
-    /// Blend mode: `"alphablend"` (default) or `"additive"` (`112658-112673`).
+    /// Blend mode: `"alphablend"` (default) or `"additive"` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:383-398`).
     #[serde(default)]
     pub blend: String,
-    /// Render only in these rooms (appended in v3; vanilla `Backdrop.OnlyIn`, `109406`,
-    /// `only=`, `112860-112873`). Wildcards were already expanded to concrete room names at conversion time.
+    /// Render only in these rooms (appended in v3; vanilla `Backdrop.OnlyIn`, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:72`,
+    /// `only=`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:585-598`). Wildcards were already expanded to concrete room names at conversion time.
     #[serde(default)]
     pub only_in: Vec<String>,
-    /// Do not render in these rooms (appended in v3; vanilla `Backdrop.ExcludeFrom`, `109409`,
-    /// `exclude=`, `112855-112860`).
+    /// Do not render in these rooms (appended in v3; vanilla `Backdrop.ExcludeFrom`, `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:75`,
+    /// `exclude=`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:580-585`).
     #[serde(default)]
     pub exclude_from: Vec<String>,
     /// Immediately visible when a transition cuts in (appended in v3; vanilla `InstantIn`, default `true`,
-    /// `109411`, `112895-112900`).
+    /// `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:77`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:620-625`).
     #[serde(default = "default_true")]
     pub instant_in: bool,
     /// Immediately hidden when a transition cuts out (appended in v3; vanilla `InstantOut`, default `false`,
-    /// `109413`, `112900-112905`).
+    /// `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:79`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:625-630`).
     #[serde(default)]
     pub instant_out: bool,
 }
@@ -147,7 +147,7 @@ fn default_true() -> bool {
 }
 
 impl Backdrop {
-    /// Vanilla default color: white (`112793`).
+    /// Vanilla default color: white (`references/Celeste.exe.cs.d/Celeste/MapData.cs:518`).
     pub const WHITE: [u8; 4] = [255, 255, 255, 255];
 
     /// Create a new one (an empty color means "use the vanilla default white").
@@ -186,7 +186,7 @@ impl Backdrop {
     }
 }
 
-/// A single decal (vanilla `DecalData`, `pureCeleste.cs:113199-113206`).
+/// A single decal (vanilla `DecalData`, `references/Celeste.exe.cs.d/Celeste/DecalData.cs:5-12`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decal {
     /// Texture name (relative to `decals/`, may carry a `.png` suffix; vanilla strips it).
@@ -212,16 +212,16 @@ pub struct Room {
     pub triggers: Vec<TriggerData>,
     #[serde(default)]
     pub script: Option<PathBuf>,
-    /// Background decals (vanilla `bgdecals`, Depth 9000, `115083-115086`).
+    /// Background decals (vanilla `bgdecals`, Depth 9000, `references/Celeste.exe.cs.d/Celeste/Level.cs:1293-1296`).
     #[serde(default)]
     pub bg_decals: Vec<Decal>,
-    /// Foreground decals (vanilla `fgdecals`, Depth -10500, `115079-115082`).
+    /// Foreground decals (vanilla `fgdecals`, Depth -10500, `references/Celeste.exe.cs.d/Celeste/Level.cs:1289-1292`).
     #[serde(default)]
     pub fg_decals: Vec<Decal>,
-    /// `bgtiles` decoration layer (`Scenery` atlas, `77244-77248`).
+    /// `bgtiles` decoration layer (`Scenery` atlas, `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:283-287`).
     #[serde(default)]
     pub bg_scenery: Tileset,
-    /// `fgtiles` decoration layer (same as above, `77249-77254`).
+    /// `fgtiles` decoration layer (same as above, `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:288-293`).
     #[serde(default)]
     pub fg_scenery: Tileset,
 }
@@ -272,7 +272,7 @@ pub struct Tileset {
     /// Row-major tile indices; the length should be `width * height`.
     ///
     /// `u16` rather than `u8`: decoration layer indices count the whole `tilesets/scenery`
-    /// (the flat index of `Tileset.this[int]`, `pureCeleste.cs:15215-15226`);
+    /// (the flat index of `Tileset.this[int]`, `references/Celeste.exe.cs.d/Monocle/Tileset.cs:13-24`);
     /// the vanilla image has 360 cells (30x12), and `5-MirrorTemple` uses indices up to 352.
     /// The solid layers (`solids`/`bg`) use the 0-9a-z alphabet, max 35, which fits.
     #[serde(default)]

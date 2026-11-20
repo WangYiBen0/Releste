@@ -3,10 +3,10 @@
 #
 # Every expectation is derived from the vanilla constants, not copied from
 # whatever the engine prints today:
-#   MaxRun = 90f      (pureCeleste.cs:118386) -> 1.5 px/tick
-#   RunAccel = 1000f  (pureCeleste.cs:118388) -> 1/60*1000 = 0.27778 px/tick^2
+#   MaxRun = 90f      (references/Celeste.exe.cs.d/Celeste/Player.cs:135) -> 1.5 px/tick
+#   RunAccel = 1000f  (references/Celeste.exe.cs.d/Celeste/Player.cs:137) -> 1/60*1000 = 0.27778 px/tick^2
 #   releasing the input decelerates at the full 1000 rate
-#   (pureCeleste.cs:121965-121975; the 400 rate is for same-direction overspeed)
+#   (references/Celeste.exe.cs.d/Celeste/Player.cs:3714-3724; the 400 rate is for same-direction overspeed)
 #
 # Animation: `runSlow` is 12 frames at 0.07s and only then gotos `runFast`
 # (Graphics/Sprites.xml:197), i.e. it plays for 0.84s = 50 ticks. Shorter runs

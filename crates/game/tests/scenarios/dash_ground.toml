@@ -1,10 +1,10 @@
 # Ground dash: 240 px/s for 0.15s, then 160 px/s for the tail, and one dash
 # is consumed.
 #
-#   DashSpeed 240f   (pureCeleste.cs:122745) -> 4 px/tick
-#   DashEnd 160f     (pureCeleste.cs:122824) -> 8/3 px/tick
-#   0.15s = 9 ticks  (pureCeleste.cs:122817)
-#   dashes 1 -> 0    (DashBegin, around pureCeleste.cs:122534)
+#   DashSpeed 240f   (references/Celeste.exe.cs.d/Celeste/Player.cs:4494) -> 4 px/tick
+#   DashEnd 160f     (references/Celeste.exe.cs.d/Celeste/Player.cs:4573) -> 8/3 px/tick
+#   0.15s = 9 ticks  (references/Celeste.exe.cs.d/Celeste/Player.cs:4566)
+#   dashes 1 -> 0    (DashBegin, around references/Celeste.exe.cs.d/Celeste/Player.cs:4283)
 [scenario]
 ticks = 40
 map = "0-Intro.map"

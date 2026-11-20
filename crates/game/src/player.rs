@@ -3,7 +3,7 @@
 //! All state is [`Fx`] (AGENTS.md 15.7), and the time step is always
 //! [`FIXED_DT`](releste_math::FIXED_DT).
 //!
-//! Relationship to vanilla (`references/pureCeleste.cs`, behavioral reference):
+//! Relationship to vanilla (`references/Celeste.exe.cs.d`, behavioral reference):
 //! - **Aligned**: run acceleration (1000/400/0.65), gravity 900, fall-speed cap
 //!   160/240 easing (the `maxFall` state), apex half gravity (40 threshold),
 //!   coyote / jump buffer / release cut (landed in Phase 4.1).
@@ -13,20 +13,20 @@
 //!   the solid interior of the neighboring room); wall and floor landings snap to
 //!   **world cell edges**, independent of the room origin. When the center falls out
 //!   of every room, the nearest room clamps it back.
-//! - **Jump is aligned**: `Jump()`'s -105 + `JumpHBoost` (120704-120705) + varJump
-//!   clamping (122042-122048) + 0.08s buffer (110376) / 0.1s coyote (119832-119839);
+//! - **Jump is aligned**: `Jump()`'s -105 + `JumpHBoost` (references/Celeste.exe.cs.d/Celeste/Player.cs:2453-2454) + varJump
+//!   clamping (references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797) + 0.08s buffer (references/Celeste.exe.cs.d/Celeste/Input.cs:153) / 0.1s coyote (references/Celeste.exe.cs.d/Celeste/Player.cs:1581-1588);
 //!   see the provenance comments on each constant.
 //! - **Engine-invented (no vanilla counterpart; deviation declared)**: collision in
 //!   a continuous multi-room world (`Player::hit_in`'s seam double check), the
 //!   world-level fallback clamp (`Player::clamp_to_world`) and the fixed 1/2px
-//!   advance step (`STEP`). Vanilla is **one tile grid per map** (77231-77233) plus a
+//!   advance step (`STEP`). Vanilla is **one tile grid per map** (references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:270-272) plus a
 //!   single room boundary, so collision is naturally map-wide; the engine stores tiles
 //!   per room and can only check seams explicitly. Each function's docs note this.
-//! - **Implemented states**: 0 Normal (119397), 1 Climb with stamina (119398),
-//!   2 Dash with eight-way/refill/cooldown (119399); `Player::step` dispatches on
+//! - **Implemented states**: 0 Normal (references/Celeste.exe.cs.d/Celeste/Player.cs:1146), 1 Climb with stamina (references/Celeste.exe.cs.d/Celeste/Player.cs:1147),
+//!   2 Dash with eight-way/refill/cooldown (references/Celeste.exe.cs.d/Celeste/Player.cs:1148); `Player::step` dispatches on
 //!   `state`.
 //! - **Not yet implemented states** (vanilla `StateMachine.SetCallbacks`
-//!   119397-119411): 3 Swim, 4 Boost, 5 RedDash, 6 HitSquash, 7 Launch, 8 Pickup,
+//!   references/Celeste.exe.cs.d/Celeste/Player.cs:1146-1160): 3 Swim, 4 Boost, 5 RedDash, 6 HitSquash, 7 Launch, 8 Pickup,
 //!   9 DreamDash, 10 SummitLaunch, 11 Dummy, and the 12-15 intro coroutines; these
 //!   `state` values currently all fall back to Normal. ROADMAP Phase 4.1. The hair
 //!   color USED/FLASH/TWO_DASHES states are already prepared in `sprites::hair_color`
@@ -39,7 +39,7 @@ use crate::session::{nearest_room, room_containing, Session};
 
 /// Hitbox width (pixels, integer, for room collision).
 ///
-/// Vanilla: `pureCeleste.cs:118856`
+/// Vanilla: `references/Celeste.exe.cs.d/Celeste/Player.cs:605`
 /// `normalHitbox = new Hitbox(8f, 11f, -4f, -11f)` -- 8 wide, 11 tall; `Position` is
 /// the hitbox **bottom center** (the anchor under the feet).
 pub const PLAYER_W_PX: i32 = 8;
@@ -51,57 +51,57 @@ pub const PLAYER_W: f32 = PLAYER_W_PX as f32;
 pub const PLAYER_H: f32 = PLAYER_H_PX as f32;
 
 /// Horizontal run speed 90 px/s (1.5 px/tick at 60Hz). Vanilla `MaxRun = 90f`
-/// (pureCeleste.cs:118386 `MaxRun = 90f`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:135 `MaxRun = 90f`).
 const RUN: Fx = Fx::from_ratio(3, 2);
 /// Speed threshold for the idle / edge branch: 25 px/s (5/12 px/tick), vanilla
 /// `Math.Abs(Speed.X) <= 25f && moveX == 0`
-/// (pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:2151 `Math.Abs(Speed.X) <= 25f && moveX == 0`).
 ///
 /// **This is not the same threshold as [`RUN`]**: the runSlow/runFast split is
-/// 45 px/s (pureCeleste.cs:120449 `Math.Abs(Speed.X) < 45f`); 25 px/s only decides
+/// 45 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:2198 `Math.Abs(Speed.X) < 45f`); 25 px/s only decides
 /// "have we finished moving". Mixing the two selects the wrong frame while
 /// decelerating (this engine previously used 45).
 const IDLE_SPEED: Fx = Fx::from_ratio(5, 12);
 /// Horizontal acceleration 1000 px/s^2 (~0.278 px/tick^2) -- starting from rest does
 /// not snap to top speed. Vanilla `RunAccel = 1000f`
-/// (pureCeleste.cs:118388 `RunAccel = 1000f`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:137 `RunAccel = 1000f`).
 const RUN_ACCEL: Fx = Fx::from_ratio(5, 18);
 /// Overspeed reduction 400 px/s^2: used only for **same-direction overspeed**
 /// (|vx| > 90 and the same sign as the input); easing to a stop with no input and
 /// braking in the opposite direction both use the full 1000 rate
-/// (pureCeleste.cs:121965-121975). Definition: `RunReduce = 400f`
-/// (pureCeleste.cs:118390 `RunReduce = 400f`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:3714-3724). Definition: `RunReduce = 400f`
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:139 `RunReduce = 400f`).
 const RUN_REDUCE: Fx = Fx::from_ratio(1, 9);
 /// Air control factor 0.65 -- air acceleration is a bit more than half of ground.
-/// Vanilla `AirMult = 0.65f` (pureCeleste.cs:118392 `AirMult = 0.65f`).
+/// Vanilla `AirMult = 0.65f` (references/Celeste.exe.cs.d/Celeste/Player.cs:141 `AirMult = 0.65f`).
 const AIR_MULT: Fx = Fx::from_ratio(13, 20);
 /// Gravity 900 px/s^2 (0.25 px/tick^2).
-/// Vanilla `Gravity = 900f` (pureCeleste.cs:118378 `Gravity = 900f`).
+/// Vanilla `Gravity = 900f` (references/Celeste.exe.cs.d/Celeste/Player.cs:127 `Gravity = 900f`).
 const GRAVITY: Fx = Fx::from_ratio(1, 4);
 /// Apex half gravity: while rising or falling very slowly and holding jump, gravity
 /// is halved (450 px/s^2). Vanilla multiplies gravity by 0.5
-/// (pureCeleste.cs:122031 `? 0.5f : 1f`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:3780 `? 0.5f : 1f`).
 const HALF_GRAVITY: Fx = Fx::from_ratio(1, 8);
 /// Normal fall-speed cap 160 px/s (8/3 px/tick).
 ///
-/// **Reference value**: `MaxFall = 160f` (pureCeleste.cs:118376 `MaxFall = 160f`).
+/// **Reference value**: `MaxFall = 160f` (references/Celeste.exe.cs.d/Celeste/Player.cs:125 `MaxFall = 160f`).
 /// It is an **eased state** (see [`Player::max_fall`]): holding "down" ramps the cap
 /// toward [`FAST_MAX_FALL`], releasing eases it back -- not a hard cut.
 const MAX_FALL: Fx = Fx::from_ratio(8, 3);
 /// Fast-fall cap 240 px/s (4 px/tick). Reference `FastMaxFall = 240f`
-/// (pureCeleste.cs:118382 `FastMaxFall = 240f`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:131 `FastMaxFall = 240f`).
 const FAST_MAX_FALL: Fx = Fx::from_int(4);
 /// Easing rate of the fall-speed cap: 300 px/s^2 (1/12 px/tick^2). Reference
-/// `FastMaxAccel = 300f` (pureCeleste.cs:118384 `FastMaxAccel = 300f`).
+/// `FastMaxAccel = 300f` (references/Celeste.exe.cs.d/Celeste/Player.cs:133 `FastMaxAccel = 300f`).
 const FAST_MAX_ACCEL: Fx = Fx::from_ratio(1, 12);
 /// Apex half-gravity threshold 40 px/s (2/3 px/tick). Reference
-/// `HalfGravThreshold = 40f` (pureCeleste.cs:118380 `HalfGravThreshold = 40f`).
+/// `HalfGravThreshold = 40f` (references/Celeste.exe.cs.d/Celeste/Player.cs:129 `HalfGravThreshold = 40f`).
 const HALF_GRAV_THRESHOLD: Fx = Fx::from_ratio(2, 3);
 /// Jump vertical speed -105 px/s (-7/4 px/tick). `Player.Jump`:
-/// `Speed.Y = -105f` (pureCeleste.cs:120705).
+/// `Speed.Y = -105f` (references/Celeste.exe.cs.d/Celeste/Player.cs:2454).
 const JUMP_SPEED: Fx = Fx::from_ratio(-7, 4);
 /// Jump horizontal boost 40 px/s (2/3 px/tick): `Speed.X += 40f * moveX`
-/// (pureCeleste.cs:120704). Jumping while running briefly overspeeds, then gets
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:2453). Jumping while running briefly overspeeds, then gets
 /// pulled back at the 400 rate.
 const JUMP_H_BOOST: Fx = Fx::from_ratio(2, 3);
 /// Quarter turn in Q16.16 radians (`MathHelper.PiOver2`). The math crate keeps its
@@ -113,16 +113,16 @@ const PI_OVER_4: Fx = Fx::from_bits(51_472);
 /// `Math.PI * 3f / 4f`.
 const THREE_PI_OVER_4: Fx = Fx::from_bits(154_415);
 /// Landing-dust speed gate 80 px/s (4/3 px/tick): `if (Speed.Y >= 80f)` before the
-/// landing `Dust.Burst` (pureCeleste.cs:121588).
+/// landing `Dust.Burst` (references/Celeste.exe.cs.d/Celeste/Player.cs:3358).
 const LAND_DUST_SPEED: Fx = Fx::from_ratio(4, 3);
 /// Landing dust only fires once the fall is this fast -- vanilla uses the same
-/// threshold for the burst (8 particles, pureCeleste.cs:121589).
+/// threshold for the burst (8 particles, references/Celeste.exe.cs.d/Celeste/Player.cs:3360).
 const LAND_DUST_COUNT: u8 = 8;
 
-/// varJump duration 0.2s = 12 ticks (pureCeleste.cs:120698).
+/// varJump duration 0.2s = 12 ticks (references/Celeste.exe.cs.d/Celeste/Player.cs:2447).
 ///
 /// While jump is held, vertical speed is clamped back to the jump value
-/// (122042-122048) -- gravity is fully cancelled, giving a full jump of
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797) -- gravity is fully cancelled, giving a full jump of
 /// ~12x1.75 + 105^2/1800 ~ 27px (3.4 cells); releasing zeroes the timer and only
 /// gravity remains, which is the variable jump height. There is **no** "cut speed at
 /// release" -- the height is reduced purely by the clamp.
@@ -136,61 +136,61 @@ const VAR_JUMP_TICKS: u32 = 12;
 /// pixel-by-pixel, at the cost of a few extra queries per tick.
 const STEP: Fx = Fx::from_ratio(1, 2);
 /// Dash speed 240 px/s (4 px/tick). `DashCoroutine`: `speed = value * 240f`
-/// (pureCeleste.cs:122745).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:4494).
 const DASH_SPEED: Fx = Fx::from_int(4);
 /// Dash end speed 160 px/s (8/3 px/tick): after 0.15s `Speed = DashDir * 160f`
-/// (122824, when `DashDir.Y <= 0`).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:4573, when `DashDir.Y <= 0`).
 const DASH_END_SPEED: Fx = Fx::from_ratio(8, 3);
-/// Dash duration 0.15s = 9 ticks (`yield return 0.15f`, 122817).
+/// Dash duration 0.15s = 9 ticks (`yield return 0.15f`, references/Celeste.exe.cs.d/Celeste/Player.cs:4566).
 const DASH_TICKS: u16 = 9;
-/// Dash cooldown 0.2s = 12 ticks (`DashBegin`: `dashCooldownTimer = 0.2f`, 122541).
+/// Dash cooldown 0.2s = 12 ticks (`DashBegin`: `dashCooldownTimer = 0.2f`, references/Celeste.exe.cs.d/Celeste/Player.cs:4290).
 const DASH_COOLDOWN_TICKS: u16 = 12;
 /// Cooldown after a ground refill during which dashing is blocked: 0.1s = 6 ticks
-/// (122545; vanilla only writes it and never reads it, ported anyway to keep the
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:4294; vanilla only writes it and never reads it, ported anyway to keep the
 /// field complete).
 const DASH_REFILL_COOLDOWN_TICKS: u16 = 6;
-/// Dash attack window 0.3s = 18 ticks (`dashAttackTimer = 0.3f`, 122554).
+/// Dash attack window 0.3s = 18 ticks (`dashAttackTimer = 0.3f`, references/Celeste.exe.cs.d/Celeste/Player.cs:4303).
 const DASH_ATTACK_TICKS: u16 = 18;
 /// Upward corner correction reach in pixels (vanilla `UpwardCornerCorrection = 4`,
-/// pureCeleste.cs:118422; the constant is inlined at its use site, 121625-121646).
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:171; the constant is inlined at its use site, references/Celeste.exe.cs.d/Celeste/Player.cs:3374-3395).
 const UPWARD_CORNER_CORRECTION: i32 = 4;
 /// Upward corner correction reach while dash-attacking with no horizontal speed
-/// (vanilla `DashingUpwardCornerCorrection = 5`, pureCeleste.cs:118424; selected at
-/// 121627).
+/// (vanilla `DashingUpwardCornerCorrection = 5`, references/Celeste.exe.cs.d/Celeste/Player.cs:173; selected at
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:3376).
 const DASHING_UPWARD_CORNER_CORRECTION: i32 = 5;
 /// Dash corner correction reach in pixels (vanilla `DashCornerCorrection = 4`,
-/// pureCeleste.cs:118476; the loop bound at 121440 is the literal 4).
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:225; the loop bound at references/Celeste.exe.cs.d/Celeste/Player.cs:3189 is the literal 4).
 const DASH_CORNER_CORRECTION: i32 = 4;
 /// The `0.01f` speed comparisons vanilla uses to pick a corner-correction direction
-/// (pureCeleste.cs:121544, 121630-121646).
+/// (references/Celeste.exe.cs.d/Celeste/Player.cs:3293, references/Celeste.exe.cs.d/Celeste/Player.cs:3379-3395).
 const SPEED_EPS: Fx = Fx::from_ratio(1, 100);
 /// Wall jump horizontal speed 130 px/s (13/6 px/tick, `WallJump`: `Speed.X = 130f*dir`,
-/// pureCeleste.cs:120836).
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:2585).
 const WALLJUMP_X: Fx = Fx::from_ratio(13, 6);
 /// Wall jump probe distance 5px: `CollideCheck<Solid>(Position + UnitX*dir*5)`
-/// (`WallJumpCheck`, the `num = 5` normal branch at 120779-120804).
+/// (`WallJumpCheck`, the `num = 5` normal branch at references/Celeste.exe.cs.d/Celeste/Player.cs:2528-2553).
 const WALLJUMP_PROBE: Fx = Fx::from_int(5);
-/// Duration of the forced moveX after a wall jump: 0.16s = 10 ticks (120832
+/// Duration of the forced moveX after a wall jump: 0.16s = 10 ticks (references/Celeste.exe.cs.d/Celeste/Player.cs:2581
 /// `forceMoveXTimer = 0.16f`; the anti-re-grab window while a direction is held).
 const FORCE_MOVE_X_TICKS: u16 = 10;
 /// Super wall jump horizontal speed 170 px/s (17/6 px/tick, `SuperWallJump`:
-/// `Speed.X = 170f*dir`, pureCeleste.cs:120877).
+/// `Speed.X = 170f*dir`, references/Celeste.exe.cs.d/Celeste/Player.cs:2626).
 ///
 /// Note: the value was once mis-written as 240 (4 px/tick) -- the section comment was
 /// fixed but the constant was not. `super_wall_jump_pins_vanilla_speeds` now pins
 /// these two values.
 const SUPER_WALLJUMP_X: Fx = Fx::from_ratio(17, 6);
 /// Super wall jump vertical speed -160 px/s (-8/3 px/tick, `varJumpSpeed =
-/// (Speed.Y = -160f)`, pureCeleste.cs:120878).
+/// (Speed.Y = -160f)`, references/Celeste.exe.cs.d/Celeste/Player.cs:2627).
 const SUPER_WALLJUMP_Y: Fx = Fx::from_ratio(-8, 3);
 /// Super jump (jumping during a ground horizontal dash) horizontal speed 260 px/s
-/// (13/3 px/tick, `SuperJump`: `Speed.X = 260f*Facing`, 120748).
+/// (13/3 px/tick, `SuperJump`: `Speed.X = 260f*Facing`, references/Celeste.exe.cs.d/Celeste/Player.cs:2497).
 const SUPER_JUMP_X: Fx = Fx::from_ratio(13, 3);
 /// Hair flash duration 0.12s = 7 ticks (`UpdateHair`: `hairFlashTimer = 0.12f`,
-/// pureCeleste.cs:120271).
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:2020).
 const HAIR_FLASH_TICKS: u8 = 7;
-/// Hair chain defaults (vanilla `PlayerHair` fields, pureCeleste.cs:111079-111082,
-/// re-assigned by `Player.Update`'s final else branch, 119982-119987):
+/// Hair chain defaults (vanilla `PlayerHair` fields, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:25-28,
+/// re-assigned by `Player.Update`'s final else branch, references/Celeste.exe.cs.d/Celeste/Player.cs:1731-1736):
 /// `StepPerSegment = (0, 2)`, `StepInFacingPerSegment = 0.5`, `StepApproach = 64`,
 /// `StepYSinePerSegment = 0`.
 const HAIR_STEP_PER_SEGMENT: Vec2 = Vec2::new(Fx::zero(), Fx::from_int(2));
@@ -198,67 +198,69 @@ const HAIR_STEP_IN_FACING: Fx = Fx::from_ratio(1, 2);
 const HAIR_STEP_APPROACH: Fx = Fx::from_int(64);
 const HAIR_STEP_Y_SINE: Fx = Fx::zero();
 /// Two-dash hair config (vanilla `Player.Update`'s `Dashes > 1` branch,
-/// 119965-119975): `StepInFacingPerSegment = 0`, `StepApproach = 90`,
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:1714-1724): `StepInFacingPerSegment = 0`, `StepApproach = 90`,
 /// `StepYSinePerSegment = 1`, and `StepPerSegment` becomes a wave at
 /// `sin(TimeActive * 2) * 0.7 - Facing * 3` / `sin(TimeActive)`.
 const HAIR_TWO_DASH_APPROACH: Fx = Fx::from_int(90);
 /// Longest distance allowed between two hair nodes (`PlayerHair.AfterUpdate`'s
-/// `float num = 3f`, pureCeleste.cs:111123/111132).
+/// `float num = 3f`, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:69/references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:78).
 const HAIR_MAX_SEGMENT: Fx = Fx::from_int(3);
-/// Hair color ease-in rate 6/s (`Lerp(Hair.Color, Used, 6f*dt)`, 120258-120262; the
+/// Hair color ease-in rate 6/s (`Lerp(Hair.Color, Used, 6f*dt)`, references/Celeste.exe.cs.d/Celeste/Player.cs:2007-2011; the
 /// per-tick lerp factor = 6/60 = 0.1).
-/// Max climb stamina 110 (`ClimbMaxStamina`, pureCeleste.cs:118504; full at spawn,
-/// 118680 `Stamina = 110f`).
+/// Max climb stamina 110 (`ClimbMaxStamina`, references/Celeste.exe.cs.d/Celeste/Player.cs:253; full at spawn,
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:429 `Stamina = 110f`).
 const CLIMB_MAX_STAMINA: Fx = Fx::from_ratio(110, 1);
-/// Upward climb stamina drain: vanilla's literal `45.454544f`/s (122266-122268,
+/// Upward climb stamina drain: vanilla's literal `45.454544f`/s (references/Celeste.exe.cs.d/Celeste/Player.cs:4015-4017,
 /// draining 110 in ~2.42s) converted per tick by /60.
 const CLIMB_UP_DRAIN_PER_TICK: Fx = Fx::from_ratio(45454544, 60000000);
-/// Stamina drain for holding still 10/s (122278-122280).
+/// Stamina drain for holding still 10/s (references/Celeste.exe.cs.d/Celeste/Player.cs:4027-4029).
 const CLIMB_IDLE_DRAIN_PER_TICK: Fx = Fx::from_ratio(1, 6);
-/// Stamina drain for a climb jump (without leaving the ground) 27.5 (120904-120906).
+/// Stamina drain for a climb jump (without leaving the ground) 27.5 (references/Celeste.exe.cs.d/Celeste/Player.cs:2653-2655).
 const CLIMBJUMP_DRAIN: Fx = Fx::from_ratio(55, 2);
 /// Below 20 effective stamina the player is too tired to grab a wall
-/// (`pureCeleste.cs:119299` `private bool IsTired => CheckStamina < 20f`).
+/// (`references/Celeste.exe.cs.d/Celeste/Player.cs:1048` `private bool IsTired => CheckStamina < 20f`).
 const CLIMB_TIRED_THRESHOLD: Fx = Fx::from_int(20);
-/// Upward climb speed -45 px/s (-3/4 px/tick, 122220-122222).
+/// Upward climb speed -45 px/s (-3/4 px/tick, references/Celeste.exe.cs.d/Celeste/Player.cs:3969-3971).
 const CLIMB_UP_SPEED: Fx = Fx::from_ratio(-3, 4);
-/// Downward climb speed 80 px/s (4/3 px/tick, 122228-122230).
+/// Downward climb speed 80 px/s (4/3 px/tick, references/Celeste.exe.cs.d/Celeste/Player.cs:3977-3979).
 const CLIMB_DOWN_SPEED: Fx = Fx::from_ratio(4, 3);
 /// Slip speed when holding without input 30 px/s (1/2 px/tick, `num = 30f` at
-/// 122246-122248).
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:3995-3997).
 const CLIMB_SLIP_SPEED: Fx = Fx::from_ratio(1, 2);
 /// Hop off the top of a climbed wall: horizontal 100 px/s (5/3 px/tick, `ClimbHop`
-/// 122368), vertical clamped to <= -120 px/s (-2 px/tick, 122372).
+/// references/Celeste.exe.cs.d/Celeste/Player.cs:4117), vertical clamped to <= -120 px/s (-2 px/tick, references/Celeste.exe.cs.d/Celeste/Player.cs:4121).
 const CLIMB_HOP_X: Fx = Fx::from_ratio(5, 3);
 const CLIMB_HOP_Y: Fx = Fx::from_int(-2);
-/// Duck hitbox: 8x6, offset (-4,-6) (`duckHitbox`, pureCeleste.cs:118858; its bottom
+/// Duck hitbox: 8x6, offset (-4,-6) (`duckHitbox`, references/Celeste.exe.cs.d/Celeste/Player.cs:607; its bottom
 /// edge aligns with the normal hitbox -> the engine's top-left y offset = 11-6 = 5).
 const DUCK_H: i32 = 6;
 const DUCK_Y_OFF: i32 = 5;
-/// Ground deceleration while ducking 500 px/s^2 (122047-122049:
+/// Ground deceleration while ducking 500 px/s^2 (references/Celeste.exe.cs.d/Celeste/Player.cs:3796-3798:
 /// `Approach(Speed.X, 0, 500*dt)`; per tick^2, 500/3600 = 5/36 px/tick^2).
 const DUCK_DECEL: Fx = Fx::from_ratio(5, 36);
-/// Wall slide speed eased from 160 to 20 px/s (122240: `Lerp(160, 20,
+/// Wall slide speed eased from 160 to 20 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:3989: `Lerp(160, 20,
 /// wallSlideTimer/1.2)`).
 const WALLSLIDE_FAST: Fx = Fx::from_ratio(8, 3);
 const WALLSLIDE_SLOW: Fx = Fx::from_ratio(1, 3);
-/// Wall slide timer maximum 1.2s = 72 ticks (`wallSlideTimer = 1.2f`, 118760).
+/// Wall slide timer maximum 1.2s = 72 ticks (`wallSlideTimer = 1.2f`, references/Celeste.exe.cs.d/Celeste/Player.cs:509).
 const WALLSLIDE_TICKS: u16 = 72;
-/// Climb start stagger 0.1s = 6 ticks (`climbNoMoveTimer = 0.1f`, 122146).
+/// Climb start stagger 0.1s = 6 ticks (`climbNoMoveTimer = 0.1f`, references/Celeste.exe.cs.d/Celeste/Player.cs:3895).
 const CLIMB_NO_MOVE_TICKS: u16 = 6;
 /// Push window toward the wall after a climb jump: 0.2s = 12 ticks (`ClimbJump`:
-/// `wallBoostTimer = 0.2f`, 120910-120913).
+/// `wallBoostTimer = 0.2f`, references/Celeste.exe.cs.d/Celeste/Player.cs:2659-2662).
 const WALL_BOOST_TICKS: u16 = 12;
 const HAIR_LERP_PER_TICK: f32 = 0.1;
 
 /// Jump input buffer: 0.08s = 5 ticks (including the press frame).
 ///
-/// Vanilla `VirtualButton`'s `BufferTime`: Jump = 0.08f (pureCeleste.cs:110376); it
+/// Vanilla `VirtualButton`'s `BufferTime`: Jump = 0.08f (references/Celeste.exe.cs.d/Celeste/Input.cs:153); it
 /// fills on press, decays every frame, and `Pressed` is true while the count > 0
-/// (16715-16840) -- a jump pressed within 4 ticks before landing still fires on
+/// (references/Celeste.exe.cs.d/Monocle/VirtualButton.cs:43-64 and
+/// references/Celeste.exe.cs.d/Monocle/VirtualButton.cs:107-125) -- a jump pressed
+/// within 4 ticks before landing still fires on
 /// landing.
 const JUMP_BUFFER_FRAMES: u32 = 5;
-/// Coyote time: 0.1s (`jumpGraceTimer`, pureCeleste.cs:119832-119839 -- refilled to
+/// Coyote time: 0.1s (`jumpGraceTimer`, references/Celeste.exe.cs.d/Celeste/Player.cs:1581-1588 -- refilled to
 /// 0.1 every grounded frame, decayed every frame once airborne, and a jump is allowed
 /// while > 0).
 ///
@@ -275,10 +277,10 @@ pub struct Input {
     pub up: bool,
     pub down: bool,
     pub jump: bool,
-    /// Dash button (vanilla `Input.Dash`, default X, 101632). Buffering matches jump
-    /// (`VirtualButton.BufferTime = 0.08f`, 110376).
+    /// Dash button (vanilla `Input.Dash`, default X, references/Celeste.exe.cs.d/Celeste/Settings.cs:212). Buffering matches jump
+    /// (`VirtualButton.BufferTime = 0.08f`, references/Celeste.exe.cs.d/Celeste/Input.cs:153).
     pub dash: bool,
-    /// Grab button (vanilla `Input.Grab`, default Z/V/LeftShift, 101622).
+    /// Grab button (vanilla `Input.Grab`, default Z/V/LeftShift, references/Celeste.exe.cs.d/Celeste/Settings.cs:203-206).
     pub grab: bool,
 }
 
@@ -296,7 +298,7 @@ impl Input {
     ///
     /// Overlapping input segments in scripts merge by this rule (`devtools::input_at`)
     /// -- pressing left and right together is allowed and `axis_x` returns 0 (vanilla
-    /// `Axis` semantics, 16705-16714).
+    /// `Axis` semantics, references/Celeste.exe.cs.d/Monocle/MInput.cs:1469-1478).
     pub fn merge(self, other: Input) -> Input {
         Input {
             left: self.left || other.left,
@@ -310,7 +312,7 @@ impl Input {
     }
 
     /// Vertical axis: -1 (up) / 0 / +1 (down). Vanilla `Input.MoveY.Value`
-    /// (`Axis(bool, bool, bothValue)`, 16705-16714: pressing both returns 0).
+    /// (`Axis(bool, bool, bothValue)`, references/Celeste.exe.cs.d/Monocle/MInput.cs:1469-1478: pressing both returns 0).
     pub fn axis_y(self) -> Fx {
         match (self.up, self.down) {
             (true, false) => -Fx::one(),
@@ -334,7 +336,7 @@ pub struct Player {
     /// Facing: 1 right, -1 left.
     pub facing: i32,
     /// Current fall-speed cap (px/tick): eased between [`MAX_FALL`] and
-    /// [`FAST_MAX_FALL`] at [`FAST_MAX_ACCEL`] -- reference pureCeleste's `maxFall`
+    /// [`FAST_MAX_FALL`] at [`FAST_MAX_ACCEL`] -- reference vanilla's `maxFall`
     /// local state.
     max_fall: Fx,
     /// Previous tick's jump button (edge detection: press / release).
@@ -345,93 +347,93 @@ pub struct Player {
     coyote: u32,
     /// varJump countdown (ticks): while > 0 and jump is held, vertical speed is
     /// clamped back to the jump value (vanilla `varJumpTimer`,
-    /// pureCeleste.cs:122042-122048).
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797).
     var_jump: u32,
     /// Remaining ticks of forced varJump clamping (vanilla `AutoJump` +
-    /// `AutoJumpTimer`, 120590-120594: auto-jump on an up transition, clamping for
+    /// `AutoJumpTimer`, references/Celeste.exe.cs.d/Celeste/Player.cs:2339-2343: auto-jump on an up transition, clamping for
     /// 0.2s regardless of input).
     auto_jump: u32,
     /// Current dash count (vanilla `Player.Dashes`, constructed as MaxDashes around
-    /// 118860).
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:609).
     pub dashes: u8,
     /// Dash inventory maximum (vanilla `Player.MaxDashes`; the Prologue
-    /// `Inventory.Prologue` has no second dash -> 1, 119421).
+    /// `Inventory.Prologue` has no second dash -> 1, references/Celeste.exe.cs.d/Celeste/Player.cs:1170).
     pub max_dashes: u8,
     /// Previous tick's dash count (vanilla `lastDashes`, used for the hair flash
-    /// check, 120295).
+    /// check, references/Celeste.exe.cs.d/Celeste/Player.cs:2044).
     last_dashes: u8,
-    /// Remaining hair flash time (vanilla `hairFlashTimer`, 120271).
+    /// Remaining hair flash time (vanilla `hairFlashTimer`, references/Celeste.exe.cs.d/Celeste/Player.cs:2020).
     hair_flash: u8,
     /// The **current** hair color (the carrier for `UpdateHair`'s per-frame lerp,
-    /// 120258-120262).
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:2007-2011).
     hair_color_current: [f32; 4],
     /// Simulated hair node positions in **world space** (vanilla `PlayerHair.Nodes`,
-    /// pureCeleste.cs:111088). Node 0 is pinned to the head every tick (111116) and the
+    /// references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:34). Node 0 is pinned to the head every tick (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62) and the
     /// later nodes chase their parents, so the chain genuinely trails the player -- storing
     /// it relative to the player would hide the drag.
     hair_nodes: [Vec2; crate::sprites::HAIR_MAX],
     /// Live segment count (vanilla `PlayerSprite.HairCount`: 4 normally, 5 with two
-    /// dashes -- 111321 and 119986).
+    /// dashes -- references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:115 and references/Celeste.exe.cs.d/Celeste/Player.cs:1735).
     hair_count: usize,
     /// Seconds since spawn (vanilla `Scene.TimeActive`), read by the two-dash hair
-    /// config (119967-119969).
+    /// config (references/Celeste.exe.cs.d/Celeste/Player.cs:1716-1718).
     hair_time: Fx,
-    /// `PlayerHair.wave` (111142: `wave += dt * 4`), the phase of the per-segment sine.
+    /// `PlayerHair.wave` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:88: `wave += dt * 4`), the phase of the per-segment sine.
     hair_wave: Fx,
-    /// `PlayerHair.Start` has run (vanilla `startHairCalled`, 120237-120245).
+    /// `PlayerHair.Start` has run (vanilla `startHairCalled`, references/Celeste.exe.cs.d/Celeste/Player.cs:1986-1994).
     hair_started: bool,
     /// `Player.Sprite.Scale` (vanilla starts at `Vector2.One`); springs back to 1 in
-    /// `UpdateSprite` (120302-120303) and is setback by dash/jump/hit actions
-    /// (120724/120995/121037/121587/121992). Read twice by the sim: the hair root
-    /// Y-offset is `-9 * Scale.Y` (111117) and the hair rigidity gate below.
+    /// `UpdateSprite` (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052) and is setback by dash/jump/hit actions
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2473/references/Celeste.exe.cs.d/Celeste/Player.cs:2744/references/Celeste.exe.cs.d/Celeste/Player.cs:2786/references/Celeste.exe.cs.d/Celeste/Player.cs:3336/references/Celeste.exe.cs.d/Celeste/Player.cs:3741). Read twice by the sim: the hair root
+    /// Y-offset is `-9 * Scale.Y` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:63) and the hair rigidity gate below.
     sprite_scale: [Fx; 2],
-    /// `PlayerHair.SimulateMotion` (111077, set at 120296): when false the hair chain does
-    /// **not** chase its parent (the 111127-111131 approach is skipped), so it goes rigid
-    /// and is only held within the max-segment constraint (111132-111134). Gated on
+    /// `PlayerHair.SimulateMotion` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:23, set at references/Celeste.exe.cs.d/Celeste/Player.cs:2045): when false the hair chain does
+    /// **not** chase its parent (the references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:73-77 approach is skipped), so it goes rigid
+    /// and is only held within the max-segment constraint (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:78-80). Gated on
     /// `applyGravity`, which vanilla passes through `UpdateHair(applyGravity)`.
     simulate_motion: bool,
     /// State machine (vanilla `StateMachine.State`, numbered as vanilla: 0 = Normal,
-    /// 2 = Dash, 119397-119409; 1/3/8 etc. not implemented).
+    /// 2 = Dash, references/Celeste.exe.cs.d/Celeste/Player.cs:1146-1158; 1/3/8 etc. not implemented).
     state: u8,
     /// Dash direction (vanilla `DashDir`, an eight-way unit vector with components
     /// +/-1/0/+/-0.707).
     dash_dir: Vec2,
     /// Dash coroutine phase: 0 = entry tick (`yield return null`, speed not yet set),
-    /// 1..=9 = the 0.15s wait, ending on tick 10 (`DashCoroutine` 122731-122831).
+    /// 1..=9 = the 0.15s wait, ending on tick 10 (`DashCoroutine` references/Celeste.exe.cs.d/Celeste/Player.cs:4480-4580).
     dash_phase: u16,
-    /// Snapshot of speed at the jump/dash instant (vanilla `beforeDashSpeed`, 122559).
+    /// Snapshot of speed at the jump/dash instant (vanilla `beforeDashSpeed`, references/Celeste.exe.cs.d/Celeste/Player.cs:4308).
     before_dash_speed: Vec2,
-    /// Dash cooldown (vanilla `dashCooldownTimer`, 0.2s, 122541).
+    /// Dash cooldown (vanilla `dashCooldownTimer`, 0.2s, references/Celeste.exe.cs.d/Celeste/Player.cs:4290).
     dash_cooldown: u16,
-    /// Dash refill cooldown (vanilla `dashRefillCooldownTimer`, 0.1s, 122545).
+    /// Dash refill cooldown (vanilla `dashRefillCooldownTimer`, 0.1s, references/Celeste.exe.cs.d/Celeste/Player.cs:4294).
     dash_refill_cooldown: u16,
-    /// Dash attack window (vanilla `dashAttackTimer`, 0.3s, 122554).
+    /// Dash attack window (vanilla `dashAttackTimer`, 0.3s, references/Celeste.exe.cs.d/Celeste/Player.cs:4303).
     dash_attack: u16,
-    /// Vanilla `dashStartedOnGround` (118794): `onGround` captured at `DashBegin`
-    /// (122537). The air-dash landing correction only runs when it is **false**
-    /// (121542), so a dash that started on the ground keeps ordinary landing rules.
+    /// Vanilla `dashStartedOnGround` (references/Celeste.exe.cs.d/Celeste/Player.cs:543): `onGround` captured at `DashBegin`
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:4286). The air-dash landing correction only runs when it is **false**
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:3291), so a dash that started on the ground keeps ordinary landing rules.
     dash_started_on_ground: bool,
     /// Target speed for varJump clamping (vanilla `varJumpSpeed` field: `Jump()` sets
-    /// -105 (120698), `WallJump` -105 (120837), `BeforeUpTransition` -105 (120588),
-    /// `Rebound` -120; the clamp is `min(Speed.Y, varJumpSpeed)`, 122134).
+    /// -105 (references/Celeste.exe.cs.d/Celeste/Player.cs:2447), `WallJump` -105 (references/Celeste.exe.cs.d/Celeste/Player.cs:2586), `BeforeUpTransition` -105 (references/Celeste.exe.cs.d/Celeste/Player.cs:2337),
+    /// `Rebound` -120; the clamp is `min(Speed.Y, varJumpSpeed)`, references/Celeste.exe.cs.d/Celeste/Player.cs:3883).
     var_jump_speed: Fx,
     /// Forced horizontal input (vanilla `forceMoveX` + `forceMoveXTimer`,
-    /// 119883-119889: moveX is overridden for 0.16s after a wall jump, preventing an
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:1632-1638: moveX is overridden for 0.16s after a wall jump, preventing an
     /// immediate re-grab).
     force_move_x: i32,
     force_move_x_ticks: u16,
     /// Horizontal input in effect this tick (`moveX`: input or the forceMoveX
-    /// override, 119883-119891).
+    /// override, references/Celeste.exe.cs.d/Celeste/Player.cs:1632-1640).
     move_x: Fx,
     /// Previous tick's dash button (buffer edge).
     prev_dash: bool,
-    /// Dash button buffer (`Input.Dash`'s VirtualButton.BufferTime = 0.08s, 110376).
+    /// Dash button buffer (`Input.Dash`'s VirtualButton.BufferTime = 0.08s, references/Celeste.exe.cs.d/Celeste/Input.cs:153).
     dash_buffer: u16,
-    /// Freeze request at dash start (`Celeste.Freeze(0.05f)`, 122540; consumed by the
+    /// Freeze request at dash start (`Celeste.Freeze(0.05f)`, references/Celeste.exe.cs.d/Celeste/Player.cs:4289; consumed by the
     /// service).
     pub freeze_ticks: u8,
     /// Scene clock in seconds, advanced once per tick (vanilla `Scene.TimeActive`,
-    /// pureCeleste.cs:118292 `TimeActive += Engine.DeltaTime`). Drives the
+    /// references/Celeste.exe.cs.d/Monocle/Scene.cs:67 `TimeActive += Engine.DeltaTime`). Drives the
     /// `Scene.OnInterval` gates on the periodic dust emitters.
     scene_time: Fx,
     /// Queued `Dust.Burst` emissions for this tick, drained by the service into
@@ -439,7 +441,7 @@ pub struct Player {
     /// `Level.Particles`, but the player does not own that system here).
     dust: Vec<crate::particles::Burst>,
     /// Queued screen-shake request at dash start
-    /// (`SceneAs<Level>().DirectionalShake(DashDir, 0.2f)`, 122783), drained by the
+    /// (`SceneAs<Level>().DirectionalShake(DashDir, 0.2f)`, references/Celeste.exe.cs.d/Celeste/Player.cs:4532), drained by the
     /// service into [`crate::shake::Shake`] (vanilla keeps the shake on the level).
     shake_request: Option<(Vec2, Fx)>,
     /// Animation state (vanilla `Sprite`: current animation id, frame, timer, playing).
@@ -448,41 +450,41 @@ pub struct Player {
     anim_timer: f32,
     anim_playing: bool,
     /// The id most recently passed to `play` (vanilla `Sprite.LastAnimationID`,
-    /// pureCeleste.cs:10181, written at 10491-10492). `PlayerSprite.Running`
-    /// (111375-111388) and `UpdateSprite`'s run guard (120447) both read it -- "is it
+    /// references/Celeste.exe.cs.d/Monocle/Sprite.cs:56, written at references/Celeste.exe.cs.d/Monocle/Sprite.cs:366-367). `PlayerSprite.Running`
+    /// (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:169-182) and `UpdateSprite`'s run guard (references/Celeste.exe.cs.d/Celeste/Player.cs:2196) both read it -- "is it
     /// running" is **not** the same as "does the current animation have a goto"
     /// (`idle`/`edge`/`walk` all carry `<Loop>`).
     last_anim_id: String,
-    /// Fast jump/fall flag (`fastJump`, 120437/120469).
+    /// Fast jump/fall flag (`fastJump`, references/Celeste.exe.cs.d/Celeste/Player.cs:2186/references/Celeste.exe.cs.d/Celeste/Player.cs:2218).
     fast_jump: bool,
-    /// Stamina (`Stamina`, 110 at spawn per 118680; drained by climbing, refilled on
-    /// landing 119818-119823).
+    /// Stamina (`Stamina`, 110 at spawn per references/Celeste.exe.cs.d/Celeste/Player.cs:429; drained by climbing, refilled on
+    /// landing references/Celeste.exe.cs.d/Celeste/Player.cs:1567-1572).
     pub stamina: Fx,
-    /// Ducking (`Ducking`; hitbox 8x6, 118858).
+    /// Ducking (`Ducking`; hitbox 8x6, references/Celeste.exe.cs.d/Celeste/Player.cs:607).
     pub ducking: bool,
-    /// Climb start stagger (`climbNoMoveTimer`, 0.1s, 122146).
+    /// Climb start stagger (`climbNoMoveTimer`, 0.1s, references/Celeste.exe.cs.d/Celeste/Player.cs:3895).
     climb_no_move_ticks: u16,
-    /// Previous tick's climb move direction (`lastClimbMove`, 122251).
+    /// Previous tick's climb move direction (`lastClimbMove`, references/Celeste.exe.cs.d/Celeste/Player.cs:4000).
     last_climb_move: i32,
-    /// Wall slide direction/timer (`wallSlideDir`/`wallSlideTimer`, 118758-118760).
+    /// Wall slide direction/timer (`wallSlideDir`/`wallSlideTimer`, references/Celeste.exe.cs.d/Celeste/Player.cs:507-509).
     wall_slide_dir: i32,
     wall_slide_ticks: u16,
-    /// Climb jump boost (`wallBoostDir`/`wallBoostTimer`, 119119-119820).
+    /// Climb jump boost (`wallBoostDir`/`wallBoostTimer`, references/Celeste.exe.cs.d/Celeste/Player.cs:868-1569).
     wall_boost_dir: i32,
     wall_boost_ticks: u16,
     /// Solid still beside the player at `ClimbHop()` time (vanilla `climbHopSolid`,
-    /// 122381-122386). While set, the horizontal push is deferred to `hopWaitX` /
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:4130-4135). While set, the horizontal push is deferred to `hopWaitX` /
     /// `hopWaitXSpeed` instead of being applied immediately.
     climb_hop_solid: bool,
-    /// Pending horizontal push direction (vanilla `hopWaitX`, 122383/122386: the
+    /// Pending horizontal push direction (vanilla `hopWaitX`, references/Celeste.exe.cs.d/Celeste/Player.cs:4132/references/Celeste.exe.cs.d/Celeste/Player.cs:4135: the
     /// facing sign, or 0 when no solid was found).
     hop_wait_x: i32,
-    /// Pending horizontal push speed (vanilla `hopWaitXSpeed`, 122384:
+    /// Pending horizontal push speed (vanilla `hopWaitXSpeed`, references/Celeste.exe.cs.d/Celeste/Player.cs:4133:
     /// `Facing * 100f`).
     hop_wait_x_speed: Fx,
 }
 
-/// Fx version of `Math.Sign(before.X) == Math.Sign(speed.X)` (122770).
+/// Fx version of `Math.Sign(before.X) == Math.Sign(speed.X)` (references/Celeste.exe.cs.d/Celeste/Player.cs:4519).
 fn vel_x_same_dir(before: &Vec2, other_x: Fx) -> bool {
     before.x != Fx::zero() && other_x != Fx::zero() && before.x.signum() == other_x.signum()
 }
@@ -602,10 +604,10 @@ impl Player {
     /// One simulation step: the shared timer head -> state machine (Normal/Dash) ->
     /// world-level fallback.
     ///
-    /// Mirrors the structure of vanilla `Player.Update` (pureCeleste.cs:119700-120168):
-    /// timers/refill/facing (119827-119921) -> `base.Update()` into the state machine
-    /// (registered 119397-119409: 0 = NormalUpdate, 2 = DashUpdate) -> MoveH/MoveV
-    /// (120049-120056) -> EnforceBounds is handled by the service.
+    /// Mirrors the structure of vanilla `Player.Update` (references/Celeste.exe.cs.d/Celeste/Player.cs:1449-1917):
+    /// timers/refill/facing (references/Celeste.exe.cs.d/Celeste/Player.cs:1576-1670) -> `base.Update()` into the state machine
+    /// (registered references/Celeste.exe.cs.d/Celeste/Player.cs:1146-1158: 0 = NormalUpdate, 2 = DashUpdate) -> MoveH/MoveV
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805) -> EnforceBounds is handled by the service.
     ///
     /// `rooms` is passed explicitly so unit tests can build room geometry directly
     /// without spinning up a whole Session.
@@ -616,7 +618,7 @@ impl Player {
         self.sample_input_edges(input);
         // `Scene.TimeActive += Engine.DeltaTime` happens before the scene update, so the
         // player always sees a clock that already includes this tick
-        // (pureCeleste.cs:118292).
+        // (references/Celeste.exe.cs.d/Monocle/Scene.cs:67).
         self.scene_time += Fx::from_bits(Fx::DT_ONE_SIXTIETH);
         self.update_head(input, rooms);
         match self.state {
@@ -629,7 +631,7 @@ impl Player {
     }
 
     /// Animation advance + state mapping (vanilla calls `UpdateSprite` after movement,
-    /// 120068; `Sprite.Update` runs every frame via `base.Update`).
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:1817; `Sprite.Update` runs every frame via `base.Update`).
     pub fn update_visuals(
         &mut self,
         table: &crate::sprites::AnimationTable,
@@ -637,7 +639,7 @@ impl Player {
         rooms: &[Room],
     ) {
         // Never played an animation -> the start animation (the sprite element's
-        // `start`, validated at 10189).
+        // `start`, validated at references/Celeste.exe.cs.d/Monocle/SpriteData.cs:42-45).
         if self.anim_id.is_empty() {
             if let Some(def) = table.sprites.get("player") {
                 let start = def.start.clone();
@@ -647,21 +649,21 @@ impl Player {
         self.update_animation(table);
         self.update_sprite(table, input, rooms);
         // `Player.UpdateHair(applyGravity: true)` arms the chain again every normal tick
-        // (pureCeleste.cs:120062-120064, which sets `Hair.SimulateMotion = applyGravity` at
-        // 120296). Without this the flag would stay false after a transition and the hair
+        // (references/Celeste.exe.cs.d/Celeste/Player.cs:1811-1813, which sets `Hair.SimulateMotion = applyGravity` at
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:2045). Without this the flag would stay false after a transition and the hair
         // would never chase its target again.
         self.simulate_motion = true;
         self.update_hair(table);
     }
 
     /// Advance only the hair chain during a room transition, matching vanilla
-    /// `Player.TransitionTo` -> `UpdateHair(applyGravity: false)` (pureCeleste.cs:120551-120552,
-    /// which sets `Hair.SimulateMotion = applyGravity` at 120296). The main `Update` (and so
+    /// `Player.TransitionTo` -> `UpdateHair(applyGravity: false)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2300-2301,
+    /// which sets `Hair.SimulateMotion = applyGravity` at references/Celeste.exe.cs.d/Celeste/Player.cs:2045). The main `Update` (and so
     /// `UpdateSprite`/`Sprite.Update`) is skipped while transitioning (Level.Update's
-    /// `else if (!Transitioning)` branch, 115659-115668), so the body pose stays frozen; the
+    /// `else if (!Transitioning)` branch, references/Celeste.exe.cs.d/Celeste/Level.cs:1869-1878), so the body pose stays frozen; the
     /// hair, however, is still advanced: node 0 follows the gliding head (`Nodes[0]`
-    /// 111116-111117) while the chase toward `target` is skipped (111127 is gated off), so
-    /// the chain runs rigid and is only held within the max-segment clamp (111132-111134).
+    /// references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62-63) while the chase toward `target` is skipped (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:73 is gated off), so
+    /// the chain runs rigid and is only held within the max-segment clamp (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:78-80).
     /// This is the only observable effect of `SimulateMotion == false`, so keep the flag
     /// persistent until the next normal `update_visuals` restores it (`UpdateHair(true)`).
     pub fn update_hair_rigid(&mut self, table: &crate::sprites::AnimationTable) {
@@ -670,16 +672,16 @@ impl Player {
     }
 
     /// The simulated hair chain for this tick, in **world space** like vanilla
-    /// `PlayerHair.Nodes` (pureCeleste.cs:111088); node 0 is the head.
+    /// `PlayerHair.Nodes` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:34); node 0 is the head.
     ///
     /// Its length is the live `PlayerSprite.HairCount` (4, or 5 while two dashes are
-    /// stocked, 119986).
+    /// stocked, references/Celeste.exe.cs.d/Celeste/Player.cs:1735).
     pub fn hair_nodes(&self) -> &[Vec2] {
         &self.hair_nodes[..self.hair_count]
     }
 
     /// The sprite/hair anchor: the **hitbox bottom centre** (vanilla `Player.Position`,
-    /// pureCeleste.cs:118856). The hitbox's bottom edge is `pos.y + PLAYER_H` both standing
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:605). The hitbox's bottom edge is `pos.y + PLAYER_H` both standing
     /// and ducking (`DUCK_H + DUCK_Y_OFF = 11`), so the anchor never moves on a crouch.
     pub fn anchor(&self) -> Vec2 {
         self.pos + Vec2::from_f32s(PLAYER_W * 0.5, PLAYER_H)
@@ -687,7 +689,7 @@ impl Player {
 
     /// The hitbox centre (vanilla `Monocle.Entity.Center`, which is collider-relative:
     /// `CenterX = Left + Width * 0.5`, `CenterY = Top + Height * 0.5`,
-    /// pureCeleste.cs:118612).
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:361).
     fn center(&self) -> Vec2 {
         let (w, h, y_off) = self.box_dims();
         // The ducking hitbox is the normal box moved down by `y_off`, so its centre is
@@ -713,13 +715,13 @@ impl Player {
     }
 
     /// Queue a single `Dust.Burst` (vanilla `Dust.Burst(position, direction, count)`,
-    /// pureCeleste.cs:6356-6369).
+    /// references/Celeste.exe.cs.d/Celeste/Dust.cs:9-23).
     fn burst(&mut self, position: Vec2, direction: Fx, count: u8) {
         self.dust
             .push(crate::particles::Burst::new(position, direction, count));
     }
 
-    /// `CreateWallSlideParticles(dir)` (pureCeleste.cs:120997-121011): one dust particle
+    /// `CreateWallSlideParticles(dir)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2746-2760): one dust particle
     /// per `OnInterval(0.01f)` tick, 5px toward the wall and 4px below the centre.
     fn wall_slide_dust(&mut self) {
         if !self.on_interval(Fx::from_ratio(1, 100)) {
@@ -735,11 +737,11 @@ impl Player {
 
     /// `Scene.OnInterval(interval)`: true on the tick the integer interval slot
     /// advances (`(int)((TimeActive - DeltaTime) / interval) < (int)(TimeActive /
-    /// interval)`, pureCeleste.cs:118325-118330).
+    /// interval)`, references/Celeste.exe.cs.d/Celeste/Player.cs:74-79).
     ///
     /// The player's periodic dust emitters use it: the wall-slide puff is
-    /// `OnInterval(0.01f)` (120997) -- shorter than a tick, so it fires every tick --
-    /// and the skid puff is `OnInterval(0.02f)` (120570), which fires on roughly every
+    /// `OnInterval(0.01f)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2746) -- shorter than a tick, so it fires every tick --
+    /// and the skid puff is `OnInterval(0.02f)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2319), which fires on roughly every
     /// other tick.
     fn on_interval(&self, interval: Fx) -> bool {
         let span = i64::from(interval.bits());
@@ -750,8 +752,8 @@ impl Player {
         previous.bits() as i64 / span < self.scene_time.bits() as i64 / span
     }
 
-    /// Advance the hair: vanilla `PlayerHair.Update`'s wave (111142), `Player.Update`'s
-    /// hair config (119955-119990) and `PlayerHair.AfterUpdate` (111114-111139).
+    /// Advance the hair: vanilla `PlayerHair.Update`'s wave (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:88), `Player.Update`'s
+    /// hair config (references/Celeste.exe.cs.d/Celeste/Player.cs:1704-1739) and `PlayerHair.AfterUpdate` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:60-85).
     ///
     /// The chain is a spring: the root is pinned to the head this tick, and each later
     /// node eases toward a target one `StepPerSegment` beyond its parent at
@@ -759,15 +761,15 @@ impl Player {
     /// [`HAIR_MAX_SEGMENT`] from that parent.
     fn update_hair(&mut self, table: &crate::sprites::AnimationTable) {
         self.hair_time += releste_math::FIXED_DT;
-        // `PlayerHair.Update`: `wave += Engine.DeltaTime * 4f` (111142).
+        // `PlayerHair.Update`: `wave += Engine.DeltaTime * 4f` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:88).
         self.hair_wave += Fx::from_int(4) * releste_math::FIXED_DT;
         let facing = Fx::from_int(self.facing);
         let anchor = self.anchor();
 
-        // The wind branch (`windTimeout > 0`, 119955-119963) is unreachable while wind
+        // The wind branch (`windTimeout > 0`, references/Celeste.exe.cs.d/Celeste/Player.cs:1704-1712) is unreachable while wind
         // zones are unimplemented.
         let (step_per_segment, step_in_facing, step_approach, step_y_sine) = if self.dashes > 1 {
-            // Two dashes (119965-119975): a wide wave, no facing step, approach 90, and a
+            // Two dashes (references/Celeste.exe.cs.d/Celeste/Player.cs:1714-1724): a wide wave, no facing step, approach 90, and a
             // per-segment sine (`StepYSinePerSegment = 1`).
             (
                 Vec2::new(
@@ -788,23 +790,23 @@ impl Player {
             )
         };
 
-        // `Sprite.HairCount = ((Dashes > 1) ? 5 : startHairCount)` (119986; the Prologue
-        // starts at 4, 111321). The `State == 5` (RedDash) `HairCount = 1` override
-        // (119980-119983) needs a state this port does not have yet.
+        // `Sprite.HairCount = ((Dashes > 1) ? 5 : startHairCount)` (references/Celeste.exe.cs.d/Celeste/Player.cs:1735; the Prologue
+        // starts at 4, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:115). The `State == 5` (RedDash) `HairCount = 1` override
+        // (references/Celeste.exe.cs.d/Celeste/Player.cs:1729-1732) needs a state this port does not have yet.
         let count = if self.dashes > 1 {
             crate::sprites::HAIR_MAX
         } else {
             crate::sprites::HAIR_COUNT
         };
         // Growing the tail duplicates the previous last node (`Nodes.Add(Nodes[i - 1])`,
-        // 111126).
+        // references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:72).
         for i in self.hair_count..count {
             self.hair_nodes[i] = self.hair_nodes[i - 1];
         }
         self.hair_count = count;
 
         if !self.hair_started {
-            // `StartHair` -> `PlayerHair.Start` (111104-111111): the nodes begin 200px to
+            // `StartHair` -> `PlayerHair.Start` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:50-57): the nodes begin 200px to
             // the side and below, so the tail swings in instead of stacking on the head.
             self.hair_started = true;
             let start = anchor + Vec2::new(-facing * Fx::from_int(200), Fx::from_int(200));
@@ -812,7 +814,7 @@ impl Player {
         }
 
         // `Nodes[0] = RenderPosition + (0, -9 * Scale.Y) + HairOffset * (Facing, 1)`
-        // (111116-111117). `Scale.Y` springs back to 1 (120302-120303), but a dash
+        // (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62-63). `Scale.Y` springs back to 1 (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052), but a dash
         // squeeze finds it < 1, pulling the root down toward the body.
         let offset = self.anim_frame_hair(table).offset;
         let root_y = Fx::from_int(offset.1) - Fx::from_int(9) * self.sprite_scale[1];
@@ -826,9 +828,9 @@ impl Player {
             + step_per_segment;
         let mut previous = self.hair_nodes[0];
         for i in 1..self.hair_count {
-            // `num2 = (1 - i / HairCount * 0.5) * StepApproach` (111127-111129), applied
+            // `num2 = (1 - i / HairCount * 0.5) * StepApproach` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:73-75), applied
             // per tick (`num2 * Engine.DeltaTime`); skipped entirely when
-            // `SimulateMotion` is false (111127) -- the chain goes rigid and is only held
+            // `SimulateMotion` is false (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:73) -- the chain goes rigid and is only held
             // within the max-segment constraint below.
             if self.simulate_motion {
                 let rate = (Fx::one() - Fx::from_ratio(i as i32, (2 * self.hair_count) as i32))
@@ -856,7 +858,7 @@ impl Player {
     /// `VirtualButton.Update` decrements `bufferCounter` by `Engine.DeltaTime` on *every*
     /// tick, refills it to `BufferTime` only on a fresh `Binding.Pressed` edge, and zeroes
     /// it once the button is released. `Input.Jump`/`Input.Dash` both use 0.08s
-    /// (`Celeste/Input.cs:153-157`), i.e. the press frame plus four more -- hence
+    /// (`references/Celeste.exe.cs.d/Celeste/Input.cs:153-157`), i.e. the press frame plus four more -- hence
     /// [`JUMP_BUFFER_FRAMES`]. The engine therefore decays first and refills second, so a
     /// press that cannot be spent expires instead of waiting for a dash refill.
     fn sample_input_edges(&mut self, input: &Input) {
@@ -873,42 +875,42 @@ impl Player {
         let dash_pressed = input.dash && !self.prev_dash;
         self.prev_dash = input.dash;
         if dash_pressed {
-            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime, likewise 0.08s (110376)
+            self.dash_buffer = JUMP_BUFFER_FRAMES as u16; // VirtualButton.BufferTime, likewise 0.08s (references/Celeste.exe.cs.d/Celeste/Input.cs:153)
         }
     }
 
     /// The shared timers and refill at the head of vanilla `Player.Update`
-    /// (119827-119921), plus the `forceMoveX` / `climbHopSolid` / `hopWaitX` timers
-    /// (119883-119920).
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:1576-1670), plus the `forceMoveX` / `climbHopSolid` / `hopWaitX` timers
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:1632-1669).
     fn update_head(&mut self, input: &Input, rooms: &[Room]) {
-        // dashAttackTimer -= dt (119827-119830).
+        // dashAttackTimer -= dt (references/Celeste.exe.cs.d/Celeste/Player.cs:1576-1579).
         self.dash_attack = self.dash_attack.saturating_sub(1);
-        // Ground refill (119855-119863): the state 3 (swim) branch does not apply;
+        // Ground refill (references/Celeste.exe.cs.d/Celeste/Player.cs:1604-1612): the state 3 (swim) branch does not apply;
         // standing on a solid (`on_ground` means there is solid under the feet,
         // equivalent to `CollideCheck<Solid>(Position + UnitY)`) -> RefillDash
-        // (121082-121090: writes only when not already full).
+        // (references/Celeste.exe.cs.d/Celeste/Player.cs:2831-2839: writes only when not already full).
         //
-        // The refill is an `else` of the refill-cooldown decay (119843-119863):
+        // The refill is an `else` of the refill-cooldown decay (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1612):
         // `if (dashRefillCooldownTimer > 0f) { dashRefillCooldownTimer -= Engine.DeltaTime; }
         // else if (...) { RefillDash(); }`. `DashBegin` arms it with 0.1s = 6 ticks
-        // (122534-122565), so an upward ground dash gets no dash back for the first six
+        // (references/Celeste.exe.cs.d/Celeste/Player.cs:4283-4314), so an upward ground dash gets no dash back for the first six
         // frames. This check therefore runs BEFORE the decay below.
         if self.dash_refill_cooldown == 0 && self.on_ground && self.dashes < self.max_dashes {
             self.dashes = self.max_dashes;
         }
-        // jumpGraceTimer (119830-119840) -- already handled by the coyote counter at the
+        // jumpGraceTimer (references/Celeste.exe.cs.d/Celeste/Player.cs:1579-1589) -- already handled by the coyote counter at the
         // end of physics (semantically equivalent; see the COYOTE_FRAMES docs).
-        // varJumpTimer / AutoJumpTimer decay (119864-119877).
+        // varJumpTimer / AutoJumpTimer decay (references/Celeste.exe.cs.d/Celeste/Player.cs:1613-1626).
         if self.var_jump > 0 {
             self.var_jump -= 1;
         }
         if self.auto_jump > 0 {
             self.auto_jump -= 1;
         }
-        // dashCooldownTimer / dashRefillCooldownTimer (119843-119848).
+        // dashCooldownTimer / dashRefillCooldownTimer (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1597).
         self.dash_cooldown = self.dash_cooldown.saturating_sub(1);
         self.dash_refill_cooldown = self.dash_refill_cooldown.saturating_sub(1);
-        // Climb jump boost (119811-119820): push toward wallBoostDir -> horizontal speed
+        // Climb jump boost (references/Celeste.exe.cs.d/Celeste/Player.cs:1560-1569): push toward wallBoostDir -> horizontal speed
         // 130 + stamina +27.5, once.
         if self.wall_boost_ticks > 0 {
             self.wall_boost_ticks -= 1;
@@ -918,20 +920,20 @@ impl Player {
                 self.wall_boost_ticks = 0;
             }
         }
-        // Wall slide timer (119808-119812): the direction is cleared at the end of each
+        // Wall slide timer (references/Celeste.exe.cs.d/Celeste/Player.cs:1557-1561): the direction is cleared at the end of each
         // tick and the timer decays; NormalUpdate re-arms it while its condition holds.
         if self.wall_slide_dir != 0 {
             self.wall_slide_ticks = self.wall_slide_ticks.saturating_sub(1);
             self.wall_slide_dir = 0;
         }
-        // Refill stamina on landing + reset the wall slide (119818-119823).
+        // Refill stamina on landing + reset the wall slide (references/Celeste.exe.cs.d/Celeste/Player.cs:1567-1572).
         if self.on_ground && self.state != 1 {
             self.auto_jump = 0;
             self.stamina = CLIMB_MAX_STAMINA;
             self.wall_slide_ticks = WALLSLIDE_TICKS;
         }
-        // moveX: the forceMoveX override window (119883-119891), otherwise read input.
-        // The `else` branch also drops the remembered hop solid (119889-119891), so a
+        // moveX: the forceMoveX override window (references/Celeste.exe.cs.d/Celeste/Player.cs:1632-1640), otherwise read input.
+        // The `else` branch also drops the remembered hop solid (references/Celeste.exe.cs.d/Celeste/Player.cs:1638-1640), so a
         // deferred `ClimbHop` push is forgotten once the forced-move window closes.
         let move_x = if self.force_move_x_ticks > 0 {
             self.force_move_x_ticks -= 1;
@@ -942,7 +944,7 @@ impl Player {
         };
         self.move_x = move_x;
         // A deferred `ClimbHop` push resolves as soon as the solid beside the player is
-        // gone (119915-119920): `hopWaitX` is dropped when the player already moves the
+        // gone (references/Celeste.exe.cs.d/Celeste/Player.cs:1664-1669): `hopWaitX` is dropped when the player already moves the
         // other way or starts falling, otherwise `Speed.X` is set to the saved speed.
         if self.hop_wait_x != 0 {
             let wants_out = self.vel.x != Fx::zero() && self.vel.x.signum() == -self.hop_wait_x;
@@ -957,7 +959,7 @@ impl Player {
                 self.hop_wait_x = 0;
             }
         }
-        // Facing follows input, **except in Climb** (119908-119917: `if (moveX != 0 &&
+        // Facing follows input, **except in Climb** (references/Celeste.exe.cs.d/Celeste/Player.cs:1657-1666: `if (moveX != 0 &&
         // InControl && StateMachine.State != 1 && ... != 8 && ... != 5 && ... != 6)`).
         // States 5/6/8 (red dash, swim, star fly) do not exist in this port; state 1 is
         // the one that matters: while climbing, holding a direction away from the wall
@@ -969,12 +971,12 @@ impl Player {
     }
 
     /// Hair color: the non-gradient part of vanilla `Player.UpdateHair`
-    /// (pureCeleste.cs:120244-120296) -- USED when the dash is spent, FLASH at the
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:1993-2045) -- USED when the dash is spent, FLASH at the
     /// instant of refill (previous tick's count differs, or the white flash is still
     /// running), otherwise `Dashes == 2 ? TWO_DASHES : NORMAL`.
     ///
-    /// `used` ease-in (`Lerp(Hair.Color, Used, 6*dt)`, 120258-120262) and
-    /// `hairFlashTimer = 0.12s` (120271) need per-frame color state; when dash lands,
+    /// `used` ease-in (`Lerp(Hair.Color, Used, 6*dt)`, references/Celeste.exe.cs.d/Celeste/Player.cs:2007-2011) and
+    /// `hairFlashTimer = 0.12s` (references/Celeste.exe.cs.d/Celeste/Player.cs:2020) need per-frame color state; when dash lands,
     /// this function is upgraded to a version that carries the current color. For now
     /// it returns a discrete state, and the Prologue (one full dash in inventory) is
     /// always NORMAL -- consistent with vanilla.
@@ -985,13 +987,13 @@ impl Player {
     }
 
     /// `Player.Sprite.Scale`, converted for the renderer (render f32 is allowed; the
-    /// sim tracks it in `Fx`, 120302-120303 + the dash/jump setters).
+    /// sim tracks it in `Fx`, references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052 + the dash/jump setters).
     pub fn sprite_scale(&self) -> [f32; 2] {
         [self.sprite_scale[0].to_f32(), self.sprite_scale[1].to_f32()]
     }
 
     /// Adjustment before an up transition (vanilla `BeforeUpTransition`,
-    /// pureCeleste.cs:120590-120598): zero horizontal, auto-jump upward (-105 + 0.2s
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:2339-2347): zero horizontal, auto-jump upward (-105 + 0.2s
     /// of forced varJump clamping), landing in the room above.
     pub fn before_up_transition(&mut self) {
         self.vel.x = Fx::zero();
@@ -1001,7 +1003,7 @@ impl Player {
     }
 
     /// Adjustment before a down transition (vanilla `BeforeDownTransition`,
-    /// pureCeleste.cs:120572-120583): cut any upward speed, clear varJump.
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:2321-2332): cut any upward speed, clear varJump.
     pub fn before_down_transition(&mut self) {
         self.vel.y = self.vel.y.max(Fx::zero());
         self.var_jump = 0;
@@ -1009,24 +1011,24 @@ impl Player {
     }
 
     /// On-room-transition refresh (vanilla `Player.OnTransition`,
-    /// pureCeleste.cs:120540-120547): refill the dash and stamina, re-arm the wall
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:2289-2296): refill the dash and stamina, re-arm the wall
     /// slide timer, drop the jump grace and any force-move override. Called once the
     /// transition actually completes (the old room's entities unload only here).
     pub fn on_transition(&mut self) {
-        // wallSlideTimer = 1.2f (120541) -> 72 ticks.
+        // wallSlideTimer = 1.2f (references/Celeste.exe.cs.d/Celeste/Player.cs:2290) -> 72 ticks.
         self.wall_slide_ticks = WALLSLIDE_TICKS;
-        // jumpGraceTimer = 0f (120542).
+        // jumpGraceTimer = 0f (references/Celeste.exe.cs.d/Celeste/Player.cs:2291).
         self.coyote = 0;
-        // forceMoveXTimer = 0f (120543).
+        // forceMoveXTimer = 0f (references/Celeste.exe.cs.d/Celeste/Player.cs:2292).
         self.force_move_x_ticks = 0;
-        // ChaserStates.Clear() (120544) - no chaser state is ported yet; documented.
-        // RefillDash() (120545, 121082-121090: only when not already full).
+        // ChaserStates.Clear() (references/Celeste.exe.cs.d/Celeste/Player.cs:2294) - no chaser state is ported yet; documented.
+        // RefillDash() (references/Celeste.exe.cs.d/Celeste/Player.cs:2295, references/Celeste.exe.cs.d/Celeste/Player.cs:2831-2839: only when not already full).
         if self.dashes < self.max_dashes {
             self.dashes = self.max_dashes;
         }
-        // RefillStamina() (120546, 121108-121111).
+        // RefillStamina() (references/Celeste.exe.cs.d/Celeste/Player.cs:2296, references/Celeste.exe.cs.d/Celeste/Player.cs:2857-2860).
         self.stamina = CLIMB_MAX_STAMINA;
-        // Leader.TransferFollowers() (120547) - no leader follows are ported yet.
+        // Leader.TransferFollowers() (references/Celeste.exe.cs.d/Celeste/Player.cs:2297) - no leader follows are ported yet.
     }
 
     /// Whether a world-coordinate point is inside a solid tile of any touched room
@@ -1049,26 +1051,26 @@ impl Player {
         false
     }
 
-    /// Vanilla `CanUnDuck` (119281-119295): standing up must be collision-free for the
+    /// Vanilla `CanUnDuck` (references/Celeste.exe.cs.d/Celeste/Player.cs:1030-1044): standing up must be collision-free for the
     /// **normal** hitbox -- the getter swaps `Collider = normalHitbox` around the check,
     /// which is exactly what stops Madeline from standing under a 1-tile gap.
     fn can_unduck(&self, rooms: &[Room]) -> bool {
         !self.ducking || !self.hits_normal(rooms, self.pos.x, self.pos.y)
     }
 
-    /// Vanilla `CanUnDuckAt(position)` (121168-121175): [`Player::can_unduck`] evaluated
-    /// at another x (used while walking under a low ceiling, 121884-121889).
+    /// Vanilla `CanUnDuckAt(position)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2917-2924): [`Player::can_unduck`] evaluated
+    /// at another x (used while walking under a low ceiling, references/Celeste.exe.cs.d/Celeste/Player.cs:3633-3638).
     fn can_unduck_at(&self, rooms: &[Room], x: Fx) -> bool {
         !self.ducking || !self.hits_normal(rooms, x, self.pos.y)
     }
 
-    /// Vanilla `DuckFreeAt(position)` (121177-121187): the **ducking** hitbox fits at
-    /// that position -- the probe the dash-into-wall crouch uses (121438).
+    /// Vanilla `DuckFreeAt(position)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2926-2936): the **ducking** hitbox fits at
+    /// that position -- the probe the dash-into-wall crouch uses (references/Celeste.exe.cs.d/Celeste/Player.cs:3187).
     fn duck_free_at(&self, rooms: &[Room], x: Fx) -> bool {
         !self.hits_duck(rooms, x, self.pos.y)
     }
 
-    /// Vanilla `SlipCheck(addY)` (122395-122407): no solid 4px below the facing-side
+    /// Vanilla `SlipCheck(addY)` (references/Celeste.exe.cs.d/Celeste/Player.cs:4144-4156): no solid 4px below the facing-side
     /// top corner of the hitbox and none 4px above it -> the wall has ended.
     fn slip_check(&self, rooms: &[Room], add_y: Fx) -> bool {
         let top = self.pos.y + Fx::from_int(self.box_dims().2 - PLAYER_H_PX);
@@ -1086,9 +1088,9 @@ impl Player {
         false
     }
 
-    /// The normal branch of vanilla `ClimbCheck(dir, yAdd)` (121815-121822): probe 2px
+    /// The normal branch of vanilla `ClimbCheck(dir, yAdd)` (references/Celeste.exe.cs.d/Celeste/Player.cs:3564-3571): probe 2px
     /// toward the wall for a solid (no ClimbBlocker entity -> EdgeCheck is always
-    /// false). `ClimbBoundsCheck` (121799-121806) uses room bounds.
+    /// false). `ClimbBoundsCheck` (references/Celeste.exe.cs.d/Celeste/Player.cs:3548-3555) uses room bounds.
     fn climb_check(&self, rooms: &[Room], dir: i32, y_add: i32) -> bool {
         let Some(room) = crate::session::room_containing(rooms, self.pos) else {
             return false;
@@ -1107,16 +1109,16 @@ impl Player {
     }
 
     /// Enter climbing (vanilla `StateMachine.State = 1` + `ClimbBegin`,
-    /// pureCeleste.cs:122140-122164): zero horizontal speed, vertical speed x0.2, snap
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:3889-3913): zero horizontal speed, vertical speed x0.2, snap
     /// 2px to the wall.
     fn enter_climb(&mut self, rooms: &[Room]) {
         self.state = 1;
         self.auto_jump = 0;
         self.vel.x = Fx::zero();
-        self.vel.y *= Fx::from_ratio(1, 5); // Speed.Y *= 0.2f (122146)
+        self.vel.y *= Fx::from_ratio(1, 5); // Speed.Y *= 0.2f (references/Celeste.exe.cs.d/Celeste/Player.cs:3895)
         self.wall_slide_ticks = WALLSLIDE_TICKS;
         self.climb_no_move_ticks = CLIMB_NO_MOVE_TICKS;
-        // `pureCeleste.cs:122147` `wallBoostTimer = 0f`: re-grabbing cancels an
+        // `references/Celeste.exe.cs.d/Celeste/Player.cs:3896` `wallBoostTimer = 0f`: re-grabbing cancels an
         // unused climb-jump boost, including its effective-stamina refund.
         self.wall_boost_ticks = 0;
         self.last_climb_move = 0;
@@ -1124,12 +1126,12 @@ impl Player {
             if self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
                 break;
             }
-            self.pos.x += Fx::from_int(self.facing); // 122153-122160 snap to the wall
+            self.pos.x += Fx::from_int(self.facing); // references/Celeste.exe.cs.d/Celeste/Player.cs:3902-3909 snap to the wall
         }
     }
 
     /// Effective stamina for grabbing. During the post-climb-jump boost vanilla refunds
-    /// the jump's 27.5 cost for this check only (`pureCeleste.cs:119301-119310`
+    /// the jump's 27.5 cost for this check only (`references/Celeste.exe.cs.d/Celeste/Player.cs:1050-1059`
     /// `if (wallBoostTimer > 0f) { return Stamina + 27.5f; }`).
     fn check_stamina(&self) -> Fx {
         if self.wall_boost_ticks > 0 {
@@ -1139,7 +1141,7 @@ impl Player {
         }
     }
 
-    /// `pureCeleste.cs:119299` `private bool IsTired => CheckStamina < 20f`.
+    /// `references/Celeste.exe.cs.d/Celeste/Player.cs:1048` `private bool IsTired => CheckStamina < 20f`.
     fn is_tired(&self) -> bool {
         self.check_stamina() < CLIMB_TIRED_THRESHOLD
     }
@@ -1147,8 +1149,8 @@ impl Player {
     /// Whether a jump against a wall becomes a `ClimbJump` instead of a wall jump.
     ///
     /// Vanilla gates `ClimbJump()` on six conditions before calling it from the jump
-    /// branch of `NormalUpdate`/`DashUpdate`/`ClimbUpdate` (122063-122066,
-    /// 122073-122076): the wall is on the side the player is facing, grab is held,
+    /// branch of `NormalUpdate`/`DashUpdate`/`ClimbUpdate` (references/Celeste.exe.cs.d/Celeste/Player.cs:3812-3815,
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:3822-3825): the wall is on the side the player is facing, grab is held,
     /// grabbing is not disabled by an assist, stamina remains, nothing is carried and
     /// no `ClimbBlocker` entity sits in front. This engine has no grab assist, no
     /// carried entity and no `ClimbBlocker` (see the module docs), so three of the six
@@ -1161,9 +1163,9 @@ impl Player {
         dir == self.facing && input.grab && self.stamina > Fx::zero()
     }
 
-    /// Vanilla `ClimbJump()` (pureCeleste.cs:120902-120928): deduct 27.5 stamina when
+    /// Vanilla `ClimbJump()` (references/Celeste.exe.cs.d/Celeste/Player.cs:2651-2677): deduct 27.5 stamina when
     /// not grounded; a normal Jump; with no horizontal input, grant a 0.2s boost window
-    /// (120910-120913).
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2659-2662).
     fn climb_jump(&mut self) {
         if !self.on_ground {
             self.stamina -= CLIMBJUMP_DRAIN;
@@ -1174,7 +1176,7 @@ impl Player {
             self.wall_boost_ticks = WALL_BOOST_TICKS;
         }
         // `if (Facing == Facings.Right) Dust.Burst(Center + UnitX * 2, -3Pi/4, 4)` else
-        // the mirrored burst (120915-120928). Note this one keys off FACING, not the
+        // the mirrored burst (references/Celeste.exe.cs.d/Celeste/Player.cs:2664-2677). Note this one keys off FACING, not the
         // jump direction.
         let center = self.center();
         if self.facing == 1 {
@@ -1192,16 +1194,16 @@ impl Player {
         }
     }
 
-    /// Vanilla `ClimbHop()` (pureCeleste.cs:122380-122402): hop away from the wall, but
+    /// Vanilla `ClimbHop()` (references/Celeste.exe.cs.d/Celeste/Player.cs:4129-4151): hop away from the wall, but
     /// only push horizontally right away when nothing solid is left beside the player
-    /// (122381-122388). Over the top of a wall, where the wall is still there for one
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:4130-4137). Over the top of a wall, where the wall is still there for one
     /// more frame, vanilla saves `hopWaitX`/`hopWaitXSpeed` and applies the push in the
-    /// next `Player.Update` once the solid clears (119915-119920).
+    /// next `Player.Update` once the solid clears (references/Celeste.exe.cs.d/Celeste/Player.cs:1664-1669).
     ///
     /// Deliberately not ported (no counterpart in this engine, each with a note):
     /// `playFootstepOnLand = 0.5f` (footstep sfx), `lowFrictionStopTimer = 0.15f` (the
-    /// LowFriction assist, 121494-121500), `noWindTimer = 0.3f` (no wind model), and
-    /// `climbHopSolidPosition` / `MoveHExact` (moving-platform ride, 122392-122400 --
+    /// LowFriction assist, references/Celeste.exe.cs.d/Celeste/Player.cs:3243-3249), `noWindTimer = 0.3f` (no wind model), and
+    /// `climbHopSolidPosition` / `MoveHExact` (moving-platform ride, references/Celeste.exe.cs.d/Celeste/Player.cs:4141-4149 --
     /// this engine has no moving solids).
     fn climb_hop(&mut self, rooms: &[Room]) {
         self.climb_hop_solid = self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y);
@@ -1214,11 +1216,11 @@ impl Player {
         }
         self.vel.y = self.vel.y.min(CLIMB_HOP_Y);
         self.force_move_x = 0;
-        self.force_move_x_ticks = 12; // 0.2s (122377)
+        self.force_move_x_ticks = 12; // 0.2s (references/Celeste.exe.cs.d/Celeste/Player.cs:4126)
         self.fast_jump = false;
     }
 
-    /// Vanilla `Jump()` (pureCeleste.cs:120694-120716): vertical -105, horizontal
+    /// Vanilla `Jump()` (references/Celeste.exe.cs.d/Celeste/Player.cs:2443-2465): vertical -105, horizontal
     /// +40*moveX (JumpHBoost), varJump filled to 0.2s, varJumpSpeed saved, coyote and
     /// buffer zeroed. (`LiftBoost` is 0 on static ground and is omitted.)
     fn jump(&mut self, move_x: Fx, particles: bool) {
@@ -1227,18 +1229,18 @@ impl Player {
         self.var_jump = VAR_JUMP_TICKS;
         self.auto_jump = 0;
         self.dash_attack = 0;
-        // `pureCeleste.cs:120703` `wallBoostTimer = 0f`. ClimbJump calls this
+        // `references/Celeste.exe.cs.d/Celeste/Player.cs:2452` `wallBoostTimer = 0f`. ClimbJump calls this
         // helper first and then deliberately arms its own fresh boost window.
         self.wall_boost_ticks = 0;
         self.vel.x += move_x * JUMP_H_BOOST;
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
-        // `Sprite.Scale = new Vector2(0.6f, 1.4f)` (120708) -- the vertical jump
-        // stretch; it springs back to 1 in `UpdateSprite` (120302-120303).
+        // `Sprite.Scale = new Vector2(0.6f, 1.4f)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2473) -- the vertical jump
+        // stretch; it springs back to 1 in `UpdateSprite` (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052).
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         // `if (particles) { ... Dust.Burst(BottomCenter, -PiOver2, 4, ...) }`
-        // (120710-120716). `ClimbJump` calls `Jump(particles: false, ...)` (120906), so
+        // (references/Celeste.exe.cs.d/Celeste/Player.cs:2474-2482). `ClimbJump` calls `Jump(particles: false, ...)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2655), so
         // the climb jump stays dust-free.
         if particles {
             let anchor = self.anchor();
@@ -1246,9 +1248,9 @@ impl Player {
         }
     }
 
-    /// The normal branch of vanilla `WallJumpCheck(dir)` (pureCeleste.cs:120779-120804)
+    /// The normal branch of vanilla `WallJumpCheck(dir)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2528-2553)
     /// (no spike/star-fly corrections, `num = 5`): probe 5px toward the wall for a
-    /// solid. `ClimbBoundsCheck` / `ClimbBlocker.EdgeCheck` (the 120779 preamble) are
+    /// solid. `ClimbBoundsCheck` / `ClimbBlocker.EdgeCheck` (the references/Celeste.exe.cs.d/Celeste/Player.cs:2528 preamble) are
     /// always false/true in this engine, which has no climb-boundary entities (deviation
     /// declared: see the module docs).
     fn wall_jump_check(&self, rooms: &[Room], dir: i32) -> bool {
@@ -1256,8 +1258,8 @@ impl Player {
         self.hits(rooms, self.pos.x + dx, self.pos.y)
     }
 
-    /// Vanilla `WallJump(dir)` (pureCeleste.cs:120806-120860): horizontal 130*dir,
-    /// vertical -105, varJump filled, `forceMoveX = dir` for 0.16s (120832-120838),
+    /// Vanilla `WallJump(dir)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2555-2609): horizontal 130*dir,
+    /// vertical -105, varJump filled, `forceMoveX = dir` for 0.16s (references/Celeste.exe.cs.d/Celeste/Player.cs:2581-2587),
     /// consumes the jump buffer, zeroes coyote.
     fn wall_jump(&mut self, rooms: &[Room], dir: i32) {
         self.jump_buffer = 0;
@@ -1265,10 +1267,10 @@ impl Player {
         self.var_jump = VAR_JUMP_TICKS;
         self.auto_jump = 0;
         self.dash_attack = 0;
-        // `pureCeleste.cs:120816` `wallBoostTimer = 0f`.
+        // `references/Celeste.exe.cs.d/Celeste/Player.cs:2565` `wallBoostTimer = 0f`.
         self.wall_boost_ticks = 0;
         if self.move_x != Fx::zero() {
-            // 120828-120838: force moveX while a direction is held, preventing an
+            // references/Celeste.exe.cs.d/Celeste/Player.cs:2577-2587: force moveX while a direction is held, preventing an
             // immediate re-grab.
             self.force_move_x = dir;
             self.force_move_x_ticks = FORCE_MOVE_X_TICKS;
@@ -1276,11 +1278,11 @@ impl Player {
         self.vel.x = WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
-        // `Sprite.Scale = (0.6, 1.4)` (120853) -- the wall-jump vertical stretch.
+        // `Sprite.Scale = (0.6, 1.4)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2602) -- the wall-jump vertical stretch.
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         // `if (dir == -1) Dust.Burst(Center + UnitX * 2, -3Pi/4, 4)` else the mirrored
-        // burst at `Center - UnitX * 2` with `-Pi/4` (120855-120860).
+        // burst at `Center - UnitX * 2` with `-Pi/4` (references/Celeste.exe.cs.d/Celeste/Player.cs:2604-2609).
         let center = self.center();
         if dir == -1 {
             self.burst(
@@ -1298,26 +1300,26 @@ impl Player {
         let _ = rooms;
     }
 
-    /// Vanilla `StartDash()` (pureCeleste.cs:122469-122479) + `DashBegin`
-    /// (122534-122565): consume one dash, enter State 2, record `beforeDashSpeed`, zero
+    /// Vanilla `StartDash()` (references/Celeste.exe.cs.d/Celeste/Player.cs:4218-4228) + `DashBegin`
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:4283-4314): consume one dash, enter State 2, record `beforeDashSpeed`, zero
     /// speed (no movement this tick), start the cooldown and attack window.
     fn start_dash(&mut self, input: &Input, rooms: &[Room]) {
         self.dashes = self.dashes.saturating_sub(1);
-        self.dash_buffer = 0; // Input.Dash.ConsumeBuffer() (122474)
+        self.dash_buffer = 0; // Input.Dash.ConsumeBuffer() (references/Celeste.exe.cs.d/Celeste/Player.cs:4223)
         self.state = 2;
         self.dash_phase = 0;
         self.dash_cooldown = DASH_COOLDOWN_TICKS;
         self.dash_refill_cooldown = DASH_REFILL_COOLDOWN_TICKS;
         self.dash_attack = DASH_ATTACK_TICKS;
-        // Leaving Normal runs `NormalEnd` (`pureCeleste.cs:121794-121797`,
+        // Leaving Normal runs `NormalEnd` (`references/Celeste.exe.cs.d/Celeste/Player.cs:3543-3546`,
         // `wallBoostTimer = 0f`), so a dash cannot preserve a stale boost.
         self.wall_boost_ticks = 0;
-        // DashBegin (122537): the flag drives the air-dash landing correction.
+        // DashBegin (references/Celeste.exe.cs.d/Celeste/Player.cs:4286): the flag drives the air-dash landing correction.
         self.dash_started_on_ground = self.on_ground;
         self.before_dash_speed = self.vel;
         self.vel = Vec2::ZERO;
         self.dash_dir = Vec2::ZERO;
-        // 122566-122573: an airborne ducked dash stands up; a grounded down-push dash
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:4315-4322: an airborne ducked dash stands up; a grounded down-push dash
         // crouches.
         if !self.on_ground && self.ducking && self.can_unduck(rooms) {
             self.ducking = false;
@@ -1325,14 +1327,14 @@ impl Player {
             self.ducking = true;
         }
         // Note: vanilla DashBegin does **not** change onGround -- a ground dash stays
-        // grounded, and the next tick's head refill (119855-119863) works as usual.
-        // DashBegin's `Celeste.Freeze(0.05f)` (122540): 0.05s = 3 ticks of global
+        // grounded, and the next tick's head refill (references/Celeste.exe.cs.d/Celeste/Player.cs:1604-1612) works as usual.
+        // DashBegin's `Celeste.Freeze(0.05f)` (references/Celeste.exe.cs.d/Celeste/Player.cs:4289): 0.05s = 3 ticks of global
         // freeze, consumed by the service (equivalent to skipping 3 simulation ticks in
         // the engine's frame rhythm).
         self.freeze_ticks = 3;
     }
 
-    /// Vanilla `GetAimVector(Facing)` (Celeste.Input, pureCeleste.cs:110554-110600, no
+    /// Vanilla `GetAimVector(Facing)` (Celeste.Input, references/Celeste.exe.cs.d/Celeste/Input.cs:331-377, no
     /// assist-mode branch): the direction keys compose an eight-way aim; angles within
     /// +/-pi/8 snap to an orthogonal axis; with no input -> the facing direction.
     fn aim_dir(&self, input: &Input) -> Vec2 {
@@ -1357,36 +1359,36 @@ impl Player {
         } else if ay >= 2.414 * ax {
             Vec2::from_f32s(0.0, my.signum())
         } else {
-            // Diagonal: `Math.Sign(value).SafeNormalize()` (110596).
+            // Diagonal: `Math.Sign(value).SafeNormalize()` (references/Celeste.exe.cs.d/Celeste/Input.cs:373).
             let inv = std::f32::consts::FRAC_1_SQRT_2;
             Vec2::from_f32s(mx.signum() * inv, my.signum() * inv)
         }
     }
 
-    /// State 2: an explicit-phase version of `DashUpdate` (pureCeleste.cs:122598-122727)
-    /// + `DashCoroutine` (122731-122831).
+    /// State 2: an explicit-phase version of `DashUpdate` (references/Celeste.exe.cs.d/Celeste/Player.cs:4347-4476)
+    /// + `DashCoroutine` (references/Celeste.exe.cs.d/Celeste/Player.cs:4480-4580).
     ///
-    /// One tick's order matches vanilla `StateMachine.Update` (12185-12201): first
-    /// `DashUpdate` (the jump branch, 122627-122676), then advance the coroutine, and
-    /// finally the shared MoveH/MoveV (120049-120056) -- after a wall jump / super jump
+    /// One tick's order matches vanilla `StateMachine.Update` (references/Celeste.exe.cs.d/Monocle/StateMachine.cs:168-184): first
+    /// `DashUpdate` (the jump branch, references/Celeste.exe.cs.d/Celeste/Player.cs:4376-4425), then advance the coroutine, and
+    /// finally the shared MoveH/MoveV (references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805) -- after a wall jump / super jump
     /// rewrites the speed, the frame moves at the new speed. Phase 0 runs the
-    /// coroutine's first segment (122756-122806, after `yield return null`: speed = aim
+    /// coroutine's first segment (references/Celeste.exe.cs.d/Celeste/Player.cs:4505-4555, after `yield return null`: speed = aim
     /// x 240, DashDir, facing), phases 1..=9 wait 0.15s, and tick 10 runs the last
-    /// segment (122817-122830). There is no gravity/running during a dash (`DashUpdate`
+    /// segment (references/Celeste.exe.cs.d/Celeste/Player.cs:4566-4579). There is no gravity/running during a dash (`DashUpdate`
     /// does not contain them).
     fn dash_update(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // ---- DashUpdate (122598-122727) ----
-        // The jump branch during a dash (122627-122676). A horizontal dash
-        // (|DashDir.Y| < 0.1) while grounded -> SuperJump (120740); a vertical dash
-        // (|DashDir.X| <= 0.2) -> SuperWallJump (120865); otherwise -> WallJump
+        // ---- DashUpdate (references/Celeste.exe.cs.d/Celeste/Player.cs:4347-4476) ----
+        // The jump branch during a dash (references/Celeste.exe.cs.d/Celeste/Player.cs:4376-4425). A horizontal dash
+        // (|DashDir.Y| < 0.1) while grounded -> SuperJump (references/Celeste.exe.cs.d/Celeste/Player.cs:2489); a vertical dash
+        // (|DashDir.X| <= 0.2) -> SuperWallJump (references/Celeste.exe.cs.d/Celeste/Player.cs:2614); otherwise -> WallJump
         // (ClimbJump needs a grab, not implemented, skipped -- deviation declared).
         if self.dash_dir != Vec2::ZERO && self.jump_buffer > 0 {
             let horizontal_dash = self.dash_dir.y.abs() < Fx::from_ratio(1, 10);
             let vertical_dash = self.dash_dir.x.abs() <= Fx::from_ratio(1, 5);
             if horizontal_dash && self.on_ground {
-                // 122632-122641 -> `SuperJump` (120740-120778).
+                // references/Celeste.exe.cs.d/Celeste/Player.cs:4391-4403 -> `SuperJump` (references/Celeste.exe.cs.d/Celeste/Player.cs:2489-2527).
                 self.super_jump(rooms);
             } else if vertical_dash {
                 if self.wall_jump_check(rooms, 1) {
@@ -1395,7 +1397,7 @@ impl Player {
                     self.super_wall_jump(1);
                 }
             } else if self.wall_jump_check(rooms, 1) {
-                // 122668-122672: grabbing the wall the jump points away from turns the
+                // references/Celeste.exe.cs.d/Celeste/Player.cs:4417-4421: grabbing the wall the jump points away from turns the
                 // wall jump into a `ClimbJump` -- this is the corner-boost branch.
                 if self.climb_jump_check(input, 1) {
                     self.climb_jump();
@@ -1413,13 +1415,13 @@ impl Player {
             }
         }
 
-        // ---- DashCoroutine (122731-122831) ----
+        // ---- DashCoroutine (references/Celeste.exe.cs.d/Celeste/Player.cs:4480-4580) ----
         if self.state == 2 {
             if self.dash_phase == 0 {
-                // Coroutine first segment (122756-122806).
+                // Coroutine first segment (references/Celeste.exe.cs.d/Celeste/Player.cs:4505-4555).
                 let aim = self.aim_dir(input);
                 let mut speed = aim * DASH_SPEED;
-                // Horizontal overspeed retention (122770-122774): keep the original value
+                // Horizontal overspeed retention (references/Celeste.exe.cs.d/Celeste/Player.cs:4519-4523): keep the original value
                 // when the horizontal speed before the dash was faster and in the same
                 // direction (the wall-speed semantics of `beforeDashSpeed`).
                 if vel_x_same_dir(&self.before_dash_speed, speed.x)
@@ -1429,28 +1431,28 @@ impl Player {
                 }
                 self.vel = speed;
                 self.dash_dir = aim;
-                // `SceneAs<Level>().DirectionalShake(DashDir, 0.2f)` (122782-122785).
+                // `SceneAs<Level>().DirectionalShake(DashDir, 0.2f)` (references/Celeste.exe.cs.d/Celeste/Player.cs:4531-4534).
                 // The service owns the shake (vanilla keeps it on `Level`), so it is
                 // queued here and drained after the tick.
                 self.shake_request = Some((aim, Fx::from_ratio(1, 5)));
                 if aim.x != Fx::zero() {
-                    self.facing = aim.x.signum(); // 122779-122782
+                    self.facing = aim.x.signum(); // references/Celeste.exe.cs.d/Celeste/Player.cs:4528-4531
                 }
                 // The grounded down-diagonal dash converts to a duck slide on the same
                 // tick, but through the collision handler: `Speed = aim * 240` is applied
                 // here, `MoveV` then hits the floor and `OnCollideV`
-                // (121577-121582) performs the conversion. It is implemented once, in
+                // (references/Celeste.exe.cs.d/Celeste/Player.cs:3326-3331) performs the conversion. It is implemented once, in
                 // `slide_y`, so the airborne landing path gets it too.
                 self.dash_phase = 1;
             } else {
                 self.dash_phase += 1;
                 if self.dash_phase > DASH_TICKS {
-                    // Last segment (122817-122830).
-                    self.auto_jump = 0; // AutoJumpTimer = 0f (122820)
+                    // Last segment (references/Celeste.exe.cs.d/Celeste/Player.cs:4566-4579).
+                    self.auto_jump = 0; // AutoJumpTimer = 0f (references/Celeste.exe.cs.d/Celeste/Player.cs:4569)
                     if self.dash_dir.y <= Fx::zero() {
                         self.vel = self.dash_dir * DASH_END_SPEED;
                         if self.vel.y < Fx::zero() {
-                            // 122826-122829: `if (Speed.Y < 0f) Speed.Y *= 0.75f`.
+                            // references/Celeste.exe.cs.d/Celeste/Player.cs:4575-4578: `if (Speed.Y < 0f) Speed.Y *= 0.75f`.
                             self.vel.y *= Fx::from_ratio(3, 4);
                         }
                     }
@@ -1459,7 +1461,7 @@ impl Player {
             }
         }
 
-        // ---- MoveH / MoveV (120049-120056) ----
+        // ---- MoveH / MoveV (references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805) ----
         self.slide_x(rooms);
         self.on_ground = false;
         self.slide_y(rooms);
@@ -1468,7 +1470,7 @@ impl Player {
         }
     }
 
-    /// Vanilla `SuperJump()` (pureCeleste.cs:120738-120777, no super-slide/super-glide
+    /// Vanilla `SuperJump()` (references/Celeste.exe.cs.d/Celeste/Player.cs:2487-2526, no super-slide/super-glide
     /// branch): horizontal 260*Facing, vertical -105, varJump filled, back to State 0.
     fn super_jump(&mut self, rooms: &[Room]) {
         self.jump_buffer = 0;
@@ -1476,52 +1478,52 @@ impl Player {
         self.var_jump = VAR_JUMP_TICKS;
         self.auto_jump = 0;
         self.dash_attack = 0;
-        // `pureCeleste.cs:120747` `wallBoostTimer = 0f`.
+        // `references/Celeste.exe.cs.d/Celeste/Player.cs:2496` `wallBoostTimer = 0f`.
         self.wall_boost_ticks = 0;
         self.vel.x = SUPER_JUMP_X * Fx::from_int(self.facing);
         self.vel.y = JUMP_SPEED;
-        // 120753-120760: ducked super jump -- horizontal speed x1.25, vertical speed x0.5.
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:2502-2509: ducked super jump -- horizontal speed x1.25, vertical speed x0.5.
         if self.ducking {
             self.ducking = false;
             self.vel.x *= Fx::from_ratio(5, 4);
             self.vel.y *= Fx::from_ratio(1, 2);
         }
-        // `varJumpSpeed = Speed.Y` (120767) is assigned **after** the duck branch, so the
+        // `varJumpSpeed = Speed.Y` (references/Celeste.exe.cs.d/Celeste/Player.cs:2516) is assigned **after** the duck branch, so the
         // varJump clamp on the next tick keeps the *halved* vertical speed. Setting it
         // before the duck branch left it at -105 while vel.y was -52.5, so the clamp
         // yanked the wave dash back up to full height at full horizontal speed.
         self.var_jump_speed = self.vel.y;
-        // `Sprite.Scale = (0.6, 1.4)` (120768) -- the super-jump vertical stretch; it
-        // springs back to 1 in `UpdateSprite` (120302-120303).
+        // `Sprite.Scale = (0.6, 1.4)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2517) -- the super-jump vertical stretch; it
+        // springs back to 1 in `UpdateSprite` (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052).
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         self.state = 0;
-        // `Dust.Burst(BottomCenter, -PiOver2, 4, ...)` (120768-120776) -- unlike `Jump`
+        // `Dust.Burst(BottomCenter, -PiOver2, 4, ...)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2517-2525) -- unlike `Jump`
         // this one is unconditional.
         let anchor = self.anchor();
         self.burst(anchor, -PI_OVER_2, 4);
         let _ = rooms;
     }
 
-    /// Vanilla `SuperWallJump(dir)` (pureCeleste.cs:120865-120900): horizontal 170*dir,
-    /// vertical -160 (120877-120880, with varJumpSpeed synced), varJumpTimer = 0.25s
-    /// (120870), **AutoJump = false** (120871), no forceMoveX.
+    /// Vanilla `SuperWallJump(dir)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2614-2649): horizontal 170*dir,
+    /// vertical -160 (references/Celeste.exe.cs.d/Celeste/Player.cs:2626-2629, with varJumpSpeed synced), varJumpTimer = 0.25s
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2619), **AutoJump = false** (references/Celeste.exe.cs.d/Celeste/Player.cs:2620), no forceMoveX.
     fn super_wall_jump(&mut self, dir: i32) {
         self.jump_buffer = 0;
         self.coyote = 0;
-        self.var_jump = 15; // varJumpTimer = 0.25f (120870)
-        self.auto_jump = 0; // AutoJump = false (120871)
+        self.var_jump = 15; // varJumpTimer = 0.25f (references/Celeste.exe.cs.d/Celeste/Player.cs:2619)
+        self.auto_jump = 0; // AutoJump = false (references/Celeste.exe.cs.d/Celeste/Player.cs:2620)
         self.dash_attack = 0;
-        // `pureCeleste.cs:120876` `wallBoostTimer = 0f`.
+        // `references/Celeste.exe.cs.d/Celeste/Player.cs:2625` `wallBoostTimer = 0f`.
         self.wall_boost_ticks = 0;
         self.vel.x = SUPER_WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = SUPER_WALLJUMP_Y;
         self.var_jump_speed = SUPER_WALLJUMP_Y;
-        // `Sprite.Scale = (0.6, 1.4)` (120884) -- the super wall-jump vertical stretch.
+        // `Sprite.Scale = (0.6, 1.4)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2633) -- the super wall-jump vertical stretch.
         self.sprite_scale = [Fx::from_ratio(3, 5), Fx::from_ratio(7, 5)];
         self.on_ground = false;
         self.state = 0;
-        // Same dir-conditional burst as `WallJump` (120886-120891).
+        // Same dir-conditional burst as `WallJump` (references/Celeste.exe.cs.d/Celeste/Player.cs:2635-2640).
         let center = self.center();
         if dir == -1 {
             self.burst(
@@ -1538,7 +1540,7 @@ impl Player {
         }
     }
 
-    /// State 1: `ClimbUpdate` (pureCeleste.cs:122184-122362). Order: stagger decay ->
+    /// State 1: `ClimbUpdate` (references/Celeste.exe.cs.d/Celeste/Player.cs:3933-4111). Order: stagger decay ->
     /// stamina refill while grounded -> jump branch (reverse wall jump / ClimbJump) ->
     /// dash -> release grab on landing -> leave wall (apex ClimbHop / let-go) -> vertical
     /// climb (up -45, down 80, slip 30 when SlipCheck at the top) -> stamina drain (up
@@ -1546,7 +1548,7 @@ impl Player {
     /// are not ported (declared).
     ///
     /// Vanilla's state function only chooses the next state; the outer `Player.Update`
-    /// still runs `MoveH`/`MoveV` afterward (`pureCeleste.cs:120049-120056`). Keeping
+    /// still runs `MoveH`/`MoveV` afterward (`references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805`). Keeping
     /// that outer movement here means jump, release, dash, hop and exhaustion returns
     /// all move on their activation tick instead of one tick later.
     fn climb_update(&mut self, input: &Input, rooms: &[Room]) {
@@ -1565,9 +1567,9 @@ impl Player {
         self.prev_pos = self.pos;
         self.climb_no_move_ticks = self.climb_no_move_ticks.saturating_sub(1);
         if self.on_ground {
-            self.stamina = CLIMB_MAX_STAMINA; // 122188-122191
+            self.stamina = CLIMB_MAX_STAMINA; // references/Celeste.exe.cs.d/Celeste/Player.cs:3937-3940
         }
-        // Jump branch (122193-122205): push the other way -> wall jump; otherwise a
+        // Jump branch (references/Celeste.exe.cs.d/Celeste/Player.cs:3942-3954): push the other way -> wall jump; otherwise a
         // climb jump.
         if self.jump_buffer > 0 && self.can_unduck(rooms) {
             if self.move_x == Fx::from_int(-self.facing) {
@@ -1578,21 +1580,21 @@ impl Player {
             self.state = 0;
             return;
         }
-        // Dash (122206-122209).
+        // Dash (references/Celeste.exe.cs.d/Celeste/Player.cs:3955-3958).
         if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
             self.start_dash(input, rooms);
             return;
         }
-        // Grab released (122211-122216).
+        // Grab released (references/Celeste.exe.cs.d/Celeste/Player.cs:3960-3965).
         if !input.grab {
             self.state = 0;
             return;
         }
-        // Past the top of the wall (122218-122231): while rising -> ClimbHop; otherwise
+        // Past the top of the wall (references/Celeste.exe.cs.d/Celeste/Player.cs:3967-3980): while rising -> ClimbHop; otherwise
         // let go.
         if !self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
             if self.vel.y < Fx::zero() {
-                self.climb_hop(rooms); // 122226-122230 (wallBoosting is always false)
+                self.climb_hop(rooms); // references/Celeste.exe.cs.d/Celeste/Player.cs:3975-3979 (wallBoosting is always false)
             }
             self.state = 0;
             return;
@@ -1603,9 +1605,9 @@ impl Player {
             let mut num = Fx::zero();
             let mut flag = false;
             if self.climb_no_move_ticks == 0 {
-                // the ClimbBlocker branch at 122224-122240 has no entity, always false.
+                // the ClimbBlocker branch at references/Celeste.exe.cs.d/Celeste/Player.cs:3973-3989 has no entity, always false.
                 if input.axis_y() == -Fx::one() {
-                    num = CLIMB_UP_SPEED; // -45 px/s (122220-122222)
+                    num = CLIMB_UP_SPEED; // -45 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:3969-3971)
                     if self.hits(rooms, self.pos.x, self.pos.y - Fx::one())
                         || (self.climb_hop_blocked(rooms) && self.slip_check(rooms, -Fx::one()))
                     {
@@ -1615,12 +1617,12 @@ impl Player {
                         num = Fx::zero();
                         flag = true;
                     } else if self.slip_check(rooms, Fx::zero()) {
-                        self.climb_hop(rooms); // 122232-122236: hop off the top of the wall
+                        self.climb_hop(rooms); // references/Celeste.exe.cs.d/Celeste/Player.cs:3981-3985: hop off the top of the wall
                         self.state = 0;
                         return;
                     }
                 } else if input.axis_y() == Fx::one() {
-                    num = CLIMB_DOWN_SPEED; // 80 px/s (122228-122230)
+                    num = CLIMB_DOWN_SPEED; // 80 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:3977-3979)
                     if self.on_ground {
                         if self.vel.y > Fx::zero() {
                             self.vel.y = Fx::zero();
@@ -1628,19 +1630,19 @@ impl Player {
                         num = Fx::zero();
                     }
                 } else {
-                    flag = true; // 122243-122245: no vertical input
+                    flag = true; // references/Celeste.exe.cs.d/Celeste/Player.cs:3992-3994: no vertical input
                 }
             } else {
                 flag = true; // no movement during the stagger
             }
-            self.last_climb_move = num.signum(); // 122251
+            self.last_climb_move = num.signum(); // references/Celeste.exe.cs.d/Celeste/Player.cs:4000
             if flag && self.slip_check(rooms, Fx::zero()) {
-                num = CLIMB_SLIP_SPEED; // 122252-122255: 30 slow descent while hanging at the top
+                num = CLIMB_SLIP_SPEED; // references/Celeste.exe.cs.d/Celeste/Player.cs:4001-4004: 30 slow descent while hanging at the top
             }
-            // 122257: `Approach(Speed.Y, num, 900*dt)`.
+            // references/Celeste.exe.cs.d/Celeste/Player.cs:4006: `Approach(Speed.Y, num, 900*dt)`.
             approach(&mut self.vel.y, num, GRAVITY);
         }
-        // 122260-122264: no longer pushing down and the wall has ended below the front ->
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:4009-4013: no longer pushing down and the wall has ended below the front ->
         // stop.
         if input.axis_y() != Fx::one()
             && self.vel.y > Fx::zero()
@@ -1652,7 +1654,7 @@ impl Player {
         {
             self.vel.y = Fx::zero();
         }
-        // Stamina (122266-122300): up 45.454544/s, still 10/s; let go when exhausted.
+        // Stamina (references/Celeste.exe.cs.d/Celeste/Player.cs:4015-4049): up 45.454544/s, still 10/s; let go when exhausted.
         if self.climb_no_move_ticks == 0 {
             if self.last_climb_move == -1 {
                 self.stamina -= CLIMB_UP_DRAIN_PER_TICK;
@@ -1661,17 +1663,17 @@ impl Player {
             }
         }
         if self.stamina <= Fx::zero() {
-            self.state = 0; // 122302-122306
+            self.state = 0; // references/Celeste.exe.cs.d/Celeste/Player.cs:4051-4055
         }
     }
 
-    /// The reachable part of vanilla `ClimbHopBlockedCheck()` (122409-122424): a solid
+    /// The reachable part of vanilla `ClimbHopBlockedCheck()` (references/Celeste.exe.cs.d/Celeste/Player.cs:4158-4173): a solid
     /// 6px above the head -> the hop is blocked (no Follower/LedgeBlocker entities).
     fn climb_hop_blocked(&self, rooms: &[Room]) -> bool {
         self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(6))
     }
 
-    /// Vanilla `UpdateHair` (pureCeleste.cs:120247-120298): dash spent -> ease into USED
+    /// Vanilla `UpdateHair` (references/Celeste.exe.cs.d/Celeste/Player.cs:1996-2047): dash spent -> ease into USED
     /// at 6/s; at the instant of refill (lastDashes != Dashes) -> FLASH +
     /// `hairFlashTimer` 0.12s; stay FLASH during it; otherwise pick TWO_DASHES/NORMAL by
     /// the dash count. State 19 (star-fly) and `OverrideHairColor` are not implemented.
@@ -1692,14 +1694,14 @@ impl Player {
         } else {
             self.hair_color_current = crate::sprites::hair_color::NORMAL;
         }
-        self.last_dashes = self.dashes; // 120295
+        self.last_dashes = self.dashes; // references/Celeste.exe.cs.d/Celeste/Player.cs:2044
     }
 
-    /// Vanilla `Sprite.Play(id, restart = false)` (pureCeleste.cs:10483-10503): the same
-    /// id is a no-op (pureCeleste.cs:10485 `(CurrentAnimationID != id) | restart`); on a
-    /// switch, `LastAnimationID` records the **new** id (pureCeleste.cs:10491-10492;
-    /// `(CurrentAnimationID = id)` evaluates to `id`), `Animating = Delay > 0f`
-    /// (pureCeleste.cs:10494 `Animating = currentAnimation.Delay > 0f`), and the timer
+    /// Vanilla `Sprite.Play(id, restart = false)` (references/Celeste.exe.cs.d/Monocle/Sprite.cs:358-378): the same
+    /// id is a no-op (references/Celeste.exe.cs.d/Monocle/Sprite.cs:360 `(CurrentAnimationID != id) | restart`); on a
+    /// switch, `LastAnimationID` records the **new** id (references/Celeste.exe.cs.d/Monocle/Sprite.cs:366-367;
+    /// `(CurrentAnimationID = id)` evaluates to `id`), `Animating = currentAnimation.Delay > 0f`
+    /// (references/Celeste.exe.cs.d/Monocle/Sprite.cs:369 `Animating = currentAnimation.Delay > 0f`), and the timer
     /// and frame reset to zero. A missing table / unknown id is still a no-op (rendering
     /// falls back to static frames).
     pub fn play(&mut self, table: &crate::sprites::AnimationTable, id: &str) {
@@ -1709,28 +1711,28 @@ impl Player {
         let Some(def) = table.sprites.get("player") else {
             return;
         };
-        // Dictionary keys are case-insensitive (Monocle `OrdinalIgnoreCase`, 10206; the
+        // Dictionary keys are case-insensitive (Monocle `OrdinalIgnoreCase`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:81; the
         // XML has `climbup` while `UpdateSprite` plays `climbUp`); but CurrentAnimationID
-        // stores the **argument** (120274 behavior), so the no-op comparison uses the
+        // stores the **argument** (references/Celeste.exe.cs.d/Celeste/Player.cs:2023 behavior), so the no-op comparison uses the
         // string as-is.
         let Some(anim) = def.anims.get(&id.to_ascii_lowercase()) else {
             return;
         };
         // `string lastAnimationID = (CurrentAnimationID = id); LastAnimationID =
-        // lastAnimationID;` (10491-10492): a C# assignment expression evaluates to the
+        // lastAnimationID;` (references/Celeste.exe.cs.d/Monocle/Sprite.cs:366-367): a C# assignment expression evaluates to the
         // **new** id, so `LastAnimationID` ends up holding the animation just played, not
-        // the previous one. `Running` (111375-111388) reads it as "the most recently
+        // the previous one. `Running` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:169-182) reads it as "the most recently
         // played animation is a run*". Recording the old id instead leaves `Running` true
-        // after a stop -> idle, so the `!Sprite.Running` guard (120447) never fires again
+        // after a stop -> idle, so the `!Sprite.Running` guard (references/Celeste.exe.cs.d/Celeste/Player.cs:2196) never fires again
         // and the character slides at full speed holding the idle pose.
-        self.last_anim_id = id.to_string(); // pureCeleste.cs:10491-10492
+        self.last_anim_id = id.to_string(); // references/Celeste.exe.cs.d/Monocle/Sprite.cs:366-367
         self.anim_id = id.to_string();
         self.anim_frame = 0;
         self.anim_timer = 0.0;
-        self.anim_playing = anim.delay > 0.0; // 10493 `Animating = Delay > 0f`
+        self.anim_playing = anim.delay > 0.0; // references/Celeste.exe.cs.d/Monocle/Sprite.cs:369 `Animating = currentAnimation.Delay > 0f`
     }
 
-    /// Vanilla `Sprite.Update` (10170-10308): advance the timer by the frame interval,
+    /// Vanilla `Sprite.Update` (references/Celeste.exe.cs.d/Monocle/Sprite.cs:45-183): advance the timer by the frame interval,
     /// loop back to 0 for looping animations, and stop at the last frame for non-looping
     /// ones.
     pub fn update_animation(&mut self, table: &crate::sprites::AnimationTable) {
@@ -1743,7 +1745,7 @@ impl Player {
         if !self.anim_playing || anim.delay <= 0.0 {
             return;
         }
-        // 10234-10243: `animationTimer += DeltaTime` (Rate = 1); only advance a frame
+        // references/Celeste.exe.cs.d/Monocle/Sprite.cs:109-118: `animationTimer += DeltaTime` (Rate = 1); only advance a frame
         // when `|timer| >= Delay`, then subtract Delay from the timer.
         self.anim_timer += 1.0 / 60.0;
         if self.anim_timer < anim.delay {
@@ -1752,15 +1754,15 @@ impl Player {
         self.anim_timer -= anim.delay;
         self.anim_frame += 1;
         if self.anim_frame >= anim.frames.len() {
-            // 10278-10305.
+            // references/Celeste.exe.cs.d/Monocle/Sprite.cs:153-180.
             match &anim.goto {
                 Some(next) => {
-                    // Goto branch (pureCeleste.cs:10260-10282):
-                    // `CurrentAnimationID = currentAnimation.Goto.Choose()` (10262), and it
+                    // Goto branch (references/Celeste.exe.cs.d/Monocle/Sprite.cs:135-157):
+                    // `CurrentAnimationID = currentAnimation.Goto.Choose()` (references/Celeste.exe.cs.d/Monocle/Sprite.cs:137), and it
                     // writes the **new** id into `LastAnimationID`
-                    // (pureCeleste.cs:10267 `LastAnimationID = CurrentAnimationID` --
+                    // (references/Celeste.exe.cs.d/Monocle/Sprite.cs:142 `LastAnimationID = CurrentAnimationID` --
                     // **different** from `play`'s "record the old id" rule); the frame
-                    // resets to 0 (10275) and the timer and `Animating` are untouched.
+                    // resets to 0 (references/Celeste.exe.cs.d/Monocle/Sprite.cs:150) and the timer and `Animating` are untouched.
                     let key = next.to_ascii_lowercase();
                     if !table
                         .sprites
@@ -1774,7 +1776,7 @@ impl Player {
                     self.last_anim_id = next.clone();
                 }
                 None => {
-                    // pureCeleste.cs:10283-10302: `Animating = false`, frame stays at the
+                    // references/Celeste.exe.cs.d/Monocle/Sprite.cs:158-177: `Animating = false`, frame stays at the
                     // last frame, `CurrentAnimationID` cleared (texture not reset).
                     self.anim_frame = anim.frames.len() - 1;
                     self.anim_playing = false;
@@ -1793,7 +1795,7 @@ impl Player {
     }
 
     /// Per-frame hair metadata for the current animation frame (vanilla
-    /// `PlayerSprite.HasHair` / `HairOffset` / `HairFrame`, pureCeleste.cs:111351-111371),
+    /// `PlayerSprite.HasHair` / `HairOffset` / `HairFrame`, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:145-165),
     /// which `PlayerHair.Render` reads. A missing animation or frame yields the vanilla
     /// defaults (no hair) rather than a guessed offset.
     pub fn anim_frame_hair(
@@ -1809,7 +1811,7 @@ impl Player {
         anim.hair_at(self.anim_frame)
     }
 
-    /// Vanilla `PlayerSprite.Running` (pureCeleste.cs:111375-111388): the **previous**
+    /// Vanilla `PlayerSprite.Running` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:169-182): the **previous**
     /// animation (`LastAnimationID`) starts with `run`, or is exactly `flip`.
     ///
     /// It is **not** "the current animation has a goto" -- `idle`/`edge`/`walk` all
@@ -1821,7 +1823,7 @@ impl Player {
     }
 
     /// The reachable branches of vanilla `Player.UpdateSprite`
-    /// (pureCeleste.cs:120300-120508) (no held item / wind / climb / dream / space /
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2049-2257) (no held item / wind / climb / dream / space /
     /// duck -- deviation declared in the module docs): dash attack window -> skid/dash;
     /// grounded -> push/edge/edgeBack/lookUp/idle/skid/flip/runSlow/runFast; airborne ->
     /// jumpSlow/jumpFast/fallSlow/fallFast.
@@ -1831,7 +1833,7 @@ impl Player {
         input: &Input,
         rooms: &[Room],
     ) {
-        // `Sprite.Scale.X/Y = Approach(Scale.X/Y, 1, 1.75 * dt)` (120302-120303): the
+        // `Sprite.Scale.X/Y = Approach(Scale.X/Y, 1, 1.75 * dt)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052): the
         // dash/jump stretch springs back to 1 at 105 px/s-> 7/240 per tick.
         const SPRING_RATE: Fx = Fx::from_ratio(7, 240);
         approach(&mut self.sprite_scale[0], Fx::one(), SPRING_RATE);
@@ -1849,7 +1851,7 @@ impl Player {
                 && self.move_x == Fx::from_int(-self.vel.x.signum())
             {
                 // `if (Scene.OnInterval(0.02f)) { Dust.Burst(Position, -PiOver2); }`
-                // (120569-120572): the skid puff, 1 particle, paced on the 0.02 s
+                // (references/Celeste.exe.cs.d/Celeste/Player.cs:2318-2321): the skid puff, 1 particle, paced on the 0.02 s
                 // interval (roughly every other tick).
                 if self.on_interval(Fx::from_ratio(2, 100)) {
                     let anchor = self.anchor();
@@ -1862,7 +1864,7 @@ impl Player {
                 self.play(table, "dash");
             }
         } else if self.state == 1 {
-            // 120365-120383: climb animations (lastClimbMove / dangling / look back).
+            // references/Celeste.exe.cs.d/Celeste/Player.cs:2114-2132: climb animations (lastClimbMove / dangling / look back).
             if self.last_climb_move < 0 {
                 self.play(table, "climbUp"); // XML id `climbup`; case-insensitive
             } else if self.last_climb_move > 0 {
@@ -1872,18 +1874,18 @@ impl Player {
                 self.pos.x + Fx::from_int(self.facing * 6),
                 self.pos.y,
             ) {
-                self.play(table, "dangling"); // 120371-120373: probe at (Facing, 6)
+                self.play(table, "dangling"); // references/Celeste.exe.cs.d/Celeste/Player.cs:2120-2122: probe at (Facing, 6)
             } else if self.move_x == Fx::from_int(-self.facing) {
                 self.play(table, "climbLookBackStart");
             } else {
                 self.play(table, "wallslide");
             }
         } else if self.ducking && self.state == 0 {
-            self.play(table, "duck"); // 120408-120412
+            self.play(table, "duck"); // references/Celeste.exe.cs.d/Celeste/Player.cs:2157-2161
         } else if self.state == 0 {
             if self.on_ground {
                 self.fast_jump = false;
-                // pureCeleste.cs:120398-120400: push against a wall (`Holding == null &&
+                // references/Celeste.exe.cs.d/Celeste/Player.cs:2147-2149: push against a wall (`Holding == null &&
                 // moveX != 0 && CollideCheck<Solid>(Position + UnitX * moveX)`; vanilla also
                 // has `ClimbBlocker.EdgeCheck`, but this engine has no ClimbBlocker yet).
                 if self.move_x != Fx::zero()
@@ -1891,7 +1893,7 @@ impl Player {
                 {
                     self.play(table, "push");
                 } else if self.vel.x.abs() <= IDLE_SPEED && self.move_x == Fx::zero() {
-                    // pureCeleste.cs:120402 `Math.Abs(Speed.X) <= 25f && moveX == 0`.
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:2151 `Math.Abs(Speed.X) <= 25f && moveX == 0`.
                     let front = self.hits(
                         rooms,
                         self.pos.x + Fx::from_int(self.facing),
@@ -1911,11 +1913,11 @@ impl Player {
                         self.pos.y + Fx::from_int(2),
                     );
                     if !front {
-                        self.play(table, "edge"); // pureCeleste.cs:120408-120410
+                        self.play(table, "edge"); // references/Celeste.exe.cs.d/Celeste/Player.cs:2157-2159
                     } else if !back {
-                        self.play(table, "edgeBack"); // pureCeleste.cs:120412-120414
+                        self.play(table, "edgeBack"); // references/Celeste.exe.cs.d/Celeste/Player.cs:2161-2163
                     } else if input.up {
-                        // pureCeleste.cs:120418 `Sprite.LastAnimationID != "lookUp"` --
+                        // references/Celeste.exe.cs.d/Celeste/Player.cs:2167 `Sprite.LastAnimationID != "lookUp"` --
                         // vanilla replays only then (lookUp does not loop, and after it ends
                         // CurrentAnimationID is cleared; replaying unconditionally would stay
                         // on frame 0 forever).
@@ -1923,26 +1925,26 @@ impl Player {
                             self.play(table, "lookUp");
                         }
                     } else if !self.anim_id.is_empty() && !self.anim_id.contains("idle") {
-                        // pureCeleste.cs:120423 `Sprite.CurrentAnimationID.Contains("idle")`
+                        // references/Celeste.exe.cs.d/Celeste/Player.cs:2172 `Sprite.CurrentAnimationID.Contains("idle")`
                         // -- the full condition is: `CurrentAnimationID != null &&
                         // (!Contains("idle") || (== "idle_carry" && Holding == null))`
-                        // (120423-120425).
+                        // (references/Celeste.exe.cs.d/Celeste/Player.cs:2172-2174).
                         self.play(table, "idle");
                     }
                 } else if self.move_x != Fx::zero() && self.vel.x.signum() == -self.move_x.signum()
                 {
-                    // pureCeleste.cs:120432-120440: opposite to the input and still sliding
-                    // (`Math.Sign(Speed.X) == -moveX && moveX != 0`, 120432).
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:2181-2189: opposite to the input and still sliding
+                    // (`Math.Sign(Speed.X) == -moveX && moveX != 0`, references/Celeste.exe.cs.d/Celeste/Player.cs:2181).
                     if self.vel.x.abs() > RUN {
                         self.play(table, "skid");
                     } else if self.anim_id != "skid" {
                         self.play(table, "flip");
                     }
                 } else if !self.running() {
-                    // pureCeleste.cs:120447 `!Sprite.Running` -- the full condition also has
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:2196 `!Sprite.Running` -- the full condition also has
                     // `CurrentAnimationID == "runWind" || (== "runSlow_carry" &&
                     // Holding == null)`; the latter two are wind / held item, not implemented
-                    // in this engine (120447-120455).
+                    // in this engine (references/Celeste.exe.cs.d/Celeste/Player.cs:2196-2204).
                     if self.vel.x.abs() < Fx::from_ratio(3, 4) {
                         self.play(table, "runSlow");
                     } else {
@@ -1958,7 +1960,7 @@ impl Player {
                 }
             } else if self.fast_jump || self.vel.y >= Fx::from_ratio(8, 3) {
                 self.fast_jump = true;
-                // pureCeleste.cs:120486 `Sprite.LastAnimationID != "fallFast"`.
+                // references/Celeste.exe.cs.d/Celeste/Player.cs:2235 `Sprite.LastAnimationID != "fallFast"`.
                 if self.last_anim_id != "fallFast" {
                     self.play(table, "fallFast");
                 }
@@ -1968,15 +1970,15 @@ impl Player {
         }
     }
 
-    /// State 0 (NormalUpdate, pureCeleste.cs:121824-122101).
+    /// State 0 (NormalUpdate, references/Celeste.exe.cs.d/Celeste/Player.cs:3573-3850).
     ///
     /// The within-tick order mirrors vanilla: grab/duck (not implemented, see the
-    /// deviation declaration) -> dash trigger (121841-121843 `if (CanDash)`) -> running
-    /// (121965-121975) -> maxFall (121977-121987) -> gravity (122027-122040, airborne
-    /// only) -> varJump clamp (122042-122048) -> jump decision (122053-122100, including
+    /// deviation declaration) -> dash trigger (references/Celeste.exe.cs.d/Celeste/Player.cs:3615-3619 `if (CanDash)`) -> running
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:3714-3724) -> maxFall (references/Celeste.exe.cs.d/Celeste/Player.cs:3726-3736) -> gravity (references/Celeste.exe.cs.d/Celeste/Player.cs:3776-3789, airborne
+    /// only) -> varJump clamp (references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797) -> jump decision (references/Celeste.exe.cs.d/Celeste/Player.cs:3802-3849, including
     /// the wall jump) -> movement solve -> coyote/buffer decay. As in vanilla, the outer
     /// movement still runs when NormalUpdate returns a different state
-    /// (`pureCeleste.cs:120049-120056`).
+    /// (`references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805`).
     fn normal_update(&mut self, input: &Input, rooms: &[Room]) {
         self.normal_update_logic(input, rooms);
         self.normal_movement_tail(rooms);
@@ -1987,11 +1989,11 @@ impl Player {
     fn normal_update_logic(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // Wall grab (`pureCeleste.cs:121832-121864`, no pickups): probe when the
+        // Wall grab (`references/Celeste.exe.cs.d/Celeste/Player.cs:3581-3613`, no pickups): probe when the
         // horizontal speed is not away from the wall and vertical speed >= 0; when it is
         // 1-2px short, vanilla lifts the player with MoveVExact. `ClimbTrigger` is a
-        // write-only field in vanilla (118714/119688/121267, with no consumer), skipped.
-        // `pureCeleste.cs:121832`
+        // write-only field in vanilla (references/Celeste.exe.cs.d/Celeste/Player.cs:463/references/Celeste.exe.cs.d/Celeste/Player.cs:1437/references/Celeste.exe.cs.d/Celeste/Player.cs:3016, with no consumer), skipped.
+        // `references/Celeste.exe.cs.d/Celeste/Player.cs:3581`
         // `Input.GrabCheck && !IsTired && !Ducking`: an exhausted player cannot re-grab.
         if input.grab && !self.is_tired() && !self.ducking && self.vel.y >= Fx::zero() {
             let behind = self.vel.x.signum() == -self.facing && self.vel.x != Fx::zero();
@@ -2001,11 +2003,11 @@ impl Player {
                     self.enter_climb(rooms);
                     return;
                 }
-                // `pureCeleste.cs:121852` `(float)Input.MoveY < 1f`: holding down
+                // `references/Celeste.exe.cs.d/Celeste/Player.cs:3601` `(float)Input.MoveY < 1f`: holding down
                 // deliberately skips only the upward 1-2px snap, not a direct wall grab.
                 if input.axis_y() < Fx::one() {
                     for i in 1..=2i32 {
-                        // 121854-121862: when 1-2px short, lift, then grab.
+                        // references/Celeste.exe.cs.d/Celeste/Player.cs:3603-3611: when 1-2px short, lift, then grab.
                         if !self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(i))
                             && self.climb_check(rooms, self.facing, -i)
                         {
@@ -2019,9 +2021,9 @@ impl Player {
             }
         }
 
-        // Duck enter/exit (121996-122008): press down while grounded to duck; standing up
+        // Duck enter/exit (references/Celeste.exe.cs.d/Celeste/Player.cs:3745-3757): press down while grounded to duck; standing up
         // needs CanUnDuck, and when blocked with zero horizontal speed, vanilla probes a
-        // 4px crawl position (122001).
+        // 4px crawl position (references/Celeste.exe.cs.d/Celeste/Player.cs:3750).
         if self.ducking {
             if self.on_ground && input.axis_y() != Fx::one() {
                 if self.can_unduck(rooms) {
@@ -2030,7 +2032,7 @@ impl Player {
                     for i in (1..=4i32).rev() {
                         let px = Fx::from_int(i);
                         if self.can_unduck_at(rooms, self.pos.x + px) {
-                            self.pos.x += Fx::from_ratio(5, 6); // MoveH(50*dt) (122004)
+                            self.pos.x += Fx::from_ratio(5, 6); // MoveH(50*dt) (references/Celeste.exe.cs.d/Celeste/Player.cs:3753)
                             break;
                         }
                         if self.can_unduck_at(rooms, self.pos.x - px) {
@@ -2041,23 +2043,23 @@ impl Player {
                 }
             }
         } else if self.on_ground && input.axis_y() == Fx::one() && self.vel.y >= Fx::zero() {
-            self.ducking = true; // 122004-122008
+            self.ducking = true; // references/Celeste.exe.cs.d/Celeste/Player.cs:3753-3757
         }
 
-        // Dash trigger (121841-121843 + `CanDash` 119325-119340): the dash button was
+        // Dash trigger (references/Celeste.exe.cs.d/Celeste/Player.cs:3590-3592 + `CanDash` references/Celeste.exe.cs.d/Celeste/Player.cs:1074-1089): the dash button was
         // pressed (within the buffer window), the cooldown has ended, and dashes remain.
         if self.dash_buffer > 0 && self.dash_cooldown == 0 && self.dashes > 0 {
-            self.start_dash(input, rooms); // StartDash (122469-122479) -> State 2
+            self.start_dash(input, rooms); // StartDash (references/Celeste.exe.cs.d/Celeste/Player.cs:4218-4228) -> State 2
             return; // speed is 0 this tick (DashBegin zeroes it); go straight to movement
         }
 
-        // Horizontal: vanilla's two branches (121965-121975) -- same-direction overspeed
+        // Horizontal: vanilla's two branches (references/Celeste.exe.cs.d/Celeste/Player.cs:3714-3724) -- same-direction overspeed
         // (|vx| > 90 and the same sign as the input) uses the 400 reduction; everything
         // else (no input, opposite braking, starting) uses the full 1000 rate. In the air
         // both are multiplied by 0.65.
         let move_x = self.move_x;
         // Grounded ducking is a *separate* branch: `Speed.X = Approach(Speed.X, 0,
-        // 500*dt)` (Player.cs:3681-3684). The normal run acceleration is the `else`, so a
+        // 500*dt)` (references/Celeste.exe.cs.d/Celeste/Player.cs:3681-3684). The normal run acceleration is the `else`, so a
         // crouched player decelerates to a stop and cannot run -- the engine previously
         // ran both, so ducking still accelerated sideways.
         if self.ducking && self.on_ground {
@@ -2075,7 +2077,7 @@ impl Player {
             };
             approach(&mut self.vel.x, target, rate);
         }
-        // Facing follows input, not speed (119908-119917): holding into a wall leaves
+        // Facing follows input, not speed (references/Celeste.exe.cs.d/Celeste/Player.cs:1657-1666): holding into a wall leaves
         // speed at 0, so facing must still point at the wall for the jump boost direction
         // to be right.
         if move_x != Fx::zero() {
@@ -2084,7 +2086,7 @@ impl Player {
 
         // The fall-speed cap is an **eased state**: holding "down" while already
         // accelerating downward -> the cap ramps toward fast fall; otherwise it eases back
-        // to normal fall speed. Rate 300 px/s^2. Reference pureCeleste:
+        // to normal fall speed. Rate 300 px/s^2. Reference vanilla:
         // `maxFall = Approach(maxFall, 240, 300*dt)`.
         if input.down && self.vel.y >= MAX_FALL {
             approach(&mut self.max_fall, FAST_MAX_FALL, FAST_MAX_ACCEL);
@@ -2092,9 +2094,9 @@ impl Player {
             approach(&mut self.max_fall, MAX_FALL, FAST_MAX_ACCEL);
         }
 
-        // Gravity: applied only in the air (122040). Near the apex (|vy| < 40 px/s) while
-        // holding jump (or AutoJump) -> gravity is halved (num7 at 122031).
-        // Wall slide (122105-122139): pushing into the wall (or holding grab with no
+        // Gravity: applied only in the air (references/Celeste.exe.cs.d/Celeste/Player.cs:3789). Near the apex (|vy| < 40 px/s) while
+        // holding jump (or AutoJump) -> gravity is halved (num7 at references/Celeste.exe.cs.d/Celeste/Player.cs:3780).
+        // Wall slide (references/Celeste.exe.cs.d/Celeste/Player.cs:3854-3888): pushing into the wall (or holding grab with no
         // horizontal input) while falling -> the target speed eases from 160 to 20
         // (`Lerp(160, 20, wallSlideTimer/1.2)`, WALLSLIDE_FAST/SLOW). The wall slide
         // direction is re-armed by the condition every tick.
@@ -2115,9 +2117,9 @@ impl Player {
                 let lerp = WALLSLIDE_FAST + (WALLSLIDE_SLOW - WALLSLIDE_FAST) * Fx::from_f32(t);
                 target = lerp;
                 // `if (wallSlideTimer / 1.2f > 0.65f) CreateWallSlideParticles(...)`
-                // (121029-121035): the puff only starts once the slow part of the slide
+                // (references/Celeste.exe.cs.d/Celeste/Player.cs:2778-2784): the puff only starts once the slow part of the slide
                 // is reached, then the callee paces it on `OnInterval(0.01f)`
-                // (120997-121011) -- shorter than a tick, so one particle per tick,
+                // (references/Celeste.exe.cs.d/Celeste/Player.cs:2746-2760) -- shorter than a tick, so one particle per tick,
                 // 5px to the wall side and 4px below the centre.
                 if Fx::from_f32(t) > Fx::from_ratio(65, 100) {
                     self.wall_slide_dust();
@@ -2128,24 +2130,24 @@ impl Player {
             approach(&mut self.vel.y, target, rate);
         }
 
-        // varJump clamp (122042-122048): while the timer is running and jump is held ->
+        // varJump clamp (references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797): while the timer is running and jump is held ->
         // vertical speed is clamped back to the jump value (gravity cancelled); on
         // release -> the timer is zeroed. This is "variable jump height", with no extra
         // release speed cut.
         if self.var_jump > 0 {
             if input.jump || self.auto_jump > 0 {
-                // 122134: `Speed.Y = Math.Min(Speed.Y, varJumpSpeed)`.
+                // references/Celeste.exe.cs.d/Celeste/Player.cs:3883: `Speed.Y = Math.Min(Speed.Y, varJumpSpeed)`.
                 self.vel.y = self.vel.y.min(self.var_jump_speed);
             } else {
                 self.var_jump = 0;
             }
         }
 
-        // Jump decision (122090-122101): inside the buffer window -> grounded/coyote ->
-        // `Jump()` (120694-120716: vertical -105, horizontal +40*moveX (JumpHBoost),
+        // Jump decision (references/Celeste.exe.cs.d/Celeste/Player.cs:3839-3850): inside the buffer window -> grounded/coyote ->
+        // `Jump()` (references/Celeste.exe.cs.d/Celeste/Player.cs:2443-2465: vertical -105, horizontal +40*moveX (JumpHBoost),
         // varJump filled to 0.2s); airborne -> ClimbJump when grabbing the wall the jump
-        // points away from, otherwise a wall jump (122057-122100, `WallJumpCheck`
-        // 120779-120804 -> `ClimbJump` 120902-120928 / `WallJump` 120806-120860).
+        // points away from, otherwise a wall jump (references/Celeste.exe.cs.d/Celeste/Player.cs:3806-3849, `WallJumpCheck`
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:2528-2553 -> `ClimbJump` references/Celeste.exe.cs.d/Celeste/Player.cs:2651-2677 / `WallJump` references/Celeste.exe.cs.d/Celeste/Player.cs:2555-2609).
         if self.jump_buffer > 0 {
             if self.on_ground || self.coyote > 0 {
                 self.jump(move_x, true);
@@ -2173,7 +2175,7 @@ impl Player {
         if !self.on_ground {
             self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
         }
-        // Stand up in the air (120058-120060): falling with nothing overhead -> cancel
+        // Stand up in the air (references/Celeste.exe.cs.d/Celeste/Player.cs:1807-1809): falling with nothing overhead -> cancel
         // ducking.
         if !self.on_ground && self.vel.y > Fx::zero() && self.coyote == 0 && self.can_unduck(rooms)
         {
@@ -2203,7 +2205,7 @@ impl Player {
     /// does not count as intersecting).
     /// Current hitbox size: while ducking 8x6 with the top-left moved down 5px (its
     /// bottom edge aligns with the normal 8x11; `duckHitbox = new Hitbox(8f, 6f, -4f,
-    /// -6f)`, 118858).
+    /// -6f)`, references/Celeste.exe.cs.d/Celeste/Player.cs:607).
     pub(crate) fn box_dims(&self) -> (i32, i32, i32) {
         if self.ducking {
             (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF)
@@ -2223,7 +2225,7 @@ impl Player {
     /// corner at `(x, y + y_off)`.
     ///
     /// Vanilla probes a second box by swapping `Collider` around a `CollideCheck<Solid>()`
-    /// (`CanUnDuck` 119281-119295 uses `normalHitbox`, `DuckFreeAt` 121177-121187 uses
+    /// (`CanUnDuck` references/Celeste.exe.cs.d/Celeste/Player.cs:1030-1044 uses `normalHitbox`, `DuckFreeAt` references/Celeste.exe.cs.d/Celeste/Player.cs:2926-2936 uses
     /// `duckHitbox`); this is the same query without mutating the player.
     fn hit_in_box<'r>(
         &self,
@@ -2284,14 +2286,14 @@ impl Player {
         self.hits_box(rooms, x, y, (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF))
     }
 
-    /// Vanilla `OnGround(position)` (116961-116969) evaluated at another x: is there a
+    /// Vanilla `OnGround(position)` (references/Celeste.exe.cs.d/Celeste/Actor.cs:147-155) evaluated at another x: is there a
     /// solid 1px below that point? Vanilla also accepts a `JumpThru` there
-    /// (`CollideCheckOutside<JumpThru>`, 116950-116959); this engine has no JumpThru yet.
+    /// (`CollideCheckOutside<JumpThru>`, references/Celeste.exe.cs.d/Celeste/Actor.cs:136-145); this engine has no JumpThru yet.
     fn grounded_at(&self, rooms: &[Room], x: Fx) -> bool {
         self.hits(rooms, x, self.pos.y + Fx::one())
     }
 
-    /// Vanilla `DashCorrectCheck(add)` (122449-122462): shift the player by `add`, swap to
+    /// Vanilla `DashCorrectCheck(add)` (references/Celeste.exe.cs.d/Celeste/Player.cs:4198-4211): shift the player by `add`, swap to
     /// the **hurtbox** and ask every `LedgeBlocker` whether it blocks the dash. Nothing in
     /// this engine registers a `LedgeBlocker`, so the query is always false -- the same
     /// answer vanilla gives when no blocker is in range.
@@ -2299,10 +2301,10 @@ impl Player {
         false
     }
 
-    /// Vanilla `OnCollideH`'s dash corner correction (121439-121456).
+    /// Vanilla `OnCollideH`'s dash corner correction (references/Celeste.exe.cs.d/Celeste/Player.cs:3188-3205).
     ///
     /// Only for a horizontal dash (`Speed.Y == 0 && Speed.X != 0`). It walks the reach
-    /// 1..=4 (`DashCornerCorrection`, 118476) crossing both vertical directions, and
+    /// 1..=4 (`DashCornerCorrection`, references/Celeste.exe.cs.d/Celeste/Player.cs:225) crossing both vertical directions, and
     /// accepts the first cell that is free, has solid **below** it (so it is a real
     /// corner, not open air) and is not blocked by a `LedgeBlocker`; the player then moves
     /// vertically onto that cell and one pixel horizontally into it. The early `return`
@@ -2328,21 +2330,21 @@ impl Player {
         false
     }
 
-    /// Vanilla `OnCollideV`'s upward corner correction (121625-121646).
+    /// Vanilla `OnCollideV`'s upward corner correction (references/Celeste.exe.cs.d/Celeste/Player.cs:3374-3395).
     ///
     /// When the head clips a ceiling corner, shift up to 4px sideways towards the free
     /// side (5 while dash-attacking with no horizontal speed,
-    /// `DashingUpwardCornerCorrection` 118424) and 1px up. The early `return` in vanilla
+    /// `DashingUpwardCornerCorrection` references/Celeste.exe.cs.d/Celeste/Player.cs:173) and 1px up. The early `return` in vanilla
     /// skips the `Speed.Y = 0` tail, so the jump keeps its upward speed after squeezing
     /// past the corner; without a correction the caller zeroes it and cuts a nearly
-    /// finished `varJump` (121662-121665).
+    /// finished `varJump` (references/Celeste.exe.cs.d/Celeste/Player.cs:3411-3414).
     fn corner_correct_up(&mut self, rooms: &[Room]) -> bool {
         let mut reach = UPWARD_CORNER_CORRECTION;
         if self.dash_attack > 0 && self.vel.x.abs() < SPEED_EPS {
             reach = DASHING_UPWARD_CORNER_CORRECTION;
         }
         let up = self.pos.y - Fx::one();
-        // 121630-121641: `Speed.X <= 0.01f` tries the left side.
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:3379-3390: `Speed.X <= 0.01f` tries the left side.
         if self.vel.x <= SPEED_EPS {
             for j in 1..=reach {
                 let at = Vec2::new(self.pos.x - Fx::from_int(j), up);
@@ -2352,7 +2354,7 @@ impl Player {
                 }
             }
         }
-        // 121643-121655: `Speed.X >= -0.01f` tries the right side.
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:3392-3404: `Speed.X >= -0.01f` tries the right side.
         if self.vel.x >= -SPEED_EPS {
             for j in 1..=reach {
                 let at = Vec2::new(self.pos.x + Fx::from_int(j), up);
@@ -2365,9 +2367,9 @@ impl Player {
         false
     }
 
-    /// Vanilla `OnCollideV`'s air-dash landing correction (121536-121556).
+    /// Vanilla `OnCollideV`'s air-dash landing correction (references/Celeste.exe.cs.d/Celeste/Player.cs:3285-3305).
     ///
-    /// A dash that **started in the air** (`dashStartedOnGround`, 122537) whose hitbox
+    /// A dash that **started in the air** (`dashStartedOnGround`, references/Celeste.exe.cs.d/Celeste/Player.cs:4286) whose hitbox
     /// clips the side of a platform while moving down slides horizontally off it (1..=4px,
     /// towards the dash direction) and 1px further down instead of landing; the early
     /// `return` keeps `Speed.Y`, so the dash falls past the corner. A ground-started dash
@@ -2376,7 +2378,7 @@ impl Player {
         if self.state != 2 || self.dash_started_on_ground {
             return false;
         }
-        // 121544-121556: `Speed.X <= 0.01f` -> offsets -1..=-4.
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:3293-3305: `Speed.X <= 0.01f` -> offsets -1..=-4.
         if self.vel.x <= SPEED_EPS {
             for num in 1..=DASH_CORNER_CORRECTION {
                 let x = self.pos.x - Fx::from_int(num);
@@ -2386,7 +2388,7 @@ impl Player {
                 }
             }
         }
-        // 121558-121570: `Speed.X >= -0.01f` -> offsets 1..=4.
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:3307-3319: `Speed.X >= -0.01f` -> offsets 1..=4.
         if self.vel.x >= -SPEED_EPS {
             for num in 1..=DASH_CORNER_CORRECTION {
                 let x = self.pos.x + Fx::from_int(num);
@@ -2402,7 +2404,7 @@ impl Player {
     /// Advance along X, snapping to the outside edge of that column on hitting a solid.
     ///
     /// In the dash state a wall contact first tries vanilla's `OnCollideH` handling
-    /// (121432-121459): a **grounded** dash that can crouch at the wall ducks instead of
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:3181-3208): a **grounded** dash that can crouch at the wall ducks instead of
     /// stopping, otherwise a horizontal dash slides around a 1px-out corner (see
     /// [`Player::corner_correct_dash_h`]).
     fn slide_x(&mut self, rooms: &[Room]) {
@@ -2412,7 +2414,7 @@ impl Player {
             let nx = self.pos.x + step;
             if self.hits(rooms, nx, self.pos.y) {
                 if self.state == 2 {
-                    // 121432-121437: `onGround && DuckFreeAt(Position + UnitX*sign(Speed.X))`
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:3181-3186: `onGround && DuckFreeAt(Position + UnitX*sign(Speed.X))`
                     // -> `Ducking = true` and return (the dash becomes a slide).
                     let sign = self.vel.x.signum();
                     if self.on_ground && self.duck_free_at(rooms, self.pos.x + Fx::from_int(sign)) {
@@ -2441,7 +2443,7 @@ impl Player {
             let ny = self.pos.y + step;
             if self.hits(rooms, self.pos.x, ny) {
                 if step > Fx::zero() {
-                    // 121536-121556: the air-dash landing correction runs before any
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:3285-3305: the air-dash landing correction runs before any
                     // landing bookkeeping (and before the wavedash conversion below).
                     if self.corner_correct_landing(rooms) {
                         return;
@@ -2450,12 +2452,12 @@ impl Player {
                 self.pos.y = edge_y(ny, step, self.box_dims().2);
                 if step > Fx::zero() {
                     self.on_ground = true;
-                    // Vanilla `OnCollideV` (121577-121582): a **down-diagonal dash that
+                    // Vanilla `OnCollideV` (references/Celeste.exe.cs.d/Celeste/Player.cs:3326-3331): a **down-diagonal dash that
                     // lands** becomes a horizontal one -- `DashDir.Y = 0`, `Speed.Y = 0`,
                     // `Speed.X *= 1.2`, `Ducking = true`. This is what makes the hyper
                     // reachable from the air as well as from the ground: the dash-state
                     // jump branch only SuperJumps for `|DashDir.Y| < 0.1`
-                    // (122632-122641), and a down-diagonal dash never satisfies that
+                    // (references/Celeste.exe.cs.d/Celeste/Player.cs:4391-4403), and a down-diagonal dash never satisfies that
                     // until it lands. Regressing this made the hyper unmatchable
                     // (a plain `Jump()` at 169.7 + 40 instead of 325 hspeed).
                     if self.dash_dir.x != Fx::zero()
@@ -2468,7 +2470,7 @@ impl Player {
                         self.vel.x *= Fx::from_ratio(6, 5);
                         self.ducking = true;
                     }
-                    // 121584-121589: the landing squash (`Sprite.Scale.X =
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:3333-3338: the landing squash (`Sprite.Scale.X =
                     // Lerp(1,1.6,amount)`, `Scale.Y = Lerp(1,0.4,amount)` with
                     // `amount = min(Speed.Y / 240, 1)`), gated on not climbing. Because it
                     // reads `Speed.Y` *after* the dash conversion zeroes it, a
@@ -2480,7 +2482,7 @@ impl Player {
                         let sy = Fx::one() - Fx::from_ratio(3, 5) * amount;
                         self.sprite_scale = [sx, sy];
                         // `if (Speed.Y >= 80f) { Dust.Burst(Position, new Vector2(0,-1)
-                        // .Angle(), 8, ...) }` (121588-121592) -- a landing puff only
+                        // .Angle(), 8, ...) }` (references/Celeste.exe.cs.d/Celeste/Player.cs:3358-3361) -- a landing puff only
                         // once the fall is fast enough, 8 particles, straight up. It
                         // reads `Speed.Y` after the dash conversion above zeroed it, so
                         // a down-diagonal dash landing stays puff-free.
@@ -2490,12 +2492,12 @@ impl Player {
                         }
                     }
                 } else {
-                    // 121625-121646: a ceiling contact first tries the upward corner
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:3374-3395: a ceiling contact first tries the upward corner
                     // correction; on success the upward speed survives the squeeze.
                     if self.corner_correct_up(rooms) {
                         return;
                     }
-                    // 121662-121665: `if (varJumpTimer < 0.15f) varJumpTimer = 0f` -- a
+                    // references/Celeste.exe.cs.d/Celeste/Player.cs:3411-3414: `if (varJumpTimer < 0.15f) varJumpTimer = 0f` -- a
                     // bonk with less than 0.15s left (9 of the 12 ticks) kills it.
                     if self.var_jump < 9 {
                         self.var_jump = 0;
@@ -2667,7 +2669,7 @@ mod tests {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert!(p.on_ground, "player never landed; pos = {:?}", p.pos);
-        // The floor is row 3 (y = 24..32) and the hitbox is 11 tall (118856) -> the top
+        // The floor is row 3 (y = 24..32) and the hitbox is 11 tall (references/Celeste.exe.cs.d/Celeste/Player.cs:605) -> the top
         // edge stops at y = 13.
         assert_eq!(p.pos.y.to_f32(), 13.0, "hitbox must snap onto the floor");
         assert_eq!(p.vel.y, Fx::zero());
@@ -2707,7 +2709,7 @@ mod tests {
     fn jump_lifts_the_player() {
         let room = floor_room();
         // Standing on the row-3 floor (top = 24) -> the hitbox top edge is y = 13 (11
-        // tall, 118856).
+        // tall, references/Celeste.exe.cs.d/Celeste/Player.cs:605).
         let mut p = Player::new(Vec2::from_f32s(8.0, 13.0));
         p.on_ground = true;
         let i = Input {
@@ -2927,7 +2929,7 @@ mod tests {
         let room = tall_room();
         let mut p = settled(&room, 32.0);
         // Keep the dash gate shut (`CanDash` needs `dashCooldownTimer <= 0`,
-        // 119325-119340) for longer than the 0.08s buffer window.
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:1074-1089) for longer than the 0.08s buffer window.
         p.dash_cooldown = DASH_COOLDOWN_TICKS + 10;
         let press = Input {
             dash: true,
@@ -2963,9 +2965,12 @@ mod tests {
         };
         p.step(&up_dash, std::slice::from_ref(&room));
         assert_eq!(p.state, 2, "the up dash starts");
-        assert_eq!(p.dashes, 0, "StartDash spends the dash (122471)");
-        // `DashBegin` arms `dashRefillCooldownTimer = 0.1f` = 6 ticks (122534-122565) and
-        // the ground refill is the `else` of that timer (119843-119863), so the dash is
+        assert_eq!(
+            p.dashes, 0,
+            "StartDash spends the dash (references/Celeste.exe.cs.d/Celeste/Player.cs:4220)"
+        );
+        // `DashBegin` arms `dashRefillCooldownTimer = 0.1f` = 6 ticks (references/Celeste.exe.cs.d/Celeste/Player.cs:4283-4314) and
+        // the ground refill is the `else` of that timer (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1612), so the dash is
         // not handed straight back -- this is the reported "extra dash".
         for _ in 0..DASH_REFILL_COOLDOWN_TICKS {
             p.step(&Input::default(), std::slice::from_ref(&room));
@@ -3023,8 +3028,8 @@ mod tests {
 
     #[test]
     fn releasing_jump_mid_rise_resumes_gravity_without_a_cut() {
-        // Vanilla's release only stops the varJump clamp (122153-122155), with **no**
-        // extra speed cut: gravity continues from the current speed (122123). The second
+        // Vanilla's release only stops the varJump clamp (references/Celeste.exe.cs.d/Celeste/Player.cs:3902-3904), with **no**
+        // extra speed cut: gravity continues from the current speed (references/Celeste.exe.cs.d/Celeste/Player.cs:3872). The second
         // tick after jumping must be exactly jump speed + one frame of gravity, and the
         // clamp must not pull it back.
         let room = tall_room();
@@ -3269,15 +3274,25 @@ mod tests {
         // tick 1: StartDash + DashBegin -- zero speed, consume a dash, request the freeze.
         p.step(&dash, std::slice::from_ref(&room));
         assert_eq!(p.state, 2, "dash enters vanilla state 2");
-        assert_eq!(p.vel, Vec2::ZERO, "DashBegin zeroes Speed (122560)");
-        assert_eq!(p.dashes, 0, "StartDash consumes one dash (122471)");
+        assert_eq!(
+            p.vel,
+            Vec2::ZERO,
+            "DashBegin zeroes Speed (references/Celeste.exe.cs.d/Celeste/Player.cs:4309)"
+        );
+        assert_eq!(
+            p.dashes, 0,
+            "StartDash consumes one dash (references/Celeste.exe.cs.d/Celeste/Player.cs:4220)"
+        );
         assert_eq!(
             p.freeze_ticks, 3,
-            "Celeste.Freeze(0.05f) = 3 ticks (122540)"
+            "Celeste.Freeze(0.05f) = 3 ticks (references/Celeste.exe.cs.d/Celeste/Player.cs:4289)"
         );
         // tick 2: coroutine first segment -> speed = 4 px/tick.
         p.step(&dash, std::slice::from_ref(&room));
-        assert_eq!(p.vel.x, DASH_SPEED, "Speed = aim * 240 px/s (122745)");
+        assert_eq!(
+            p.vel.x, DASH_SPEED,
+            "Speed = aim * 240 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:4494)"
+        );
         assert_eq!(p.dash_dir.x, Fx::one(), "DashDir snaps to the aim axis");
         let after_first = p.pos.x;
         // tick 3..10: constant-speed dash.
@@ -3292,8 +3307,14 @@ mod tests {
         );
         // tick 11: coroutine ends -> last segment at 8/3 px/tick, back to State 0.
         p.step(&Input::default(), std::slice::from_ref(&room));
-        assert_eq!(p.state, 0, "the coroutine returns to Normal (122830)");
-        assert_eq!(p.vel.x, DASH_END_SPEED, "Speed = DashDir * 160 (122824)");
+        assert_eq!(
+            p.state, 0,
+            "the coroutine returns to Normal (references/Celeste.exe.cs.d/Celeste/Player.cs:4579)"
+        );
+        assert_eq!(
+            p.vel.x, DASH_END_SPEED,
+            "Speed = DashDir * 160 (references/Celeste.exe.cs.d/Celeste/Player.cs:4573)"
+        );
         let _ = x0;
     }
 
@@ -3310,35 +3331,38 @@ mod tests {
         };
         p.step(&dash, std::slice::from_ref(&room));
         assert_eq!(p.dashes, 0);
-        // `DashBegin` arms `dashRefillCooldownTimer = 0.1f` = 6 ticks (122534-122565) and
-        // the ground refill is the `else` of that timer (119843-119863), so the dash is
+        // `DashBegin` arms `dashRefillCooldownTimer = 0.1f` = 6 ticks (references/Celeste.exe.cs.d/Celeste/Player.cs:4283-4314) and
+        // the ground refill is the `else` of that timer (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1612), so the dash is
         // NOT refunded on the frame after the dash -- it comes back on tick 8.
         for _ in 0..DASH_REFILL_COOLDOWN_TICKS {
             p.step(&Input::default(), std::slice::from_ref(&room));
             assert_eq!(
                 p.dashes, 0,
-                "the refill cooldown blocks the ground refill (119843-119863)"
+                "the refill cooldown blocks the ground refill (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1612)"
             );
         }
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(
             p.dashes, 1,
-            "RefillDash once the 0.1s refill cooldown ran out (119843-119863)"
+            "RefillDash once the 0.1s refill cooldown ran out (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1612)"
         );
         assert_eq!(
             p.hair_color(),
             crate::sprites::hair_color::FLASH,
-            "lastDashes != Dashes flashes white (120268-120271)"
+            "lastDashes != Dashes flashes white (references/Celeste.exe.cs.d/Celeste/Player.cs:2017-2020)"
         );
-        // Dash 0.2s cooldown (122541): it starts on tick 1 and the coroutine ends on tick
+        // Dash 0.2s cooldown (references/Celeste.exe.cs.d/Celeste/Player.cs:4290): it starts on tick 1 and the coroutine ends on tick
         // 10 (phase 10 > DASH_TICKS), so the cooldown only reaches zero on tick 12.
         // Coroutine phases: tick 2 = first segment (phase 1), ending its last segment on
         // tick 11 -- 10 state ticks in all (1 entry + 9 of the 0.15s wait).
         for _ in 0..9 {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
-        assert_eq!(p.state, 0, "the dash coroutine ended (122830)");
-        // Cooldown gate (`dashCooldownTimer <= 0` in `CanDash` 119325-119340): reset the
+        assert_eq!(
+            p.state, 0,
+            "the dash coroutine ended (references/Celeste.exe.cs.d/Celeste/Player.cs:4579)"
+        );
+        // Cooldown gate (`dashCooldownTimer <= 0` in `CanDash` references/Celeste.exe.cs.d/Celeste/Player.cs:1074-1089): reset the
         // cooldown to its fresh-start value; pressing again immediately must be blocked,
         // and it is only allowed once it has fully decayed.
         p.dash_cooldown = DASH_COOLDOWN_TICKS;
@@ -3354,7 +3378,7 @@ mod tests {
         p.step(&again, std::slice::from_ref(&room));
         assert_eq!(p.state, 2, "after the cooldown a fresh dash starts");
         // The ground refill is again behind the 0.1s refill cooldown armed by `DashBegin`
-        // (119843-119863, 122534-122565), so the dash comes back 6 ticks later and the
+        // (references/Celeste.exe.cs.d/Celeste/Player.cs:1592-1612, references/Celeste.exe.cs.d/Celeste/Player.cs:4283-4314), so the dash comes back 6 ticks later and the
         // hair flashes white at that point.
         for _ in 0..DASH_REFILL_COOLDOWN_TICKS {
             p.step(&Input::default(), std::slice::from_ref(&room));
@@ -3364,13 +3388,13 @@ mod tests {
         assert_eq!(p.dashes, 1, "ground dash refills after the cooldown");
         assert_eq!(p.hair_color(), crate::sprites::hair_color::FLASH);
         // White flash 0.12s = 7 ticks: every tick with the timer > 0 shows FLASH (the else
-        // branch at 120286-120290); on the **next** tick after it reaches zero, the
+        // branch at references/Celeste.exe.cs.d/Celeste/Player.cs:2035-2039); on the **next** tick after it reaches zero, the
         // discrete branch returns NORMAL.
         for _ in 0..8 {
             p.step(&Input::default(), std::slice::from_ref(&room));
         }
         assert_eq!(p.hair_color(), crate::sprites::hair_color::NORMAL);
-        // Air exhaustion -> ease into USED (120258-120262): first spend the only dash
+        // Air exhaustion -> ease into USED (references/Celeste.exe.cs.d/Celeste/Player.cs:2007-2011): first spend the only dash
         // while airborne.
         let mut p2 = settled(&room, 40.0);
         let jump_then_dash = Input {
@@ -3426,7 +3450,7 @@ mod tests {
         // the wall).
         p.step(&Input::default(), std::slice::from_ref(&room));
         // Jump while holding toward the wall -- vanilla sets forceMoveX only when
-        // moveX != 0 (the `else if (moveX != 0)` at 120828-120838).
+        // moveX != 0 (the `else if (moveX != 0)` at references/Celeste.exe.cs.d/Celeste/Player.cs:2577-2587).
         let jump = Input {
             left: true,
             jump: true,
@@ -3435,14 +3459,17 @@ mod tests {
         p.step(&jump, std::slice::from_ref(&room));
         assert_eq!(
             p.vel.x, WALLJUMP_X,
-            "WallJump: Speed.X = 130 * dir (120836)"
+            "WallJump: Speed.X = 130 * dir (references/Celeste.exe.cs.d/Celeste/Player.cs:2585)"
         );
-        assert_eq!(p.vel.y, JUMP_SPEED, "WallJump: Speed.Y = -105 (120841)");
+        assert_eq!(
+            p.vel.y, JUMP_SPEED,
+            "WallJump: Speed.Y = -105 (references/Celeste.exe.cs.d/Celeste/Player.cs:2590)"
+        );
         assert_eq!(
             p.force_move_x, 1,
-            "WallJump forces moveX away from the wall (120828-120838)"
+            "WallJump forces moveX away from the wall (references/Celeste.exe.cs.d/Celeste/Player.cs:2577-2587)"
         );
-        // Within the forceMoveX window, opposite input is overridden (119883-119891).
+        // Within the forceMoveX window, opposite input is overridden (references/Celeste.exe.cs.d/Celeste/Player.cs:1632-1640).
         let push_left = Input {
             left: true,
             ..Input::default()
@@ -3452,7 +3479,7 @@ mod tests {
     }
 
     /// Jumping during a ground horizontal dash = super jump: 260 px/s * Facing, -105
-    /// (120740-120778).
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2489-2527).
     #[test]
     fn jumping_during_a_ground_dash_is_a_super_jump() {
         let room = wide_room();
@@ -3478,19 +3505,22 @@ mod tests {
         assert_eq!(p.state, 0, "SuperJump returns to Normal");
         assert_eq!(
             p.vel.x, SUPER_JUMP_X,
-            "SuperJump: Speed.X = 260 * Facing (120748)"
+            "SuperJump: Speed.X = 260 * Facing (references/Celeste.exe.cs.d/Celeste/Player.cs:2497)"
         );
-        assert_eq!(p.vel.y, JUMP_SPEED, "SuperJump: Speed.Y = -105 (120749)");
+        assert_eq!(
+            p.vel.y, JUMP_SPEED,
+            "SuperJump: Speed.Y = -105 (references/Celeste.exe.cs.d/Celeste/Player.cs:2498)"
+        );
     }
 
-    /// `Sprite.Scale` set by the super jump (0.6,1.4 at 120768) then springs back to 1
-    /// each tick through `UpdateSprite` (120302-120303, rate 1.75 * dt). The value is
+    /// `Sprite.Scale` set by the super jump (0.6,1.4 at references/Celeste.exe.cs.d/Celeste/Player.cs:2517) then springs back to 1
+    /// each tick through `UpdateSprite` (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052, rate 1.75 * dt). The value is
     /// consumed by the renderer (body squash about the origin) and by the hair root
-    /// offset (`-9 * Scale.Y`, 111117), so it must be tracked in the sim.
+    /// offset (`-9 * Scale.Y`, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:63), so it must be tracked in the sim.
     /// `Jump(particles: true)` queues the 4-particle landing-style puff at the bottom
-    /// centre (`Dust.Burst(BottomCenter, -PiOver2, 4, ...)`, 120710-120716) and sets the
-    /// vertical stretch (120708). `ClimbJump` passes `particles: false` and must stay
-    /// dust-free (120906).
+    /// centre (`Dust.Burst(BottomCenter, -PiOver2, 4, ...)`, references/Celeste.exe.cs.d/Celeste/Player.cs:2474-2482) and sets the
+    /// vertical stretch (references/Celeste.exe.cs.d/Celeste/Player.cs:2473). `ClimbJump` passes `particles: false` and must stay
+    /// dust-free (references/Celeste.exe.cs.d/Celeste/Player.cs:2655).
     #[test]
     fn a_normal_jump_queues_dust_but_a_climb_jump_does_not() {
         let room = wide_room();
@@ -3505,15 +3535,18 @@ mod tests {
         p.step(&jump, std::slice::from_ref(&room));
         let bursts = p.dust();
         assert_eq!(bursts.len(), 1, "one burst per jump, got {bursts:?}");
-        assert_eq!(bursts[0].count, 4, "Jump bursts 4 dust particles (120712)");
+        assert_eq!(
+            bursts[0].count, 4,
+            "Jump bursts 4 dust particles (references/Celeste.exe.cs.d/Celeste/Player.cs:2482)"
+        );
         assert_eq!(bursts[0].position, anchor, "burst sits at BottomCenter");
         assert!(
             (p.sprite_scale[0].to_f32() - 0.6).abs() < 0.01,
-            "Jump Scale.X = 0.6 (120708, got {})",
+            "Jump Scale.X = 0.6 (references/Celeste.exe.cs.d/Celeste/Player.cs:2473, got {})",
             p.sprite_scale[0].to_f32()
         );
 
-        // `ClimbJump` calls `Jump(particles: false, ...)` (120906), so the jump half of
+        // `ClimbJump` calls `Jump(particles: false, ...)` (references/Celeste.exe.cs.d/Celeste/Player.cs:2655), so the jump half of
         // that move stays dust-free. The wall-jump puff it emits separately is covered
         // by the wall-jump path, so this asserts the `particles: false` gate directly.
         let mut p = settled(&room, 40.0);
@@ -3527,7 +3560,7 @@ mod tests {
     }
 
     /// `DirectionalShake(DashDir, 0.2f)` fires once the dash direction is chosen
-    /// (122782-122785), and the service drains the request.
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:4531-4534), and the service drains the request.
     #[test]
     fn a_dash_queues_a_directional_shake() {
         let room = wide_room();
@@ -3550,7 +3583,11 @@ mod tests {
             Vec2::new(Fx::one(), Fx::zero()),
             "shake follows DashDir"
         );
-        assert_eq!(time, Fx::from_ratio(1, 5), "0.2s (122783)");
+        assert_eq!(
+            time,
+            Fx::from_ratio(1, 5),
+            "0.2s (references/Celeste.exe.cs.d/Celeste/Player.cs:4532)"
+        );
         assert!(
             p.take_shake_request().is_none(),
             "the request is drained exactly once"
@@ -3558,7 +3595,7 @@ mod tests {
     }
 
     /// A hard landing puffs 8 particles straight up; a slow one does not
-    /// (`if (Speed.Y >= 80f)`, 121588-121592).
+    /// (`if (Speed.Y >= 80f)`, references/Celeste.exe.cs.d/Celeste/Player.cs:3358-3361).
     #[test]
     fn only_a_fast_landing_queues_dust() {
         let room = tall_room();
@@ -3571,7 +3608,10 @@ mod tests {
         let anchor = p.anchor();
         let bursts = p.dust();
         assert_eq!(bursts.len(), 1, "a hard landing puffs once, got {bursts:?}");
-        assert_eq!(bursts[0].count, LAND_DUST_COUNT, "8 particles (121589)");
+        assert_eq!(
+            bursts[0].count, LAND_DUST_COUNT,
+            "8 particles (references/Celeste.exe.cs.d/Celeste/Player.cs:3360)"
+        );
         assert_eq!(bursts[0].position, anchor, "burst sits at Position");
 
         // A tiny drop (a few pixels) stays below the gate.
@@ -3607,15 +3647,15 @@ mod tests {
         p.step(&jump, std::slice::from_ref(&room));
         assert!(
             (p.sprite_scale[0].to_f32() - 0.6).abs() < 0.01,
-            "SuperJump Scale.X = 0.6 (120768, got {})",
+            "SuperJump Scale.X = 0.6 (references/Celeste.exe.cs.d/Celeste/Player.cs:2517, got {})",
             p.sprite_scale[0].to_f32()
         );
         assert!(
             (p.sprite_scale[1].to_f32() - 1.4).abs() < 0.01,
-            "SuperJump Scale.Y = 1.4 (120768, got {})",
+            "SuperJump Scale.Y = 1.4 (references/Celeste.exe.cs.d/Celeste/Player.cs:2517, got {})",
             p.sprite_scale[1].to_f32()
         );
-        // The spring-back runs per frame in `update_sprite` (120302-120303): `step` only
+        // The spring-back runs per frame in `update_sprite` (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052): `step` only
         // does movement/state, so call `update_visuals` to observe the decay toward 1.
         let grounded = Input::default();
         for _ in 0..3 {
@@ -3632,13 +3672,13 @@ mod tests {
         let settled_y = p.sprite_scale[1].to_f32();
         assert!(
             (settled_y - 1.0).abs() < 0.01,
-            "scale settles back at 1 (120302-120303, got {settled_y})"
+            "scale settles back at 1 (references/Celeste.exe.cs.d/Celeste/Player.cs:2051-2052, got {settled_y})"
         );
     }
 
-    /// `Player.OnTransition` (pureCeleste.cs:120540-120547) refills the dash and stamina
+    /// `Player.OnTransition` (references/Celeste.exe.cs.d/Celeste/Player.cs:2289-2296) refills the dash and stamina
     /// and re-arms the wall slide once a room transition completes (called at
-    /// pureCeleste.cs:115416). Regression: a wave dash over a room seam previously kept
+    /// references/Celeste.exe.cs.d/Celeste/Level.cs:1626). Regression: a wave dash over a room seam previously kept
     /// the spent dash and drained stamina.
     #[test]
     fn on_transition_refills_dash_and_stamina() {
@@ -3651,23 +3691,38 @@ mod tests {
             ..Input::default()
         };
         p.step(&dash, std::slice::from_ref(&room));
-        assert_eq!(p.dashes, 0, "the dash is consumed (122534)");
+        assert_eq!(
+            p.dashes, 0,
+            "the dash is consumed (references/Celeste.exe.cs.d/Celeste/Player.cs:4283)"
+        );
         p.stamina = Fx::from_ratio(-1, 1); // -1 (arbitrary drained value)
         p.coyote = 5;
         p.force_move_x_ticks = 3;
         p.wall_slide_ticks = 0;
         p.on_transition();
-        assert_eq!(p.dashes, p.max_dashes, "RefillDash (120545)");
-        assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "RefillStamina (120546)");
-        assert_eq!(p.coyote, 0, "jumpGraceTimer = 0 (120542)");
-        assert_eq!(p.force_move_x_ticks, 0, "forceMoveXTimer = 0 (120543)");
+        assert_eq!(
+            p.dashes, p.max_dashes,
+            "RefillDash (references/Celeste.exe.cs.d/Celeste/Player.cs:2295)"
+        );
+        assert_eq!(
+            p.stamina, CLIMB_MAX_STAMINA,
+            "RefillStamina (references/Celeste.exe.cs.d/Celeste/Player.cs:2296)"
+        );
+        assert_eq!(
+            p.coyote, 0,
+            "jumpGraceTimer = 0 (references/Celeste.exe.cs.d/Celeste/Player.cs:2291)"
+        );
+        assert_eq!(
+            p.force_move_x_ticks, 0,
+            "forceMoveXTimer = 0 (references/Celeste.exe.cs.d/Celeste/Player.cs:2292)"
+        );
         assert_eq!(
             p.wall_slide_ticks, WALLSLIDE_TICKS,
-            "wallSlideTimer = 1.2 (120541)"
+            "wallSlideTimer = 1.2 (references/Celeste.exe.cs.d/Celeste/Player.cs:2290)"
         );
     }
 
-    /// Vanilla `OnCollideV` (121577-121582): a **down-diagonal dash that lands** becomes a
+    /// Vanilla `OnCollideV` (references/Celeste.exe.cs.d/Celeste/Player.cs:3326-3331): a **down-diagonal dash that lands** becomes a
     /// horizontal duck slide -- `DashDir.Y = 0`, `Speed.Y = 0`, `Speed.X *= 1.2`,
     /// `Ducking = true`.
     ///
@@ -3689,23 +3744,27 @@ mod tests {
         assert_eq!(
             p.dash_dir.y,
             Fx::zero(),
-            "DashDir.Y must be zeroed on landing (121579)"
+            "DashDir.Y must be zeroed on landing (references/Celeste.exe.cs.d/Celeste/Player.cs:3328)"
         );
         assert_eq!(
             p.dash_dir.x,
             Fx::one(),
-            "DashDir.X collapses to the sign (121578)"
+            "DashDir.X collapses to the sign (references/Celeste.exe.cs.d/Celeste/Player.cs:3327)"
         );
-        assert_eq!(p.vel.y, Fx::zero(), "Speed.Y = 0 (121580)");
+        assert_eq!(
+            p.vel.y,
+            Fx::zero(),
+            "Speed.Y = 0 (references/Celeste.exe.cs.d/Celeste/Player.cs:3329)"
+        );
         assert!(
             p.ducking,
-            "Ducking = true: the landed diagonal dash is a duck slide (121582)"
+            "Ducking = true: the landed diagonal dash is a duck slide (references/Celeste.exe.cs.d/Celeste/Player.cs:3331)"
         );
         // Down-right dash is 240/sqrt(2) = 2.828 px/tick, x1.2 = 3.394 px/tick.
         let vx_ps = p.vel.x.to_f32() * 60.0;
         assert!(
             (vx_ps - 203.6).abs() < 0.5,
-            "Speed.X must be x1.2 of the diagonal dash (121581), got {vx_ps} px/s"
+            "Speed.X must be x1.2 of the diagonal dash (references/Celeste.exe.cs.d/Celeste/Player.cs:3330), got {vx_ps} px/s"
         );
     }
 
@@ -3713,8 +3772,8 @@ mod tests {
     /// the dash window.
     ///
     /// The landed dash is horizontal and ducking, so `DashUpdate`'s jump branch
-    /// (122632-122641, `|DashDir.Y| < 0.1`) reaches `SuperJump` and its ducked branch
-    /// (120753-120760) doubles down on the launch: `Speed.X = 260 * 1.25 = 325` px/s and
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:4391-4403, `|DashDir.Y| < 0.1`) reaches `SuperJump` and its ducked branch
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2502-2509) doubles down on the launch: `Speed.X = 260 * 1.25 = 325` px/s and
     /// `Speed.Y = -105 * 0.5 = -52.5` px/s.
     #[test]
     fn air_hyper_reaches_the_ducked_super_jump() {
@@ -3742,7 +3801,7 @@ mod tests {
             down: true,
             ..Input::default()
         };
-        // `on_ground` is the 1px probe vanilla uses too (119828), so it can read true one
+        // `on_ground` is the 1px probe vanilla uses too (references/Celeste.exe.cs.d/Celeste/Player.cs:1577), so it can read true one
         // tick before the movement actually collides; the conversion runs in the collision
         // handler (`OnCollideV` needs `Speed.Y > 0`), so wait for it to have happened.
         let mut ticks = 0;
@@ -3752,7 +3811,7 @@ mod tests {
         }
         assert!(p.on_ground, "fixture: the diagonal dash must land");
         assert_eq!(p.dash_dir.y, Fx::zero(), "the landed dash is horizontal");
-        assert!(p.ducking, "landing a diagonal dash duck-slides (121582)");
+        assert!(p.ducking, "landing a diagonal dash duck-slides (references/Celeste.exe.cs.d/Celeste/Player.cs:3331)");
         assert_eq!(p.state, 2, "still inside the dash window");
         // Jump inside the window: the ducked SuperJump (325 / -52.5).
         p.step(&jump, std::slice::from_ref(&room));
@@ -3761,22 +3820,25 @@ mod tests {
         let vy_ps = p.vel.y.to_f32() * 60.0;
         assert!(
             (vx_ps - 325.0).abs() < 1.0,
-            "hyper horizontal speed: 260 * 1.25 = 325 px/s (120748 + 120756), got {vx_ps}"
+            "hyper horizontal speed: 260 * 1.25 = 325 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:2497 + references/Celeste.exe.cs.d/Celeste/Player.cs:2505), got {vx_ps}"
         );
         assert!(
             (vy_ps + 52.5).abs() < 1.0,
-            "hyper vertical speed: -105 * 0.5 = -52.5 px/s (120749 + 120757), got {vy_ps}"
+            "hyper vertical speed: -105 * 0.5 = -52.5 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:2498 + references/Celeste.exe.cs.d/Celeste/Player.cs:2506), got {vy_ps}"
         );
-        assert!(!p.ducking, "the ducked branch clears Ducking (120755)");
+        assert!(
+            !p.ducking,
+            "the ducked branch clears Ducking (references/Celeste.exe.cs.d/Celeste/Player.cs:2504)"
+        );
         // The varJump clamp must keep the **halved** vertical speed for the whole window.
         // Regression: `varJumpSpeed` was set to -105 before the duck branch, so on the
         // next held-jump tick the clamp (`Speed.Y = min(Speed.Y, varJumpSpeed)`,
-        // 122134) yanked the wavedash back up to -105 at full speed -- high horizontal,
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:3883) yanked the wavedash back up to -105 at full speed -- high horizontal,
         // vertical not reduced. Vanilla assigns `varJumpSpeed = Speed.Y` *after* the duck
-        // branch (120767), so it is -52.5 here.
+        // branch (references/Celeste.exe.cs.d/Celeste/Player.cs:2516), so it is -52.5 here.
         assert_eq!(
             p.var_jump_speed, p.vel.y,
-            "varJumpSpeed = halved Speed.Y (120767)"
+            "varJumpSpeed = halved Speed.Y (references/Celeste.exe.cs.d/Celeste/Player.cs:2516)"
         );
         for _ in 0..5 {
             // Hold jump: the clamp keeps vertical pinned at -52.5 through the window.
@@ -3784,7 +3846,7 @@ mod tests {
             if p.var_jump > 0 {
                 assert!(
                     (p.vel.y.to_f32() * 60.0 + 52.5).abs() < 1.0,
-                    "held-jump varJump must stay at -52.5, got {} px/s (122134)",
+                    "held-jump varJump must stay at -52.5, got {} px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:3883)",
                     p.vel.y.to_f32() * 60.0
                 );
             }
@@ -3840,7 +3902,7 @@ mod tests {
         assert_eq!(
             p.pos.y.to_f32(),
             -43.0,
-            "landing must snap to the world edge of the floor (hitbox 11 tall, 118856)"
+            "landing must snap to the world edge of the floor (hitbox 11 tall, references/Celeste.exe.cs.d/Celeste/Player.cs:605)"
         );
 
         // Wall hit: the wall's left edge x = 96 -> the hitbox stops at 88 (the old
@@ -4051,9 +4113,9 @@ mod tests {
             idle.vel.y
         );
     }
-    /// Ducking: press down while grounded to enter (122004-122008), the hitbox switches
-    /// to 8x6 with its bottom edge aligned (118858), and releasing stands back up
-    /// (121996-122003).
+    /// Ducking: press down while grounded to enter (references/Celeste.exe.cs.d/Celeste/Player.cs:3753-3757), the hitbox switches
+    /// to 8x6 with its bottom edge aligned (references/Celeste.exe.cs.d/Celeste/Player.cs:607), and releasing stands back up
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:3745-3752).
     #[test]
     fn ducking_enters_exits_and_shrinks_the_hitbox() {
         let room = wide_room();
@@ -4065,16 +4127,16 @@ mod tests {
         p.step(&down, std::slice::from_ref(&room));
         assert!(
             p.ducking,
-            "crouch on the ground with down held (122004-122008)"
+            "crouch on the ground with down held (references/Celeste.exe.cs.d/Celeste/Player.cs:3753-3757)"
         );
         assert_eq!(p.box_dims(), (PLAYER_W_PX, DUCK_H, DUCK_Y_OFF));
         assert!(p.on_ground, "duck hitbox keeps the bottom edge aligned");
         p.step(&Input::default(), std::slice::from_ref(&room));
-        assert!(!p.ducking, "release down to stand back up (121996-122003)");
+        assert!(!p.ducking, "release down to stand back up (references/Celeste.exe.cs.d/Celeste/Player.cs:3745-3752)");
     }
 
     /// A grounded crouch cannot run: vanilla's duck branch replaces the run
-    /// acceleration entirely (`Player.cs:3681-3684` `if (Ducking && onGround) Speed.X =
+    /// acceleration entirely (`references/Celeste.exe.cs.d/Celeste/Player.cs:3681-3684` `if (Ducking && onGround) Speed.X =
     /// Approach(Speed.X, 0, 500*dt); else { ... }`), so holding a direction while
     /// crouched only decelerates.
     #[test]
@@ -4099,13 +4161,13 @@ mod tests {
         }
         assert!(
             p.vel.x.abs() < Fx::from_ratio(1, 2),
-            "a crouched player must not run (Player.cs:3681-3684); vx={:?}",
+            "a crouched player must not run (references/Celeste.exe.cs.d/Celeste/Player.cs:3681-3684); vx={:?}",
             p.vel.x
         );
     }
 
     /// A grounded crouch-dash plays the `duck` animation, not the standing `dash`
-    /// (`Player.cs:2105-2107` `else if (Ducking) Sprite.Play("duck")`). The engine
+    /// (`references/Celeste.exe.cs.d/Celeste/Player.cs:2105-2107` `Sprite.Play("duck");`). The engine
     /// previously fell through to `dash`.
     #[test]
     fn crouch_dash_uses_the_duck_animation() {
@@ -4129,18 +4191,18 @@ mod tests {
         p.update_visuals(&table, &down_dash, std::slice::from_ref(&room));
         assert!(
             p.ducking,
-            "a grounded crouch-dash keeps Ducking (122566-122573)"
+            "a grounded crouch-dash keeps Ducking (references/Celeste.exe.cs.d/Celeste/Player.cs:4315-4322)"
         );
         assert_eq!(
             p.anim_id.to_ascii_lowercase(),
             "duck",
-            "the crouch-dash must play `duck` (Player.cs:2105-2107)"
+            "the crouch-dash must play `duck` (references/Celeste.exe.cs.d/Celeste/Player.cs:2105-2107)"
         );
     }
 
     /// Climb: grab against a wall -> State 1; hanging drains stamina continuously (still
-    /// 10/s, 122278); landing refills it (119818-119823); releasing the grab lets go
-    /// (122211-122216).
+    /// 10/s, references/Celeste.exe.cs.d/Celeste/Player.cs:4027); landing refills it (references/Celeste.exe.cs.d/Celeste/Player.cs:1567-1572); releasing the grab lets go
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:3960-3965).
     #[test]
     fn climb_grabs_drains_stamina_and_lets_go() {
         let mut tiles = Tileset::new("Gameplay", 10, 16);
@@ -4173,22 +4235,25 @@ mod tests {
             ..Input::default()
         };
         p.step(&grab, std::slice::from_ref(&room));
-        assert_eq!(p.state, 1, "grabbing a wall enters Climb (121843-121849)");
+        assert_eq!(p.state, 1, "grabbing a wall enters Climb (references/Celeste.exe.cs.d/Celeste/Player.cs:3592-3598)");
         let before = p.stamina;
         for _ in 0..12 {
             p.step(&grab, std::slice::from_ref(&room));
         }
         assert!(
             p.stamina < before,
-            "hanging drains stamina at 10/s (122278-122280)"
+            "hanging drains stamina at 10/s (references/Celeste.exe.cs.d/Celeste/Player.cs:4027-4029)"
         );
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "ground refills stamina");
-        assert_eq!(p.state, 0, "releasing grab leaves Climb (122211-122216)");
+        assert_eq!(
+            p.state, 0,
+            "releasing grab leaves Climb (references/Celeste.exe.cs.d/Celeste/Player.cs:3960-3965)"
+        );
     }
 
     /// NormalUpdate returning state 1 still runs the outer movement after ClimbBegin
-    /// (`pureCeleste.cs:121843-121849` and `pureCeleste.cs:120049-120056`).
+    /// (`references/Celeste.exe.cs.d/Celeste/Player.cs:3592-3598` and `references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805`).
     #[test]
     fn grabbing_applies_the_scaled_fall_speed_immediately() {
         let room = wall_room(true);
@@ -4216,8 +4281,8 @@ mod tests {
     }
 
     /// The outer `Player.Update` applies `MoveV(Speed.Y * dt)` after `ClimbUpdate`
-    /// returns (`pureCeleste.cs:120053-120056`), including the tick that ClimbJump
-    /// selects state 0 (`pureCeleste.cs:122193-122205`).
+    /// returns (`references/Celeste.exe.cs.d/Celeste/Player.cs:1802-1805`), including the tick that ClimbJump
+    /// selects state 0 (`references/Celeste.exe.cs.d/Celeste/Player.cs:3942-3954`).
     #[test]
     fn climb_jump_moves_on_its_activation_tick() {
         let room = wall_room(true);
@@ -4245,7 +4310,7 @@ mod tests {
     }
 
     /// Exhaustion also returns to state 0 before the outer movement
-    /// (`pureCeleste.cs:122354-122358` and `pureCeleste.cs:120049-120056`).
+    /// (`references/Celeste.exe.cs.d/Celeste/Player.cs:4103-4107` and `references/Celeste.exe.cs.d/Celeste/Player.cs:1798-1805`).
     #[test]
     fn climb_exhaustion_still_applies_the_last_climb_velocity() {
         let room = wall_room(true);
@@ -4275,8 +4340,8 @@ mod tests {
     }
 
     /// ClimbBegin and the jump/dash transitions clear a stale wall boost
-    /// (`pureCeleste.cs:122147`, `120703`, `120747`, `120816`, `120876`,
-    /// `121794-121797`, each `wallBoostTimer = 0f`).
+    /// (`references/Celeste.exe.cs.d/Celeste/Player.cs:3896`, `references/Celeste.exe.cs.d/Celeste/Player.cs:2452`, `references/Celeste.exe.cs.d/Celeste/Player.cs:2496`, `references/Celeste.exe.cs.d/Celeste/Player.cs:2565`, `references/Celeste.exe.cs.d/Celeste/Player.cs:2625`,
+    /// `references/Celeste.exe.cs.d/Celeste/Player.cs:3543-3546`, each `wallBoostTimer = 0f`).
     #[test]
     fn transitions_cancel_an_unused_wall_boost() {
         let room = wall_room(true);
@@ -4307,9 +4372,9 @@ mod tests {
         assert_eq!(p.wall_boost_ticks, 0, "NormalEnd on a dash");
     }
 
-    /// `pureCeleste.cs:121832` `Input.GrabCheck && !IsTired && !Ducking` prevents an
+    /// `references/Celeste.exe.cs.d/Celeste/Player.cs:3581` `Input.GrabCheck && !IsTired && !Ducking` prevents an
     /// exhausted player from grabbing again. The check uses `CheckStamina`, so the climb
-    /// jump's temporary boost adds its 27.5 cost back (`pureCeleste.cs:119305-119307`).
+    /// jump's temporary boost adds its 27.5 cost back (`references/Celeste.exe.cs.d/Celeste/Player.cs:1054-1056`).
     #[test]
     fn tired_grabbing_uses_effective_stamina() {
         let room = wall_room(true);
@@ -4325,7 +4390,7 @@ mod tests {
         tired.step(&grab, std::slice::from_ref(&room));
         assert_eq!(
             tired.state, 0,
-            "CheckStamina < 20 cannot grab (pureCeleste.cs:119299)"
+            "CheckStamina < 20 cannot grab (references/Celeste.exe.cs.d/Celeste/Player.cs:1048)"
         );
 
         let mut boosted = settled(&room, 56.0);
@@ -4337,7 +4402,7 @@ mod tests {
         boosted.step(&grab, std::slice::from_ref(&room));
         assert_eq!(
             boosted.state, 1,
-            "wallBoostTimer adds 27.5 for this check (pureCeleste.cs:119305-119307)"
+            "wallBoostTimer adds 27.5 for this check (references/Celeste.exe.cs.d/Celeste/Player.cs:1054-1056)"
         );
 
         boosted.stamina = CLIMB_TIRED_THRESHOLD;
@@ -4349,7 +4414,7 @@ mod tests {
     }
 
     /// The 1-2px upward grab correction is gated on not holding down
-    /// (`pureCeleste.cs:121852` `(float)Input.MoveY < 1f`). A direct wall grab is still
+    /// (`references/Celeste.exe.cs.d/Celeste/Player.cs:3601` `(float)Input.MoveY < 1f`). A direct wall grab is still
     /// allowed with down held; only the vertical snap is skipped.
     #[test]
     fn holding_down_skips_the_two_pixel_grab_snap() {
@@ -4388,15 +4453,15 @@ mod tests {
 
     /// A jump while grabbing the wall the player faces is a `ClimbJump`, not a wall jump.
     ///
-    /// Vanilla branches on six conditions (122063-122076): facing the wall, grab held,
+    /// Vanilla branches on six conditions (references/Celeste.exe.cs.d/Celeste/Player.cs:3812-3825): facing the wall, grab held,
     /// stamina left, no carry, no grab assist, no `ClimbBlocker`. The first three are the
     /// ones that vary here. The distinguishing numbers come from `ClimbJump()`
-    /// (120902-120928): a plain `Jump()` vertical (-105 px/s, 120705) with **no**
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2651-2677): a plain `Jump()` vertical (-105 px/s, references/Celeste.exe.cs.d/Celeste/Player.cs:2454) with **no**
     /// horizontal impulse -- `WallJump` would instead set 130 px/s away from the wall
-    /// (120836) -- and 27.5 stamina spent when airborne (120904-120906).
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:2585) -- and 27.5 stamina spent when airborne (references/Celeste.exe.cs.d/Celeste/Player.cs:2653-2655).
     ///
     /// This branch is what makes the corner boost work: with no horizontal input the climb
-    /// jump also arms the 0.2 s `wallBoostTimer` (120910-120913), which re-applies 130 px/s
+    /// jump also arms the 0.2 s `wallBoostTimer` (references/Celeste.exe.cs.d/Celeste/Player.cs:2659-2662), which re-applies 130 px/s
     /// toward the wall once the player pushes that way.
     #[test]
     fn a_grab_jump_into_the_wall_is_a_climb_jump() {
@@ -4408,12 +4473,15 @@ mod tests {
             ..Input::default()
         };
         // Lift the player off the floor first: `ClimbJump` only spends stamina when
-        // airborne (120904-120906), and standing on the ground next to a wall keeps
+        // airborne (references/Celeste.exe.cs.d/Celeste/Player.cs:2653-2655), and standing on the ground next to a wall keeps
         // `onGround` true through the climb tick.
         p.pos.y -= Fx::from_int(16);
         p.on_ground = false;
         p.step(&grab, std::slice::from_ref(&room));
-        assert_eq!(p.state, 1, "grab enters Climb (121843-121849)");
+        assert_eq!(
+            p.state, 1,
+            "grab enters Climb (references/Celeste.exe.cs.d/Celeste/Player.cs:3592-3598)"
+        );
         assert!(!p.on_ground, "fixture: the climb starts airborne");
         let stamina = p.stamina;
 
@@ -4424,29 +4492,32 @@ mod tests {
             ..Input::default()
         };
         p.step(&jump, std::slice::from_ref(&room));
-        assert_eq!(p.state, 0, "the climb jump leaves Climb (122193-122205)");
+        assert_eq!(
+            p.state, 0,
+            "the climb jump leaves Climb (references/Celeste.exe.cs.d/Celeste/Player.cs:3942-3954)"
+        );
         assert_eq!(
             p.vel.x,
             Fx::zero(),
-            "ClimbJump adds no horizontal impulse, unlike WallJump's 130 px/s (120836)"
+            "ClimbJump adds no horizontal impulse, unlike WallJump's 130 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:2585)"
         );
         assert_eq!(
             p.vel.y, JUMP_SPEED,
-            "the climb jump is a plain Jump() vertical (120705)"
+            "the climb jump is a plain Jump() vertical (references/Celeste.exe.cs.d/Celeste/Player.cs:2454)"
         );
         assert_eq!(
             p.stamina,
             stamina - CLIMBJUMP_DRAIN,
-            "27.5 stamina when airborne (120904-120906)"
+            "27.5 stamina when airborne (references/Celeste.exe.cs.d/Celeste/Player.cs:2653-2655)"
         );
         assert_eq!(
             p.wall_boost_ticks, WALL_BOOST_TICKS,
-            "no horizontal input arms the 0.2 s wall boost (120910-120913)"
+            "no horizontal input arms the 0.2 s wall boost (references/Celeste.exe.cs.d/Celeste/Player.cs:2659-2662)"
         );
     }
 
     /// Holding a direction into the wall does not arm the wall boost: vanilla only sets
-    /// `wallBoostTimer` when `moveX == 0` (120910-120913).
+    /// `wallBoostTimer` when `moveX == 0` (references/Celeste.exe.cs.d/Celeste/Player.cs:2659-2662).
     #[test]
     fn a_climb_jump_with_direction_skips_the_wall_boost() {
         let room = wall_room(true);
@@ -4471,7 +4542,7 @@ mod tests {
         );
         assert_eq!(
             p.wall_boost_ticks, 0,
-            "moveX != 0 skips the boost window (120910-120913)"
+            "moveX != 0 skips the boost window (references/Celeste.exe.cs.d/Celeste/Player.cs:2659-2662)"
         );
     }
 
@@ -4479,7 +4550,7 @@ mod tests {
     ///
     /// The fixture grabs the wall first (which sets `Facing` toward it) and then releases
     /// grab while pressing jump, so `WallJumpCheck` finds the solid and `ClimbJump`'s
-    /// grab condition fails -- exactly the vanilla branch split at 122063-122076.
+    /// grab condition fails -- exactly the vanilla branch split at references/Celeste.exe.cs.d/Celeste/Player.cs:3812-3825.
     #[test]
     fn a_jump_off_the_wall_without_grab_is_a_wall_jump() {
         let room = wall_room(true);
@@ -4494,7 +4565,7 @@ mod tests {
         p.step(&grab, std::slice::from_ref(&room));
         assert_eq!(p.state, 1, "fixture: climbing before the jump");
         // Pressing *away* from the wall is the `WallJump` half of `ClimbUpdate`'s jump
-        // branch (122193-122205: `if (moveX == -Facing) WallJump(-Facing) else ClimbJump()`);
+        // branch (references/Celeste.exe.cs.d/Celeste/Player.cs:3942-3954: `if (moveX == -Facing) WallJump(-Facing) else ClimbJump()`);
         // with no direction it would be a `ClimbJump` instead.
         let away = Input {
             jump: true,
@@ -4504,7 +4575,7 @@ mod tests {
         p.step(&away, std::slice::from_ref(&room));
         assert_eq!(
             p.vel.x, -WALLJUMP_X,
-            "a wall jump pushes 130 px/s away from the wall (120836)"
+            "a wall jump pushes 130 px/s away from the wall (references/Celeste.exe.cs.d/Celeste/Player.cs:2585)"
         );
     }
 
@@ -4516,9 +4587,9 @@ mod tests {
     /// A single animation table good enough for these tests: only id / frame count /
     /// interval / goto matter, and the frame names are arbitrary.
     ///
-    /// Keys must be lowercase (the Monocle dictionary is `OrdinalIgnoreCase`, 10206);
+    /// Keys must be lowercase (the Monocle dictionary is `OrdinalIgnoreCase`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:81);
     /// `goto` keeps the exact casing from the XML (vanilla
-    /// `CurrentAnimationID = Goto`, 10279-10284).
+    /// `CurrentAnimationID = Goto`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:154-159).
     fn anim_table() -> crate::sprites::AnimationTable {
         use crate::sprites::{AnimDef, AnimationTable, SpriteDef};
         use std::collections::HashMap;
@@ -4578,10 +4649,10 @@ mod tests {
     /// Walk right two steps then left two steps: it must actually play a run animation
     /// (frames advancing), not slide while holding the idle pose.
     ///
-    /// Regression point: `PlayerSprite.Running` (pureCeleste.cs:111375-111388) reads
+    /// Regression point: `PlayerSprite.Running` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:169-182) reads
     /// `LastAnimationID`. It was once written as "the current animation has a goto", and
     /// since `idle` carries `<Loop>` (goto=idle) -> `!Sprite.Running` was always false ->
-    /// the `runSlow`/`runFast` at 120447-120455 could never play and the character merely
+    /// the `runSlow`/`runFast` at references/Celeste.exe.cs.d/Celeste/Player.cs:2196-2204 could never play and the character merely
     /// appeared to slide. Storing the **old** id in `Play` caused the same symptom after a
     /// stop; see `walking_again_after_stopping_animates`.
     #[test]
@@ -4600,7 +4671,7 @@ mod tests {
             ..Input::default()
         };
 
-        // Standing still: the start animation is idle (the sprite's start, 10189).
+        // Standing still: the start animation is idle (the sprite's start, references/Celeste.exe.cs.d/Monocle/SpriteData.cs:87-90).
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.anim_id, "idle");
         assert!(
@@ -4616,7 +4687,7 @@ mod tests {
             p.update_visuals(&table, &right, std::slice::from_ref(&room));
             assert!(
                 matches!(p.anim_id.as_str(), "runSlow" | "runFast"),
-                "walking right but playing {:?} (120464-120470)",
+                "walking right but playing {:?} (references/Celeste.exe.cs.d/Celeste/Player.cs:2213-2219)",
                 p.anim_id
             );
             seen.insert((p.anim_id.clone(), p.anim_frame));
@@ -4628,12 +4699,12 @@ mod tests {
         );
         assert!(p.pos.x > x0, "walking right must actually move right");
 
-        // ---- Turn and go left: flip first (120455-120459); when flip ends it gotos runFast ----
+        // ---- Turn and go left: flip first (references/Celeste.exe.cs.d/Celeste/Player.cs:2204-2208); when flip ends it gotos runFast ----
         p.step(&left, std::slice::from_ref(&room));
         p.update_visuals(&table, &left, std::slice::from_ref(&room));
         assert!(
             matches!(p.anim_id.as_str(), "flip" | "skid"),
-            "a fast reversal should play flip/skid first (120441-120459), actually {:?}",
+            "a fast reversal should play flip/skid first (references/Celeste.exe.cs.d/Celeste/Player.cs:2190-2208), actually {:?}",
             p.anim_id
         );
 
@@ -4660,7 +4731,7 @@ mod tests {
     ///
     /// Regression: `Play` used to store the **old** id in `LastAnimationID`, so after
     /// "run -> stop (Play idle)" the value stayed `runFast`; `Running` therefore stayed
-    /// true, the `!Sprite.Running` guard at 120447 never fired again and the character
+    /// true, the `!Sprite.Running` guard at references/Celeste.exe.cs.d/Celeste/Player.cs:2196 never fired again and the character
     /// slid at full run speed holding the idle pose.
     #[test]
     fn walking_again_after_stopping_animates() {
@@ -4699,11 +4770,11 @@ mod tests {
         }
     }
 
-    /// `LastAnimationID` holds the animation **just played** (pureCeleste.cs:10491-10492:
-    /// `(CurrentAnimationID = id)` evaluates to `id`), and `Running` (111375-111388) reads
+    /// `LastAnimationID` holds the animation **just played** (references/Celeste.exe.cs.d/Monocle/Sprite.cs:366-367:
+    /// `(CurrentAnimationID = id)` evaluates to `id`), and `Running` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:169-182) reads
     /// it as "the most recently played animation starts with `run`, or is `flip`".
     ///
-    /// That is what re-arms the `!Sprite.Running` guard at 120447 after a stop:
+    /// That is what re-arms the `!Sprite.Running` guard at references/Celeste.exe.cs.d/Celeste/Player.cs:2196 after a stop:
     /// `Play("idle")` leaves `LastAnimationID = "idle"`, so the next run animation plays.
     /// Recording the *old* id here was the "walks in the idle pose" regression.
     #[test]
@@ -4724,7 +4795,7 @@ mod tests {
         assert_eq!(p.last_anim_id, "runSlow");
         assert!(p.running());
 
-        // flip special case: `if (LastAnimationID == "flip") return true` (111381-111384).
+        // flip special case: `if (LastAnimationID == "flip") return true` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:175-178).
         p.play(&table, "flip");
         assert!(p.running());
         p.play(&table, "runFast");
@@ -4742,7 +4813,7 @@ mod tests {
         assert!(p.running());
     }
 
-    /// The goto branch (pureCeleste.cs:10260-10282) writes the new id into
+    /// The goto branch (references/Celeste.exe.cs.d/Monocle/Sprite.cs:135-157) writes the new id into
     /// `LastAnimationID` -- the same "the animation just played" rule as `Play`.
     #[test]
     fn animation_goto_writes_the_target_into_last_anim_id() {
@@ -4759,13 +4830,13 @@ mod tests {
         );
         assert_eq!(
             p.last_anim_id, "runFast",
-            "the goto branch records the target it switched to (pureCeleste.cs:10267)"
+            "the goto branch records the target it switched to (references/Celeste.exe.cs.d/Monocle/Sprite.cs:142)"
         );
         assert!(p.running());
     }
 
     /// The idle branch's speed threshold is 25 px/s, **not** the 45 px/s of
-    /// runSlow/runFast (pureCeleste.cs:120402 vs pureCeleste.cs:120449).
+    /// runSlow/runFast (references/Celeste.exe.cs.d/Celeste/Player.cs:2151 vs references/Celeste.exe.cs.d/Celeste/Player.cs:2198).
     #[test]
     fn idle_branch_uses_the_vanilla_25px_s_threshold() {
         let room = wide_room();
@@ -4787,7 +4858,7 @@ mod tests {
         assert_eq!(p.anim_id, "idle");
     }
 
-    /// Super wall jump pins the vanilla values (pureCeleste.cs:120877-120880).
+    /// Super wall jump pins the vanilla values (references/Celeste.exe.cs.d/Celeste/Player.cs:2626-2629).
     #[test]
     fn super_wall_jump_pins_vanilla_speeds() {
         let mut p = Player::new(Vec2::ZERO);
@@ -4795,8 +4866,14 @@ mod tests {
         assert_eq!(p.vel.x, Fx::from_ratio(17, 6), "Speed.X = 170f * dir");
         assert_eq!(p.vel.y, Fx::from_ratio(-8, 3), "Speed.Y = -160f");
         assert_eq!(p.var_jump_speed, p.vel.y, "varJumpSpeed = Speed.Y");
-        assert_eq!(p.var_jump, 15, "varJumpTimer = 0.25s (120870)");
-        assert_eq!(p.auto_jump, 0, "AutoJump = false (120871)");
+        assert_eq!(
+            p.var_jump, 15,
+            "varJumpTimer = 0.25s (references/Celeste.exe.cs.d/Celeste/Player.cs:2619)"
+        );
+        assert_eq!(
+            p.auto_jump, 0,
+            "AutoJump = false (references/Celeste.exe.cs.d/Celeste/Player.cs:2620)"
+        );
         assert_eq!(p.state, 0);
     }
 
@@ -4851,7 +4928,7 @@ mod tests {
         }
     }
 
-    // -- corner correction + pose probes (pureCeleste.cs:121435-121655) ----------------
+    // -- corner correction + pose probes (references/Celeste.exe.cs.d/Celeste/Player.cs:3184-3404) ----------------
 
     /// A room with a floor on the last row plus the given extra solid cells.
     fn corner_room(w: u32, h: u32, extra: &[(u32, u32)]) -> Room {
@@ -4879,7 +4956,7 @@ mod tests {
         }
     }
 
-    /// Vanilla `OnCollideV` (121625-121646): clipping the corner of a ceiling tile nudges
+    /// Vanilla `OnCollideV` (references/Celeste.exe.cs.d/Celeste/Player.cs:3374-3395): clipping the corner of a ceiling tile nudges
     /// the head sideways and **keeps** `Speed.Y`, because the early `return` skips the
     /// `Speed.Y = 0` tail.
     #[test]
@@ -4897,7 +4974,7 @@ mod tests {
     }
 
     /// A ceiling with no free corner within the 4px reach stops the jump and cuts a
-    /// nearly finished `varJump` (121662-121665).
+    /// nearly finished `varJump` (references/Celeste.exe.cs.d/Celeste/Player.cs:3411-3414).
     #[test]
     fn ceiling_bonk_stops_the_jump_and_cuts_var_jump() {
         let room = corner_room(4, 6, &[(0, 1), (1, 1), (2, 1), (3, 1)]);
@@ -4920,9 +4997,9 @@ mod tests {
         assert_eq!(p.var_jump, 10, "0.15s or more survives the bonk");
     }
 
-    /// Vanilla `CanUnDuck` (119281-119295) probes the **normal** hitbox, so a ducked
-    /// player under a 1-tile gap cannot stand up; `CanUnDuckAt` (121168-121175) answers
-    /// for a neighbouring column (121884-121889).
+    /// Vanilla `CanUnDuck` (references/Celeste.exe.cs.d/Celeste/Player.cs:1030-1044) probes the **normal** hitbox, so a ducked
+    /// player under a 1-tile gap cannot stand up; `CanUnDuckAt` (references/Celeste.exe.cs.d/Celeste/Player.cs:2917-2924) answers
+    /// for a neighbouring column (references/Celeste.exe.cs.d/Celeste/Player.cs:3633-3638).
     #[test]
     fn ducking_under_a_gap_cannot_stand() {
         // Overhang at (0, 3) = x 0..8, y 24..32: the 6px duck box fits in y 34..40, the
@@ -4943,7 +5020,7 @@ mod tests {
         assert!(p.can_unduck(std::slice::from_ref(&room)));
     }
 
-    /// Vanilla `OnCollideH` (121432-121437): a **grounded** dash whose duck box fits past
+    /// Vanilla `OnCollideH` (references/Celeste.exe.cs.d/Celeste/Player.cs:3181-3186): a **grounded** dash whose duck box fits past
     /// the obstacle crouches and keeps sliding instead of stopping.
     #[test]
     fn grounded_dash_into_an_overhang_crouches() {
@@ -4968,7 +5045,7 @@ mod tests {
         );
     }
 
-    /// Vanilla `OnCollideH`'s dash branch (121439-121456): a horizontal dash that clips a
+    /// Vanilla `OnCollideH`'s dash branch (references/Celeste.exe.cs.d/Celeste/Player.cs:3188-3205): a horizontal dash that clips a
     /// corner by a pixel or two slips past it instead of stopping.
     #[test]
     fn horizontal_dash_slips_past_a_ceiling_corner() {
@@ -4993,9 +5070,9 @@ mod tests {
         assert_eq!(p.vel.y, Fx::zero());
     }
 
-    /// Vanilla `OnCollideV` (121536-121556): a dash that **started in the air** and clips
+    /// Vanilla `OnCollideV` (references/Celeste.exe.cs.d/Celeste/Player.cs:3285-3305): a dash that **started in the air** and clips
     /// the side of a platform slides off it instead of landing; a ground-started dash
-    /// lands normally (`dashStartedOnGround`, 122537).
+    /// lands normally (`dashStartedOnGround`, references/Celeste.exe.cs.d/Celeste/Player.cs:4286).
     #[test]
     fn air_dash_landing_correction_slips_off_the_ledge() {
         // Floor over columns 0..2 only: column 3 is a hole.
@@ -5043,7 +5120,7 @@ mod tests {
 
     /// The hair root is the frame's `HairOffset` mirrored by facing, 9px above the anchor
     /// (vanilla `Nodes[0] = RenderPosition + (0, -9) + HairOffset * (Facing, 1)`,
-    /// 111116-111117). Regression: this used to be the fixed offset `(0, -2)`.
+    /// references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62-63). Regression: this used to be the fixed offset `(0, -2)`.
     #[test]
     fn hair_root_follows_the_per_frame_offset_and_facing() {
         let room = wide_room();
@@ -5057,8 +5134,8 @@ mod tests {
         assert_eq!(p.hair_nodes()[0], p.anchor() + Vec2::from_f32s(-1.0, -10.0));
     }
 
-    /// `PlayerHair.Start` drops the chain 200px to the side (111104-111111) and the first
-    /// tick only clamps it back to [`HAIR_MAX_SEGMENT`] from the head (111132), so the
+    /// `PlayerHair.Start` drops the chain 200px to the side (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:50-57) and the first
+    /// tick only clamps it back to [`HAIR_MAX_SEGMENT`] from the head (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:78), so the
     /// hair swings in instead of teleporting onto the skull.
     #[test]
     fn hair_chain_starts_at_the_clamp_behind_the_head() {
@@ -5081,7 +5158,7 @@ mod tests {
 
     /// Standing still, the chain converges on the static step chain
     /// `(0-Facing)*StepInFacingPerSegment + (0, 2)` per node with node 1 using twice the
-    /// facing step (111118) and the defaults of 119982-119987.
+    /// facing step (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:64) and the defaults of references/Celeste.exe.cs.d/Celeste/Player.cs:1731-1736.
     #[test]
     fn hair_chain_settles_on_the_step_chain() {
         let room = wide_room();
@@ -5109,8 +5186,8 @@ mod tests {
     }
 
     /// A room transition freezes the chain (`TransitionTo` -> `UpdateHair(false)`,
-    /// 119605-119608 / 120294-120296), but the very next normal tick arms it again
-    /// (`Player.UpdateHair(applyGravity: true)`, 120062-120064). Without the re-arm the
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:1354-1357 / references/Celeste.exe.cs.d/Celeste/Player.cs:2043-2045), but the very next normal tick arms it again
+    /// (`Player.UpdateHair(applyGravity: true)`, references/Celeste.exe.cs.d/Celeste/Player.cs:1811-1813). Without the re-arm the
     /// flag stays false forever and the hair hangs mid-air as soon as the player crosses
     /// a room seam.
     #[test]
@@ -5121,12 +5198,12 @@ mod tests {
         p.update_hair_rigid(&table);
         assert!(
             !p.simulate_motion,
-            "a transition freezes the chain (120294-120296)"
+            "a transition freezes the chain (references/Celeste.exe.cs.d/Celeste/Player.cs:2043-2045)"
         );
         p.update_visuals(&table, &Input::default(), std::slice::from_ref(&room));
         assert!(
             p.simulate_motion,
-            "a normal tick re-arms the chain (120062-120064)"
+            "a normal tick re-arms the chain (references/Celeste.exe.cs.d/Celeste/Player.cs:1811-1813)"
         );
     }
 
@@ -5161,8 +5238,8 @@ mod tests {
 
     /// `ClimbHop()` over the top of a wall must NOT launch immediately: while the wall
     /// is still beside the player vanilla stores `hopWaitX`/`hopWaitXSpeed` and only
-    /// applies the 100 px/s push once the solid clears (122381-122388 and
-    /// 119915-119920). Without the wall beside the player the push is immediate.
+    /// applies the 100 px/s push once the solid clears (references/Celeste.exe.cs.d/Celeste/Player.cs:4130-4137 and
+    /// references/Celeste.exe.cs.d/Celeste/Player.cs:1664-1669). Without the wall beside the player the push is immediate.
     #[test]
     fn climb_hop_defers_the_push_until_the_wall_is_clear() {
         // Wall still beside the player -> the push is deferred, Speed.X untouched.
@@ -5172,10 +5249,13 @@ mod tests {
         assert!(p.hits(std::slice::from_ref(&walled), p.pos.x + Fx::one(), p.pos.y));
         p.climb_hop(std::slice::from_ref(&walled));
         assert!(p.climb_hop_solid, "the wall is still beside the player");
-        assert_eq!(p.hop_wait_x, 1, "hopWaitX = Facing (122383)");
+        assert_eq!(
+            p.hop_wait_x, 1,
+            "hopWaitX = Facing (references/Celeste.exe.cs.d/Celeste/Player.cs:4132)"
+        );
         assert_eq!(
             p.hop_wait_x_speed, CLIMB_HOP_X,
-            "hopWaitXSpeed = Facing * 100 px/s (122384)"
+            "hopWaitXSpeed = Facing * 100 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:4133)"
         );
         assert_eq!(
             p.vel.x,
@@ -5191,7 +5271,7 @@ mod tests {
         assert_eq!(p.hop_wait_x, 0, "the deferred push resolves once clear");
         assert!(
             p.vel.x > Fx::from_int(1),
-            "the saved 100 px/s push is applied (122388), vx={:?}",
+            "the saved 100 px/s push is applied (references/Celeste.exe.cs.d/Celeste/Player.cs:4137), vx={:?}",
             p.vel.x
         );
 
@@ -5209,7 +5289,7 @@ mod tests {
     }
 
     /// Running stretches the tail: each node eases toward a target one step behind its
-    /// parent, so at speed it sits exactly on the 3px clamp (111123-111132).
+    /// parent, so at speed it sits exactly on the 3px clamp (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:69-78).
     #[test]
     fn hair_chain_is_stretched_while_running() {
         let room = wide_room();
@@ -5241,9 +5321,9 @@ mod tests {
         );
     }
 
-    /// Two stocked dashes lengthen the tail to five segments (119986) and pull it
+    /// Two stocked dashes lengthen the tail to five segments (references/Celeste.exe.cs.d/Celeste/Player.cs:1735) and pull it
     /// backwards with `StepPerSegment.x = sin(2 * TimeActive) * 0.7 - Facing * 3`
-    /// (119965-119975).
+    /// (references/Celeste.exe.cs.d/Celeste/Player.cs:1714-1724).
     #[test]
     fn two_dashes_lengthen_and_pull_back_the_hair() {
         let room = wide_room();

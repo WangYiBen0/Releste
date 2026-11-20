@@ -166,7 +166,7 @@ pub struct GpuRenderer {
     /// Actual viewport size.
     viewport: (u32, u32),
     /// Clear color (the vanilla `Level`'s `<Style color=...>` -> `BackgroundColor`;
-    /// see `pureCeleste.cs:112430-112436` for the `MapData`/`Style` parsing).
+    /// see `references/Celeste.exe.cs.d/Celeste/MapData.cs:155-161` for the `MapData`/`Style` parsing).
     /// Defaults to pure black, matching the vanilla `Level.BackgroundColor` default.
     clear_color: wgpu::Color,
 }
@@ -216,7 +216,7 @@ impl GpuRenderer {
         let caps = surface.get_capabilities(&adapter);
         // Vanilla (FNA/MonoGame) composites in **gamma** space: the atlas art is 8-bit sRGB-encoded
         // data and every tint multiplies those raw values (`Color * alpha`,
-        // `pureCeleste.cs:111155-111199`). An sRGB swapchain decodes the atlas and re-encodes the
+        // `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:101-145`). An sRGB swapchain decodes the atlas and re-encodes the
         // result, so a non-white tint comes out lighter than vanilla -- the hair tint #AC3232
         // rendered as about #D65454. Prefer a plain (gamma) swapchain and upload atlases as
         // `Rgba8Unorm`; when a backend only offers sRGB, `fs_main_encoded` pre-decodes the product
@@ -427,7 +427,7 @@ impl GpuRenderer {
     /// Sets the clear color (used by each frame's `LoadOp::Clear`).
     ///
     /// Driven by the map style's `background_color` (`MapStyle::background_color`);
-    /// see `pureCeleste.cs:112434` (`Calc.HexToColor` -> `BackgroundColor`).
+    /// see `references/Celeste.exe.cs.d/Celeste/MapData.cs:159` (`Calc.HexToColor` -> `BackgroundColor`).
     pub fn set_clear_color(&mut self, rgb: [u8; 3]) {
         self.clear_color = wgpu::Color {
             r: f64::from(rgb[0]) / 255.0,

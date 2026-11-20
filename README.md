@@ -128,13 +128,13 @@ cargo run --bin releste -- --dump-map .devtmp/map.json
 # Player hitbox + live readout overlay (press `~` in game to toggle)
 cargo run --bin releste -- --debug-overlay --screenshot .devtmp/overlay.png --frames 3
 
-# Verify every `pureCeleste.cs:LINE` citation (range + optional snippet)
+# Verify split-source citations (path, line range, optional snippet)
 cargo run -p releste-game --example citation_audit -- --coverage
 cargo run -p releste-game --example citation_audit -- --find "private void ClimbHop"
 ```
 
 Scenarios live in `crates/game/tests/scenarios/` - expectations must be
-derivable from `references/pureCeleste.cs` (cite the line), not copied from
+derivable from `references/Celeste.exe.cs.d` (cite file and line), not copied from
 whatever the engine currently prints.
 
 ## Configuration
@@ -172,7 +172,7 @@ name = ""
 ```
 
 Key names are winit `KeyCode` names and bind by physical position (vanilla
-`TranslateKeys`, pureCeleste.cs:101708). An action may list several keys.
+`TranslateKeys`, references/Celeste.exe.cs.d/Celeste/Settings.cs:288). An action may list several keys.
 
 - Editing any layer while the game runs applies it live: `[keys]` takes effect on
   the next key event, `[skin]` rebuilds the atlas and animation table from disk

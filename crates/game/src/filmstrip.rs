@@ -293,7 +293,7 @@ impl Recorder {
         );
         // Centre the canvas on the hitbox centre so every frame is comparable, but keep
         // the two anchors distinct: `Player.Position` is the hitbox bottom centre (the feet,
-        // 118856) and that is what `hair_nodes` and `body_draw` take, while the hitbox
+        // references/Celeste.exe.cs.d/Celeste/Player.cs:605) and that is what `hair_nodes` and `body_draw` take, while the hitbox
         // centre is only a visual reference.
         let feet = player.pos
             + releste_math::Vec2::from_f32s(crate::player::PLAYER_W * 0.5, crate::player::PLAYER_H);
@@ -316,8 +316,8 @@ impl Recorder {
         let (cw, ch) = (self.opts.size.0 as i64, self.opts.size.1 as i64);
         // Cyan plus: the hitbox centre (canvas centre). Green plus: the feet anchor
         // (`Player.Position`); the body's bottom row must sit on it. Magenta plus: the hair
-        // root (`feet + HairOffset*(Facing,1) + (0,-9)`, vanilla 111116-111117), floored as
-        // `PlayerHair.Render` does (111179). A hair bug moves their relation.
+        // root (`feet + HairOffset*(Facing,1) + (0,-9)`, vanilla references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62-63), floored as
+        // `PlayerHair.Render` does (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:126). A hair bug moves their relation.
         marker(&mut frame, cw / 2, ch / 2, Rgba([80, 220, 255, 255]));
         let (ax, ay) = (
             (feet.x.to_f32() - origin.0).round() as i64,

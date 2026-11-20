@@ -22,7 +22,7 @@ pub fn entity_sprite(kind: &str) -> Option<&'static str> {
     Some(match kind {
         // `player` is drawn separately by the simulation each frame and does not go into the static batch.
         // `introCrusher` is not in the table: it has no crushblock texture and its look is
-        // `GFX.FGAutotiler.GenerateBox('3', w/8, h/8)` (106322).
+        // `GFX.FGAutotiler.GenerateBox('3', w/8, h/8)` (references/Celeste.exe.cs.d/Celeste/IntroCrusher.cs:23).
         "lamp" => "scenery\\lamp",
         "flutterbird" => "scenery\\flutterbird\\idle00",
         // The start animation of vanilla `GFX.SpriteBank.Create("bird")` is `idle`,
@@ -39,24 +39,25 @@ pub fn entity_sprite(kind: &str) -> Option<&'static str> {
 pub const PLAYER_SPRITE: &str = "characters\\player\\idle00";
 
 /// The player's hair (vanilla draws it behind the body: `PlayerHair`; hair color/flow is independent of the body).
-/// Source: `pureCeleste.cs:111066` `public const string Hair = "characters/player/hair00"`.
+/// Source: `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:11` `public const string Hair = "characters/player/hair00"`.
 pub const PLAYER_HAIR_SPRITE: &str = "characters\\player\\hair00";
 
-/// Bangs (the texture used for the hair-root piece): `pureCeleste.cs:111071`
+/// Bangs (the texture used for the hair-root piece): `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:37`
 /// `bangs = GFX.Game.GetAtlasSubtextures("characters/player/bangs")`.
 pub const PLAYER_BANGS_SPRITE: &str = "characters\\player\\bangs00";
 
-/// Vanilla normal hair color: `pureCeleste.cs` `Player.NormalHairColor = AC3232`.
+/// Vanilla normal hair color: `Celeste/Player.cs` `NormalHairColor = AC3232`.
 /// The hair00 texture itself is white; this color is applied at runtime.
-/// Hair color state machine (vanilla `Player.UpdateHair`, `pureCeleste.cs:120244-120296`).
+/// Hair color state machine (vanilla `Player.UpdateHair`, `references/Celeste.exe.cs.d/Celeste/Player.cs:1993-2045`).
 ///
-/// - `NORMAL`: the base color when a dash is available (118874 `NormalHairColor = AC3232`)
-/// - `USED`: the blue when the dash is used up (118878 `UsedHairColor = 44B7FF`, fading in with
-///   `Lerp(Hair.Color, Used, 6*dt)`, 120258-120262)
-/// - `FLASH`: the white flash the moment the dash refills (118880 `FlashHairColor = White`,
-///   `hairFlashTimer = 0.12s`, 120283-120286)
-/// - `TWO_DASHES`: the base color with a two-dash stock (118882 `TwoDashesHairColor =
-///   ff6def`, replacing NORMAL when `Dashes == 2`, 120289)
+/// - `NORMAL`: the base color when a dash is available (references/Celeste.exe.cs.d/Celeste/Player.cs:623 `NormalHairColor = Calc.HexToColor("AC3232")`)
+/// - `USED`: the blue when the dash is used up (references/Celeste.exe.cs.d/Celeste/Player.cs:627 `UsedHairColor = Calc.HexToColor("44B7FF")`, fading in with
+///   `Lerp(Hair.Color, Used, 6*dt)`, references/Celeste.exe.cs.d/Celeste/Player.cs:2007-2011)
+/// - `FLASH`: the white flash the moment the dash refills (references/Celeste.exe.cs.d/Celeste/Player.cs:629 `FlashHairColor = Color.White`,
+///   `hairFlashTimer = 0.12s`, references/Celeste.exe.cs.d/Celeste/Player.cs:2032-2035)
+/// - `TWO_DASHES`: the base color with a two-dash stock (references/Celeste.exe.cs.d/Celeste/Player.cs:631
+///   `TwoDashesHairColor = Calc.HexToColor("ff6def")`, replacing NORMAL when `Dashes == 2`,
+///   references/Celeste.exe.cs.d/Celeste/Player.cs:2038)
 ///
 /// The wiring of these states to simulation fields (`Player.dashes` etc.) activates when dash is implemented;
 /// currently there is no dash (stock 1 and full) -> always NORMAL, matching the vanilla Prologue.
@@ -77,17 +78,17 @@ pub const PLAYER_BODY_FRAME_ORIGIN: (f32, f32) = (16.0, 32.0);
 
 /// The **logical frame origin** shared by hair/bangs.
 ///
-/// Source: `pureCeleste.cs:111182` `Vector2 origin = new Vector2(5f, 5f);`
+/// Source: `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:107` `Vector2 origin = new Vector2(5f, 5f);`
 /// -- `PlayerHair.Render` uses the **same** origin for `bangs[hairFrame]` and `hair00`,
 /// so the bangs' own XML `<Origin>` is irrelevant here.
 pub const HAIR_FRAME_ORIGIN: (f32, f32) = (5.0, 5.0);
 
-/// Number of hair segments: `pureCeleste.cs:111321` `HairCount = 4`.
+/// Number of hair segments: `references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:115` `HairCount = 4`.
 ///
 /// Node 0 draws the bangs, 1..4 draw `hair00`, and **each segment narrows toward the tail** (`GetHairScale`).
 pub const HAIR_COUNT: usize = 4;
 
-/// The two-dash tail length: `pureCeleste.cs:119986` `Sprite.HairCount = ((Dashes > 1) ? 5 : startHairCount)`.
+/// The two-dash tail length: `references/Celeste.exe.cs.d/Celeste/Player.cs:1735` `Sprite.HairCount = ((Dashes > 1) ? 5 : startHairCount)`.
 ///
 /// The hair array is sized for the longest tail; `Player::hair_nodes` reports how many of them
 /// are live this tick.
@@ -97,7 +98,7 @@ pub const HAIR_MAX: usize = 5;
 ///
 /// The atlas `.meta` only gives the subimage position within the logical frame (a negative value, Monocle's
 /// `DrawOffset`) and does not include the XML `<Origin>`; while `MTexture.Draw(position, origin)`
-/// actually passes `origin - DrawOffset` to SpriteBatch (`14544-14547`).
+/// actually passes `origin - DrawOffset` to SpriteBatch (`references/Celeste.exe.cs.d/Monocle/MTexture.cs:196-199`).
 /// So "origin within the subimage" = `frame_origin + offset` = `frame_origin - trim_pos`,
 /// where `sprite.origin()` stores exactly `trim_pos` (the converter took the negation of offset).
 ///
@@ -113,7 +114,7 @@ pub fn origin_in_trim(sprite: &Sprite, frame_origin: (f32, f32)) -> (f32, f32) {
     )
 }
 
-/// Hair segment scale: `pureCeleste.cs:111201-111205` `GetHairScale(index)`.
+/// Hair segment scale: `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:147-151` `GetHairScale(int index)`.
 ///
 /// `num = 0.25 + (1 - index / HairCount) * 0.75`, thinner toward the tail: with the usual
 /// [`HAIR_COUNT`] of 4 that is index 0 -> 1.0, 1 -> 0.8125, 2 -> 0.625, 3 -> 0.4375. The divisor
@@ -123,7 +124,7 @@ pub fn origin_in_trim(sprite: &Sprite, frame_origin: (f32, f32)) -> (f32, f32) {
 ///
 /// Only the **x** factor carries `Math.Abs(Sprite.Scale.X)`: the returned pair is
 /// `new Vector2(((index == 0) ? (float)Facing : num) * Math.Abs(Sprite.Scale.X), num)`
-/// (111201-111205). The y factor stays `num`, so a squashed player
+/// (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:147-151). The y factor stays `num`, so a squashed player
 /// (`Scale.X = 0.6` on a spring) narrows its hair horizontally without shortening it
 /// vertically -- and mirroring comes from `Facing` alone, never from the sign of
 /// `Scale.X`.
@@ -138,22 +139,22 @@ pub fn hair_scale(index: usize, facing: f32, count: usize, sprite_scale_x: f32) 
 ///
 /// The 9 idle frames are `0,-2|0,-2|0,-2|0,-2|0,-1|0,-1|0,-1|0,-1|0,-1`,
 /// i.e. frames 0-3 are `(0,-2)` and frames 4-8 are `(0,-1)`; multiplied by `(Facing, 1)`
-/// (`pureCeleste.cs:111116`) the x component is still 0.
+/// (`references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62`) the x component is still 0.
 ///
 /// Our idle stops on frame 0, so take `(0,-2)`.
-/// Per-frame hair metadata (vanilla `PlayerAnimMetadata`, pureCeleste.cs:111495-111504),
-/// parsed from the `<Metadata><Frames path=... hair=...>` table (111452-111480).
+/// Per-frame hair metadata (vanilla `PlayerAnimMetadata`, references/Celeste.exe.cs.d/Celeste/PlayerAnimMetadata.cs:5-14),
+/// parsed from the `<Metadata><Frames path=... hair=...>` table (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:246-274).
 ///
 /// Defaults match the vanilla fields' zero values: `has_hair = false` (a frame with no
-/// metadata entry draws no hair at all, 111363-111371 + 111157), offset `(0, 0)`
-/// (111497) and bangs frame `0` (111499, 111351-111361).
+/// metadata entry draws no hair at all, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:157-165 + references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:103), offset `(0, 0)`
+/// (references/Celeste.exe.cs.d/Celeste/PlayerAnimMetadata.cs:7) and bangs frame `0` (references/Celeste.exe.cs.d/Celeste/PlayerAnimMetadata.cs:9, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:145-155).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HairFrame {
-    /// Vanilla `HasHair`: the spec was neither missing nor `x`/empty (111468-111476).
+    /// Vanilla `HasHair`: the spec was neither missing nor `x`/empty (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:262-270).
     pub has_hair: bool,
-    /// Vanilla `HairOffset`: applied as `offset * (Facing, 1)` (111116).
+    /// Vanilla `HairOffset`: applied as `offset * (Facing, 1)` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:62).
     pub offset: (i32, i32),
-    /// Vanilla `Frame`: which `bangs` texture to draw (111351-111361).
+    /// Vanilla `Frame`: which `bangs` texture to draw (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:145-155).
     pub frame: usize,
 }
 
@@ -185,11 +186,11 @@ pub fn parse_hair_spec(spec: &str) -> HairFrame {
 }
 
 /// Lamp: vanilla takes the left/right half 16x80 subimage based on `broken`
-/// (`pureCeleste.cs:106451` `GetSubtexture(broken ? 16 : 0, 0, 16, 80)`),
+/// (`references/Celeste.exe.cs.d/Celeste/Lamp.cs:14` `GetSubtexture(broken ? 16 : 0, 0, 16, 80)`),
 /// and the 30x77 content in the atlas is the intact/broken lamp stitched together.
 ///
-/// The draw origin vanilla sets is `(W/2, H)` = `(8, 80)` (106455), while `MTexture.Draw`
-/// actually uses `origin + atlas offset` (`14478-14485`); the atlas offset of
+/// The draw origin vanilla sets is `(W/2, H)` = `(8, 80)` (references/Celeste.exe.cs.d/Celeste/Lamp.cs:15), while `MTexture.Draw`
+/// actually uses `origin + atlas offset` (`references/Celeste.exe.cs.d/Monocle/MTexture.cs:161-164`); the atlas offset of
 /// `scenery\lamp` is `(1, 3)`, so the effective origin of the whole image is
 /// `(8 + 1, 80 + 3) = (9, 83)`. The 16px-wide subimage is 1px wider than half of the original (15px),
 /// which is exactly vanilla's behavior and allows out-of-bounds sampling.
@@ -276,9 +277,9 @@ pub fn group_id(atlas: &SpriteAtlas, group: &TextureGroup) -> u32 {
 // ---------------------------------------------------------------------------
 // Animation table (the runtime form of `Graphics/Sprites.xml` -> `Gameplay.sprites.toml`).
 //
-// Vanilla `SpriteBank` (pureCeleste.cs:15017-15042) + `Sprite` (10136-10460):
-// `Play(id)` does not restart for the same id (around 10181); `Update` advances by the frame delay, looping animations
-// return to frame 0, non-looping ones stop on the last frame and clear `CurrentAnimationID` (10290-10305).
+// Vanilla `SpriteBank` (references/Celeste.exe.cs.d/Monocle/SpriteBank.cs:15-40) + `Sprite` (references/Celeste.exe.cs.d/Monocle/Sprite.cs:11-335):
+// `Play(id)` does not restart for the same id (references/Celeste.exe.cs.d/Monocle/Sprite.cs:360); `Update` advances by the frame delay, looping animations
+// return to frame 0, non-looping ones stop on the last frame and clear `CurrentAnimationID` (references/Celeste.exe.cs.d/Monocle/Sprite.cs:165-180).
 // ---------------------------------------------------------------------------
 
 /// One animation: a frame-name list + delay + goto.
@@ -286,13 +287,13 @@ pub fn group_id(atlas: &SpriteAtlas, group: &TextureGroup) -> u32 {
 pub struct AnimDef {
     /// Frame names (`path + zero-padded two-digit index`; when the `frames` attribute is absent it is **all** frames,
     /// expanded by probing the atlas per index, matching Monocle `GetFrames(path, null)`,
-    /// pureCeleste.cs:10451-10464).
+    /// references/Celeste.exe.cs.d/Monocle/Sprite.cs:326-339).
     pub frames: Vec<String>,
-    /// Frame delay (seconds); 0 = no auto-play (vanilla `Animating = Delay > 0f`).
+    /// Frame delay (seconds); 0 = no auto-play (vanilla `Animating = currentAnimation.Delay > 0f`).
     pub delay: f32,
     /// Goto when finished: `<Loop>` = its own id (`AddLoop`'s
-    /// `Goto = new Chooser<string>(id, 1f)`, 10338-10345);
-    /// `<Anim goto="...">` = the target; `None` = stop on the last frame (10296-10305).
+    /// `Goto = new Chooser<string>(id, 1f)`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:213-220);
+    /// `<Anim goto="...">` = the target; `None` = stop on the last frame (references/Celeste.exe.cs.d/Monocle/Sprite.cs:171-180).
     pub goto: Option<String>,
     /// Per-frame hair metadata, parallel to [`AnimDef::frames`]; shorter/empty means the
     /// remaining frames have no hair (vanilla's missing-metadata default).
@@ -388,7 +389,7 @@ impl AnimationTable {
         for def in parsed.sprite {
             let mut anims = HashMap::new();
             for a in def.anim {
-                // Frame name: vanilla `GetFrames` (`Path + path`, 10454-10462) resolved
+                // Frame name: vanilla `GetFrames` (`Path + path`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:329-337) resolved
                 // through `Atlas.GetAtlasSubtextureFromAtlasAt` -- the **exact** name for
                 // index 0, then every zero-padding level (see `frame_name_at`). Indexing the
                 // atlas by prefix rather than concatenating `path + two digits` is what makes
@@ -399,7 +400,7 @@ impl AnimationTable {
                 let frame = |i: usize| {
                     releste_render::atlas::frame_name_at(exists, &prefix, i).unwrap_or_else(|| {
                         // Vanilla throws `Can't find sprite <path> with index <i>` here
-                        // (10467); keep the frame slot (and the parallel `hair` rows) and warn.
+                        // (references/Celeste.exe.cs.d/Monocle/Sprite.cs:342); keep the frame slot (and the parallel `hair` rows) and warn.
                         warn!("sprite table: no texture for frame {prefix} #{i}");
                         format!("{prefix}{i:02}")
                     })
@@ -418,7 +419,7 @@ impl AnimationTable {
                         names
                     }
                 };
-                // Keys are case-insensitive (Monocle `OrdinalIgnoreCase`, 10206).
+                // Keys are case-insensitive (Monocle `OrdinalIgnoreCase`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:81).
                 anims.insert(
                     a.id.to_ascii_lowercase(),
                     AnimDef {
@@ -450,7 +451,7 @@ mod tests {
     use super::*;
 
     /// `GetHairScale`: both components ride on `Math.Abs(Sprite.Scale.X)`
-    /// (111201-111205), so a squashed player squashes its hair.
+    /// (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:147-151), so a squashed player squashes its hair.
     #[test]
     fn hair_scale_rides_on_the_sprite_x_scale() {
         // Full-size player, facing right: bangs are 1.0, the tail narrows.
@@ -460,7 +461,7 @@ mod tests {
         assert_eq!(hair_scale(0, -1.0, 4, 1.0), (-1.0, 1.0));
         assert_eq!(hair_scale(1, -1.0, 4, 1.0), (0.8125, 0.8125));
         // `Scale.X = 0.6` (a spring squash) narrows the hair horizontally only: the y
-        // factor stays `num` (111201-111205).
+        // factor stays `num` (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:147-151).
         assert_eq!(hair_scale(0, 1.0, 4, 0.6), (0.6, 1.0));
         let tail = hair_scale(3, 1.0, 4, 0.6);
         assert!((tail.0 - 0.2625).abs() < 1e-6, "{} {tail:?}", tail.0);

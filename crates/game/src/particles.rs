@@ -41,7 +41,7 @@ const SOURCES: [&str; 4] = [
 /// `pi / 2` in Q16.16.
 const PI_OVER_2: Fx = Fx::from_bits(102_944);
 
-// ---- `ParticleTypes.Dust` (`Celeste/ParticleTypes.cs:24-38`) ----
+// ---- `ParticleTypes.Dust` (`references/Celeste.exe.cs.d/Celeste/ParticleTypes.cs:24-38`) ----
 /// `Acceleration = new Vector2(0f, 4f)` -- downward, px/s^2.
 const DUST_ACCELERATION: (Fx, Fx) = (Fx::zero(), Fx::from_int(4));
 /// `LifeMin` / `LifeMax` in seconds.
@@ -213,7 +213,7 @@ impl ParticleSystem {
     }
 
     /// `Dust.Burst`'s per-particle path: scatter inside the perpendicular spread box,
-    /// then `ParticleSystem.Emit` (`Celeste/Dust.cs:9-27`).
+    /// then `ParticleSystem.Emit` (`references/Celeste.exe.cs.d/Celeste/Dust.cs:9-27`).
     fn emit_one(&mut self, burst: Burst) {
         // `vector = Calc.AngleToVector(direction - PiOver2, 4f)`, absolute components.
         let spread = angle_to_vector(burst.direction - PI_OVER_2, Fx::from_int(4)).abs();
@@ -224,7 +224,7 @@ impl ParticleSystem {
         self.create(burst.position + offset, burst.direction);
     }
 
-    /// `ParticleType.Create` for the `Dust` type (`Monocle/ParticleType.cs:138-195`).
+    /// `ParticleType.Create` for the `Dust` type (`references/Celeste.exe.cs.d/Monocle/ParticleType.cs:138-195`).
     fn create(&mut self, position: Vec2, direction: Fx) {
         let slot = self.next_slot;
         self.next_slot = (self.next_slot + 1) % MAX_PARTICLES;
@@ -248,7 +248,7 @@ impl ParticleSystem {
         };
     }
 
-    /// One `ParticleSystem.Update` pass (`Monocle/Particle.cs:57-137`).
+    /// One `ParticleSystem.Update` pass (`references/Celeste.exe.cs.d/Monocle/Particle.cs:57-137`).
     pub(crate) fn update(&mut self, dt: Fx) {
         for particle in &mut self.particles {
             if !particle.active {
@@ -273,7 +273,7 @@ impl ParticleSystem {
     /// Append this system's draws at `layer`.
     ///
     /// `Particle.Render` truncates the position to whole pixels and draws the source
-    /// sprite scaled about its **centre** (`Monocle/Particle.cs:139-166`), so the quad
+    /// sprite scaled about its **centre** (`references/Celeste.exe.cs.d/Monocle/Particle.cs:139-166`), so the quad
     /// top-left is `floor(position) - origin_in_trim * size`. `smooth_motion` keeps the
     /// fractional position instead (`crate::settings::Settings::smooth_motion`).
     pub(crate) fn push_draws(

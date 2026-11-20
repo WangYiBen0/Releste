@@ -25,8 +25,8 @@ use std::borrow::Cow;
 /// The vanilla hair atlas names, as in `crate::sprites` (`PLAYER_HAIR_SPRITE`,
 /// `PLAYER_BANGS_SPRITE`), with the three bangs frames spelled out.
 ///
-/// Source: `pureCeleste.cs:111066` `public const string Hair = "characters/player/hair00"`;
-/// `pureCeleste.cs:111071` `bangs = GFX.Game.GetAtlasSubtextures("characters/player/bangs")`.
+/// Source: `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:11` `public const string Hair = "characters/player/hair00"`;
+/// `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:37` `bangs = GFX.Game.GetAtlasSubtextures("characters/player/bangs")`.
 const VANILLA_HAIR: &str = crate::sprites::PLAYER_HAIR_SPRITE;
 const VANILLA_BANGS: [&str; 3] = [
     crate::sprites::PLAYER_BANGS_SPRITE,
@@ -84,7 +84,7 @@ impl PlayerHairSkin {
     }
 
     /// The resolved bangs texture name for this skin at hair `frame` (clamped to
-    /// `0..2`), mirroring `bangs[Sprite.HairFrame]` (`pureCeleste.cs:111186, 111196`).
+    /// `0..2`), mirroring `bangs[Sprite.HairFrame]` (`references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:132, references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:142`).
     pub fn bangs(&self, frame: usize) -> Cow<'static, str> {
         let idx = frame.min(2);
         if self.prefix.is_empty() {

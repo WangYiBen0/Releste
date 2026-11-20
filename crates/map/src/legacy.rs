@@ -279,10 +279,10 @@ impl From<v1::EntityData> for releste_world::EntityData {
 /// simply had no parallax backgrounds, decals or decoration layers, so a migrated document renders
 /// **pixel-identical** to the old interpreter: nothing appears out of nowhere and nothing is lost.
 ///
-/// Sources: `pureCeleste.cs:112593-112618` (`CreateBackdrops`,
-/// the `<Style>` at `112428-112449`), `77244-77253` (`TileGrid.Overlay`),
-/// `113467-113497` (`bgdecals` / `fgdecals` parsing),
-/// `113135-113198` (`EntityData.Nodes`).
+/// Sources: `references/Celeste.exe.cs.d/Celeste/MapData.cs:318-343` (`CreateBackdrops`,
+/// the `<Style>` at `references/Celeste.exe.cs.d/Celeste/MapData.cs:153-174`), `references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:283-292` (`TileGrid.Overlay`),
+/// `references/Celeste.exe.cs.d/Celeste/LevelData.cs:268-298` (`bgdecals` / `fgdecals` parsing),
+/// `references/Celeste.exe.cs.d/Celeste/EntityData.cs:100-163` (`EntityData.Nodes`).
 pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> v2::MapDocument {
     v2::MapDocument {
         area: doc.area,
@@ -337,7 +337,7 @@ pub fn migrate_v1_to_v2(doc: v1::MapDocument) -> v2::MapDocument {
 /// v3 only appended room filtering and transition visibility to backdrop. Old files have no such
 /// expressiveness, so they all take "unset": `only_in` / `exclude_from` empty (visible in all rooms),
 /// `instant_in` takes the vanilla default `true` and `instant_out` the default `false`
-/// (the field initialization at `pureCeleste.cs:109411-109418`) -- the migrated rendering is
+/// (the field initialization at `references/Celeste.exe.cs.d/Celeste/Backdrop.cs:77-84`) -- the migrated rendering is
 /// pixel-identical to the v2 interpreter.
 pub fn migrate_v2_to_v3(doc: v2::MapDocument) -> crate::format::MapDocument {
     fn backdrop(bd: v2::Backdrop) -> crate::format::Backdrop {

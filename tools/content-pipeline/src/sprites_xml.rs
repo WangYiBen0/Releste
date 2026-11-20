@@ -1,12 +1,12 @@
 //! `Graphics/Sprites.xml` -> `atlas/Gameplay.sprites.toml` conversion.
 //!
-//! Vanilla `SpriteBank` (`pureCeleste.cs:15017-15042`) reads this file:
+//! Vanilla `SpriteBank` (`references/Celeste.exe.cs.d/Monocle/SpriteBank.cs:15-40`) reads this file:
 //! every child element of `<Sprites>` is a sprite definition (`path` = atlas prefix,
 //! `start` = starting animation); the child elements `<Anim id delay frames goto>` /
 //! `<Loop id delay frames>` define animations (`Loop` = self-loop, `Anim` can jump),
 //! `frames` is CSV (supports `1-6` ranges, `Calc.ReadCSVIntWithTricks`,
-//! implemented nearby at 113019). A frame texture = `path + two-digit zero-padded frame number`
-//! (Monocle `GetAtlasSubtextureFromAtlasAt`'s stepwise zero-padded lookup, 14327+;
+//! implemented nearby at references/Celeste.exe.cs.d/Celeste/MapData.cs:744). A frame texture = `path + two-digit zero-padded frame number`
+//! (Monocle `GetAtlasSubtextureFromAtlasAt`'s stepwise zero-padded lookup, references/Celeste.exe.cs.d/Monocle/Atlas.cs:350-366;
 //! our atlas names are exactly things like `idle00`).
 //!
 //! What is handed to the runtime is the **already parsed** animation table: id -> (delay, frame index list, whether
@@ -20,24 +20,24 @@ use serde::Serialize;
 pub struct AnimDef {
     /// Animation id (the key for `Sprite.Play(id)`).
     pub id: String,
-    /// Frame interval (seconds). 0 = do not auto-play (`Animating = Delay > 0f`, 10196).
+    /// Frame interval (seconds). 0 = do not auto-play (`Animating = currentAnimation.Delay > 0f`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:369).
     pub delay: f32,
     /// Frame indices (subscripts into the enumerated sequence of the `path` prefix). `None` = attribute absent,
     /// take **all** frames (Monocle `GetFrames(path, null)` enumerates in order until a frame is missing,
-    /// pureCeleste.cs:10451-10464) -- the runtime expands them against the atlas.
+    /// references/Celeste.exe.cs.d/Monocle/Sprite.cs:326-339) -- the runtime expands them against the atlas.
     pub frames: Option<Vec<usize>>,
     /// The jump target of `<Anim goto="...">`; `<Loop>` = self-loop (own id);
-    /// `None` = stop on the last frame after playing (10296-10305).
+    /// `None` = stop on the last frame after playing (references/Celeste.exe.cs.d/Monocle/Sprite.cs:171-180).
     pub goto: Option<String>,
     /// Animation sub-path (`<Anim path="idle">`): frame name = the sprite's `path` +
     /// this + zero-padded index (the `Path + path` concatenation in `GetFrames`,
-    /// pureCeleste.cs:10454-10462). Absent = "".
+    /// references/Celeste.exe.cs.d/Monocle/Sprite.cs:329-337). Absent = "".
     pub path: String,
     /// Per-frame hair metadata, one raw spec per frame, from the `<Metadata>` table:
-    /// `<Frames path="runFast" hair="1,-2|1,-1|..."/>` (pureCeleste.cs:111452-111480).
+    /// `<Frames path="runFast" hair="1,-2|1,-1|..."/>` (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:246-274).
     /// A spec is `"dx,dy"`, `"dx,dy:hairFrame"`, or `"x"`/empty = no hair on that frame.
     /// `None` = the animation has no entry (every frame then behaves as "no hair",
-    /// matching `PlayerSprite.HasHair`'s fallback at 111363-111371).
+    /// matching `PlayerSprite.HasHair`'s fallback at references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:157-165).
     pub hair: Option<Vec<String>>,
 }
 
@@ -115,7 +115,7 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
         let mut anims = Vec::new();
         // `FrameMetadata` (the `<Metadata><Frames path=... hair=...>` table) is keyed by the
         // animation **path**, and the runtime looks it up by the frame's texture path
-        // (`FrameMetadata[Texture.AtlasPath]`, 111331-111336). It may appear before or after
+        // (`FrameMetadata[Texture.AtlasPath]`, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:125-130). It may appear before or after
         // the animations, so collect it first and attach it after the child scan.
         let mut metadata: HashMap<String, Vec<String>> = HashMap::new();
         let mut after_element = end;
@@ -156,7 +156,7 @@ pub fn parse_sprites(xml: &str) -> Result<Vec<SpriteDef>, SpritesXmlError> {
                     .and_then(|d| d.parse().ok())
                     .unwrap_or(default_delay);
                 // `<Loop>` = self-loop (Monocle `AddLoop`:
-                // `Goto = new Chooser<string>(id, 1f)`, 10338-10345);
+                // `Goto = new Chooser<string>(id, 1f)`, references/Celeste.exe.cs.d/Monocle/Sprite.cs:213-220);
                 // `<Anim goto="...">` = jump to the target animation.
                 let goto = if cname.eq_ignore_ascii_case("Loop") {
                     Some(id.clone())
@@ -296,7 +296,7 @@ use std::collections::HashMap;
 mod tests {
     use super::*;
 
-    /// The `<Metadata><Frames path=... hair=...>` rows (111452-111480) must reach the
+    /// The `<Metadata><Frames path=... hair=...>` rows (references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:246-274) must reach the
     /// animation that shares their `path`, in file order, unchanged.
     #[test]
     fn parses_per_frame_hair_metadata() {
@@ -331,7 +331,7 @@ mod tests {
     }
 
     /// An animation whose path has no metadata row keeps `None` (vanilla then treats every
-    /// frame as `HasHair = false`, 111363-111371).
+    /// frame as `HasHair = false`, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:157-165).
     #[test]
     fn animations_without_metadata_have_no_hair_rows() {
         let xml = r#"<?xml version="1.0"?>

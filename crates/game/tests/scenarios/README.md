@@ -18,7 +18,7 @@ scenario: 60 ticks, 10 checks, 1 failure(s)
 ## Why it is shaped this way
 
 - **Write vanilla values, not "whatever it prints"**: expectations should be
-  derivable from `references/pureCeleste.cs` (e.g. `MaxRun = 90f` -> 1.5
+  derivable from `references/Celeste.exe.cs.d` (e.g. `MaxRun = 90f` -> 1.5
   px/tick), with the source line in the comment. Copying today's output only
   freezes the status quo, not correctness.
 - **Use `dx`/`dy` for displacement** (relative to tick 1) rather than absolute

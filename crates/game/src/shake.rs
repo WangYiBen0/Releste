@@ -4,7 +4,8 @@
 //! `Level.Update` rolls a new offset every `0.04s` of **raw** (wall-clock) time, and
 //! `Level.BeforeRender` adds it to `Camera.Position`, floors the result, then
 //! restores the pre-shake position in `AfterRender`
-//! (`pureCeleste.cs:113702-113731`, `:113848-113862`, `:114204-114208`).
+//! (`references/Celeste.exe.cs.d/Celeste/Level.cs:1927-1960`, `references/Celeste.exe.cs.d/Celeste/Level.cs:2010-2014`,
+//! `references/Celeste.exe.cs.d/Celeste/Level.cs:2112-2115`).
 //!
 //! The equivalent split here is:
 //!
@@ -21,10 +22,10 @@
 
 use releste_math::{Fx, Vec2};
 
-/// Shake amplitude decay factor: `num2 = ceil(shakeTimer * 10f)` (`pureCeleste.cs:113709`).
+/// Shake amplitude decay factor: `num2 = ceil(shakeTimer * 10f)` (`references/Celeste.exe.cs.d/Celeste/Level.cs:1931`).
 const AMPLITUDE_PER_SECOND: Fx = Fx::from_int(10);
 
-/// Roll interval in raw-clock seconds: `OnRawInterval(0.04f)` (`pureCeleste.cs:113705`).
+/// Roll interval in raw-clock seconds: `OnRawInterval(0.04f)` (`references/Celeste.exe.cs.d/Celeste/Level.cs:1929`).
 ///
 /// The comparator works in raw seconds, so it is stored as bits for the integer
 /// floor-division below.
@@ -70,7 +71,7 @@ fn ceil(v: Fx) -> i32 {
     }
 }
 
-/// `(int)(t / interval)` -- the operand `Scene.OnRawInterval` compares (`pureCeleste.cs:113697`).
+/// `(int)(t / interval)` -- the operand `Scene.OnRawInterval` compares (`references/Celeste.exe.cs.d/Monocle/Scene.cs:141-144`).
 fn raw_slots(t: Fx) -> i64 {
     if t.bits() <= 0 {
         return -1;
@@ -99,7 +100,7 @@ pub(crate) struct Shake {
     /// `Half` collapses the rolled vector to its sign and drains the timer 1.5x faster;
     /// `Off` never starts a shake at all. Both are checked in `Level.Shake`/
     /// `DirectionalShake` and in the `Level.Update` shake block
-    /// (`pureCeleste.cs:113702-113731`).
+    /// (`references/Celeste.exe.cs.d/Celeste/Level.cs:1927-1960`).
     pub(crate) amount: crate::settings::ScreenShake,
     rng: SplitMix64,
 }
@@ -119,9 +120,9 @@ impl Shake {
     }
 
     /// `Level.DirectionalShake(dir, time)`: shake along an axis, alternating sign each
-    /// roll (`pureCeleste.cs:114219-114229`).
+    /// roll (`references/Celeste.exe.cs.d/Celeste/Level.cs:2630-2638`).
     pub(crate) fn directional(&mut self, dir: Vec2, time: Fx) {
-        // `if (Settings.Instance.ScreenShake != ScreenshakeAmount.Off)` (114208-114216):
+        // `if (Settings.Instance.ScreenShake != ScreenshakeAmount.Off)` (references/Celeste.exe.cs.d/Celeste/Level.cs:2632-2637):
         // with the shake turned off vanilla never even arms the timer.
         if self.amount == crate::settings::ScreenShake::Off {
             return;
@@ -131,7 +132,7 @@ impl Shake {
         self.timer = self.timer.max(time);
     }
 
-    /// `Level.Shake(time)`: ambient (non-directional) shake (`pureCeleste.cs:114204-114214`).
+    /// `Level.Shake(time)`: ambient (non-directional) shake (`references/Celeste.exe.cs.d/Celeste/Level.cs:2616-2622`).
     #[allow(dead_code)]
     pub(crate) fn ambient(&mut self, time: Fx) {
         if self.amount == crate::settings::ScreenShake::Off {
@@ -141,7 +142,7 @@ impl Shake {
         self.timer = self.timer.max(time);
     }
 
-    /// One `Level.Update` step of the shake block (`pureCeleste.cs:113702-113731`).
+    /// One `Level.Update` step of the shake block (`references/Celeste.exe.cs.d/Celeste/Level.cs:1927-1960`).
     pub(crate) fn update(&mut self, dt: Fx) {
         let previous = self.raw_time;
         self.raw_time += dt;
@@ -167,7 +168,7 @@ impl Shake {
             };
             // `if (Settings.Instance.ScreenShake == ScreenshakeAmount.Half) { float x =
             // Math.Sign(ShakeVector.X); float y = Math.Sign(ShakeVector.Y);
-            // ShakeVector = new Vector2(x, y); }` (113711-113716).
+            // ShakeVector = new Vector2(x, y); }` (references/Celeste.exe.cs.d/Celeste/Level.cs:1948-1953).
             if self.amount == crate::settings::ScreenShake::Half {
                 self.vector = Vec2::new(
                     Fx::from_int(self.vector.x.signum()),
@@ -176,7 +177,7 @@ impl Shake {
             }
         }
         // `float num3 = ((ScreenShake == Half) ? 1.5f : 1f); shakeTimer -=
-        // Engine.RawDeltaTime * num3;` (113718-113720): the half setting also drains the
+        // Engine.RawDeltaTime * num3;` (references/Celeste.exe.cs.d/Celeste/Level.cs:1955-1956): the half setting also drains the
         // timer faster, so the shake is both smaller and shorter.
         let rate = if self.amount == crate::settings::ScreenShake::Half {
             Fx::from_ratio(3, 2)
@@ -187,7 +188,7 @@ impl Shake {
     }
 
     /// The offset to add to the render camera, already floored to whole pixels
-    /// (vanilla floors the shaken position, `pureCeleste.cs:113849`).
+    /// (vanilla floors the shaken position, `references/Celeste.exe.cs.d/Celeste/Level.cs:2014`).
     pub(crate) fn offset(&self) -> Vec2 {
         self.vector
     }
@@ -272,7 +273,7 @@ mod tests {
     }
 
     /// `Half` collapses the rolled vector to its sign and drains the timer 1.5x faster
-    /// (`pureCeleste.cs:113711-113720`), so the shake is both 1px and shorter.
+    /// (`references/Celeste.exe.cs.d/Celeste/Level.cs:1948-1956`), so the shake is both 1px and shorter.
     #[test]
     fn half_shake_collapses_to_a_one_pixel_twitch() {
         let mut shake = Shake::new();
@@ -282,7 +283,7 @@ mod tests {
         assert_eq!(
             shake.offset(),
             Vec2::new(Fx::from_int(-1), Fx::zero()),
-            "Half keeps only the sign of the rolled amplitude (113711-113716)"
+            "Half keeps only the sign of the rolled amplitude (references/Celeste.exe.cs.d/Celeste/Level.cs:1948-1953)"
         );
         // 0.25s at the 1.5x drain rate is spent after ~10 ticks instead of 15.
         for _ in 0..14 {
@@ -290,11 +291,11 @@ mod tests {
         }
         assert!(
             !shake.active(),
-            "the 1.5x drain shortens the shake (113720)"
+            "the 1.5x drain shortens the shake (references/Celeste.exe.cs.d/Celeste/Level.cs:1955-1956)"
         );
     }
 
-    /// `Off` never arms the timer at all (`Level.DirectionalShake`, 114208-114216).
+    /// `Off` never arms the timer at all (`Level.DirectionalShake`, references/Celeste.exe.cs.d/Celeste/Level.cs:2632-2637).
     #[test]
     fn off_never_starts_a_shake() {
         let mut shake = Shake::new();

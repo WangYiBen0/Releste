@@ -247,10 +247,10 @@ impl GameApp {
         };
         let down = event.state == ElementState::Pressed;
         // Key bindings = the resolved config file (absent means vanilla defaults: arrow keys move, C jumps --
-        // `SetDefaultKeyboardControls`, pureCeleste.cs:101602-101651;
-        // `TranslateKeys` 101708's physical-key semantics = winit `PhysicalKey`).
-        // Enter = vanilla Pause (101642); ESC = the vanilla menu key (`Input.ESC`,
-        // 110396), which the engine reuses as the pause toggle. Dash/grab etc. are added after Phase 4.1.
+        // `SetDefaultKeyboardControls`, references/Celeste.exe.cs.d/Celeste/Settings.cs:182-231;
+        // `TranslateKeys` references/Celeste.exe.cs.d/Celeste/Settings.cs:288's physical-key semantics = winit `PhysicalKey`).
+        // Enter = vanilla Pause (references/Celeste.exe.cs.d/Celeste/Settings.cs:222); ESC = the vanilla menu key (`Input.ESC`,
+        // references/Celeste.exe.cs.d/Celeste/Input.cs:173), which the engine reuses as the pause toggle. Dash/grab etc. are added after Phase 4.1.
         if !self.console.is_open() && (code == KeyCode::Escape || code == KeyCode::Enter) {
             if down {
                 self.toggle_pause();

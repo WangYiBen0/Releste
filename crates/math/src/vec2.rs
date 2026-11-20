@@ -109,7 +109,7 @@ impl Vec2 {
     }
 
     /// `self / |self|`, or [`Vec2::ZERO`] for a zero vector (XNA `SafeNormalize`,
-    /// which vanilla uses for the hair segment clamp, `pureCeleste.cs:111133`).
+    /// which vanilla uses for the hair segment clamp, `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:79`).
     pub fn safe_normalized(self) -> Vec2 {
         let len = self.length();
         if len == Fx::zero() {
@@ -121,7 +121,7 @@ impl Vec2 {
 
     /// Floor each component (XNA `Vector2.Floor()`; vanilla hair rendering
     /// uses it to snap the hair root to integer pixels,
-    /// `pureCeleste.cs:111179` `Nodes[0] = Nodes[0].Floor()`).
+    /// `references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:126` `Nodes[0] = Nodes[0].Floor()`).
     pub fn floor(self) -> Vec2 {
         Vec2::new(Fx::from_int(self.x.floor()), Fx::from_int(self.y.floor()))
     }

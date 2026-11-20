@@ -1,8 +1,8 @@
 //! Fixed-point trigonometry.
 //!
 //! `f32` is forbidden in the simulation (AGENTS.md 15.7), so the handful of places that
-//! need a sine -- vanilla `PlayerHair`'s wave (`pureCeleste.cs:111135`), `Player.Update`'s
-//! two-dash hair offsets (`119965-119975`), and `WindMove` once wind lands -- use
+//! need a sine -- vanilla `PlayerHair`'s wave (`references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:81`), `Player.Update`'s
+//! two-dash hair offsets (`references/Celeste.exe.cs.d/Celeste/Player.cs:1714-1724`), and `WindMove` once wind lands -- use
 //! [`Fx::sin`]: a 64-step quarter-wave table with linear interpolation.
 //!
 //! The table is generated from `sin(i / 64 * pi/2) * 65536` and every interpolation uses

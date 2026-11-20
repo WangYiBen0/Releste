@@ -1,10 +1,10 @@
 # Jumping: while the button is held the vertical speed is pinned at the jump
 # speed; releasing hands control straight back to gravity.
 #
-#   JumpSpeed = -105f                      (pureCeleste.cs:120705) -> -1.75 px/tick
-#   varJumpTimer pins Speed.Y while held   (pureCeleste.cs:122042-122048)
-#   MaxFall = 160f                         (pureCeleste.cs:118376) -> 2.667 px/tick
-#   fallFast threshold is Speed.Y >= 160f  (pureCeleste.cs:120483)
+#   JumpSpeed = -105f                      (references/Celeste.exe.cs.d/Celeste/Player.cs:2454) -> -1.75 px/tick
+#   varJumpTimer pins Speed.Y while held   (references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797)
+#   MaxFall = 160f                         (references/Celeste.exe.cs.d/Celeste/Player.cs:125) -> 2.667 px/tick
+#   fallFast threshold is Speed.Y >= 160f  (references/Celeste.exe.cs.d/Celeste/Player.cs:2232)
 [scenario]
 ticks = 45
 map = "0-Intro.map"

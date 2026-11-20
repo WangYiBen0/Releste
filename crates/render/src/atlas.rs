@@ -292,14 +292,14 @@ impl SpriteAtlas {
 }
 
 /// Resolves the texture of one animation frame exactly like Monocle's
-/// `Atlas.GetAtlasSubtextureFromAtlasAt` (`pureCeleste.cs:14311-14329`):
+/// `Atlas.GetAtlasSubtextureFromAtlasAt` (`references/Celeste.exe.cs.d/Monocle/Atlas.cs:353-371`):
 ///
 /// - `index == 0` first tries the **exact** `prefix`. Player animations whose single
 ///   texture is named after their path (`characters/player/duck`, `characters/player/bubble`)
-///   only resolve here -- they have no `duck00` (`14313-14316`);
+///   only resolve here -- they have no `duck00` (`references/Celeste.exe.cs.d/Monocle/Atlas.cs:355-358`);
 /// - otherwise `prefix + index` is tried with 0 to 5 extra leading zeros and the first hit
-///   wins (`idle` 1 -> `idle1`, `idle01`, ... -> `idle01`; `14317-14326`);
-/// - no hit at all -> `None`. Vanilla throws `Can't find sprite ...` at `10467`; callers
+///   wins (`idle` 1 -> `idle1`, `idle01`, ... -> `idle01`; `references/Celeste.exe.cs.d/Monocle/Atlas.cs:359-368`);
+/// - no hit at all -> `None`. Vanilla throws `Can't find sprite ...` at `references/Celeste.exe.cs.d/Monocle/Sprite.cs:342`; callers
 ///   warn and keep the frame slot instead.
 ///
 /// `exists` must be the atlas' own case-insensitive lookup.

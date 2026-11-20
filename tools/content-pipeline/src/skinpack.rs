@@ -152,7 +152,7 @@ pub fn write_pack(
                     // Full, untrimmed frames: the engine's per-sprite origin offset is
                     // `HAIR_FRAME_ORIGIN - origin`, and a pack frame has no crop, so
                     // `origin = (0,0)` keeps the maths identical to the vanilla
-                    // subimages (`pureCeleste.cs` `Sprite` origin handling).
+                    // subimages (`Monocle/Sprite.cs` origin handling).
                     origin_x: 0,
                     origin_y: 0,
                     frame_w: w as i16,

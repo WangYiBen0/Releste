@@ -49,7 +49,7 @@ pub struct SpriteDraw {
     ///
     /// Semantically matches XNA `SpriteBatch.Draw(..., rotation, origin: Vector2.Zero,
     /// scale)`: the vanilla `Draw.Line` is exactly a "rotated 1px-tall horizontal bar"
-    /// (`pureCeleste.cs:23386-23404`), and the engine uses it to draw `Wire`.
+    /// (`references/Celeste.exe.cs.d/Monocle/Draw.cs:40-58`), and the engine uses it to draw `Wire`.
     pub rotation: f32,
 }
 

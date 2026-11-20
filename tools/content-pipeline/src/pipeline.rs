@@ -177,7 +177,7 @@ impl Pipeline {
     /// The two tables **must not be merged**: the same id is a different sprite in the foreground/background table
     /// (`'1'` is dirt in the foreground and bgDirt in the background; `'3'` is snow / bgBrickRuined),
     /// and each room's `solids` and `bg` should only be looked up in their own table
-    /// (vanilla has two independent `Autotiler`s, `110116-110117`).
+    /// (vanilla has two independent `Autotiler`s, `references/Celeste.exe.cs.d/Celeste/GFX.cs:131-132`).
     ///
     /// XML is the original format and is only parsed at build time (AGENTS.md 4.6).
     fn convert_tilesets(&mut self) -> Result<(), PipelineError> {
@@ -242,7 +242,7 @@ impl Pipeline {
     ///
     /// Vanilla `GFX.SpriteBank = new SpriteBank(GFX.Game, ...)`: all animations
     /// live in the Game atlas (Gameplay.png, the `GFX.Load` in
-    /// the startup section of `pureCeleste.cs`); this engine's Game atlas name is exactly `Gameplay`.
+    /// the startup section of `references/Celeste.exe.cs.d`); this engine's Game atlas name is exactly `Gameplay`.
     /// A missing file only warns (not every image has animation data to convert).
     fn convert_sprites(&mut self) -> Result<(), PipelineError> {
         let src = self.config.source.join("Graphics/Sprites.xml");
@@ -652,7 +652,7 @@ impl Pipeline {
                 let bg = lv.child("bg").map(tileset_from_element).unwrap_or_default();
 
                 // The decoration layer uses the room's tile size as its grid (vanilla `ReadCSVIntGrid`
-                // also opens the table at `LevelData.TileBounds` width/height, 77247-77253).
+                // also opens the table at `LevelData.TileBounds` width/height, references/Celeste.exe.cs.d/Celeste/LevelLoader.cs:286-292).
                 let tile_w = ((width / TILE_PX).ceil().max(1.0)) as u32;
                 let tile_h = ((height / TILE_PX).ceil().max(1.0)) as u32;
                 let bg_scenery = lv
@@ -896,17 +896,17 @@ const TILE_PX: f32 = 8.0;
 /// Build a decoration layer [`Tileset`] from a `bgtiles` / `fgtiles` element (a CSV integer grid).
 ///
 /// Vanilla `Calc.ReadCSVIntGrid(csv, level.TileBounds.W, TileBounds.H)`
-/// (`pureCeleste.cs:20842-20862`) first fills the whole `width x height` table with `-1`,
+/// (`references/Celeste.exe.cs.d/Monocle/Calc.cs:1185-1205`) first fills the whole `width x height` table with `-1`,
 /// then overwrites it row by row via `Split('\n')` and within a row via `Split(',')` (dropping empty entries); missing rows, missing columns
 /// and empty rows all stay `-1`. Then `TileGrid.Overlay` only draws when `tiles[i,j] >= 0`
-/// (`11274-11285`), and the value is the **flat index** of `Tileset`
-/// `tiles[index % columns, index / columns]` (`15215-15226`).
+/// (`references/Celeste.exe.cs.d/Monocle/TileGrid.cs:50-61`), and the value is the **flat index** of `Tileset`
+/// `tiles[index % columns, index / columns]` (`references/Celeste.exe.cs.d/Monocle/Tileset.cs:13-24`).
 ///
 /// The engine convention is `0` = empty (see `format::Tileset`), so here `-1` is squashed to `0` and
 /// the original value `v` is stored as `v + 1`; the render side recovers the index as `stored value - 1`.
 ///
 /// `atlas` takes the element's own `tileset` attribute: the decoration layer uses `tilesets/scenery`
-/// (`110118` `new Tileset(Game["tilesets/scenery"], 8, 8)`),
+/// (`references/Celeste.exe.cs.d/Celeste/GFX.cs:133` `new Tileset(Game["tilesets/scenery"], 8, 8)`),
 /// which is not the same table as `Gameplay` for `solids`/`bg`.
 fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
     let atlas = el
@@ -971,8 +971,8 @@ fn csv_tileset(el: &MapBinElement, width: u32, height: u32) -> Tileset {
 /// Convert `<fgdecals>` / `<bgdecals>` groups into a [`Decal`] list.
 ///
 /// Each vanilla `DecalData` only has `texture` / `x` / `y` / `scaleX` / `scaleY`
-/// (`pureCeleste.cs:113199-113206`); the depth is decided by the group it is in
-/// (fg `-10500` / bg `9000`, `115079-115086`).
+/// (`references/Celeste.exe.cs.d/Celeste/DecalData.cs:5-12`); the depth is decided by the group it is in
+/// (fg `-10500` / bg `9000`, `references/Celeste.exe.cs.d/Celeste/Level.cs:1289-1296`).
 fn convert_decals(group: &MapBinElement) -> Vec<Decal> {
     group
         .children
@@ -995,7 +995,7 @@ fn convert_decals(group: &MapBinElement) -> Vec<Decal> {
 
 /// Decal texture name -> atlas key (`decals/` + relative path).
 ///
-/// Follows the vanilla `Decal` constructor (`pureCeleste.cs:88573-88582`):
+/// Follows the vanilla `Decal` constructor (`references/Celeste.exe.cs.d/Celeste/Decal.cs:152-161`):
 /// `Path.Combine("decals", name without extension).Replace('\\', '/')`.
 ///
 /// Vanilla then has a final `Regex.Replace(name, "\\d+$", "")` that strips trailing digits before
@@ -1014,16 +1014,16 @@ fn decal_texture(raw: &str) -> String {
 /// `<Style>` -> [`MapStyle`].
 ///
 /// Vanilla only recognizes three things: the `color` attribute -> clear color (default `Color.Black`,
-/// `pureCeleste.cs:112310` / `112432-112435`), `<Backgrounds>` ->
+/// `references/Celeste.exe.cs.d/Celeste/MapData.cs:35` / `references/Celeste.exe.cs.d/Celeste/MapData.cs:157-160`), `<Backgrounds>` ->
 /// `MapData.Background`, `<Foregrounds>` -> `MapData.Foreground`
-/// (`112428-112449`). When `<Style>` is missing the whole thing takes the vanilla default (black background, no backgrounds).
+/// (`references/Celeste.exe.cs.d/Celeste/MapData.cs:153-174`). When `<Style>` is missing the whole thing takes the vanilla default (black background, no backgrounds).
 fn convert_style(root: &MapBinElement) -> MapStyle {
     let Some(style) = root.child("Style") else {
         return MapStyle::default();
     };
 
     // Room name table: the wildcards in `only=` / `exclude=` are expanded at **conversion time** into concrete
-    // room names (vanilla `ParseLevelsList`, `pureCeleste.cs:113019-113036`,
+    // room names (vanilla `ParseLevelsList`, `references/Celeste.exe.cs.d/Celeste/MapData.cs:744-761`,
     // which matches each of `Levels` and collects the results). The order in which names are collected here matches
     // the levels->level loop of `convert_map`, and a missing name uses the same
     // `room_{n}` fallback, so both sides point at the same room.
@@ -1063,7 +1063,7 @@ fn convert_style(root: &MapBinElement) -> MapStyle {
 
 /// `<Backgrounds>` / `<Foregrounds>` -> [`Backdrop`] list.
 ///
-/// Vanilla `CreateBackdrops` (`pureCeleste.cs:112593-112618`): when a child element is named
+/// Vanilla `CreateBackdrops` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:318-343`): when a child element is named
 /// `apply`, its **children** inherit `apply`'s attributes (`ParseBackdrop(child2, child)`),
 /// otherwise it is parsed as `(child, null)`.
 fn convert_backdrops(group: &MapBinElement, room_names: &[String]) -> Vec<Backdrop> {
@@ -1082,12 +1082,12 @@ fn convert_backdrops(group: &MapBinElement, room_names: &[String]) -> Vec<Backdr
 
 /// One background element -> [`Backdrop`].
 ///
-/// Aligns attribute by attribute with vanilla `ParseBackdrop` (`pureCeleste.cs:112648-112900`):
+/// Aligns attribute by attribute with vanilla `ParseBackdrop` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:373-625`):
 /// each attribute is "look at itself first; if absent, look at `above` (the `<apply>` parent)";
-/// only if neither has it, fall back to the `Backdrop` field default (`109341-109430`).
+/// only if neither has it, fall back to the `Backdrop` field default (`references/Celeste.exe.cs.d/Celeste/Backdrop.cs:7-96`).
 ///
 /// Color goes through `backdrop.Color = HexToColor(color)` then `Color *= alpha`
-/// (`112788-112803`) -- XNA's `Color * f32` multiplies **all four channels**,
+/// (`references/Celeste.exe.cs.d/Celeste/MapData.cs:513-528`) -- XNA's `Color * f32` multiplies **all four channels**,
 /// so the stored RGBA is `[r*a, g*a, b*a, 255*a]`, which is exactly the pass-through (non-premultiplied)
 /// RGBA this engine's `SpriteDraw` needs; the renderer multiplies alpha once more
 /// to reproduce vanilla `SpriteBatch`'s `SourceAlpha` blending.
@@ -1103,7 +1103,7 @@ fn parse_backdrop(
         backdrop.texture = v.to_string();
     }
     if let Some(v) = attr_or(child, above, "atlas").and_then(BinValue::as_str) {
-        // Vanilla `Attr("atlas", "game")`; compared lowercased (112628-112631).
+        // Vanilla `Attr("atlas", "game")`; compared lowercased (references/Celeste.exe.cs.d/Celeste/MapData.cs:353-356).
         backdrop.atlas = v.to_ascii_lowercase();
     }
 
@@ -1145,8 +1145,8 @@ fn parse_backdrop(
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_else(|| "alphablend".to_string());
 
-    // Room filtering: `exclude=` / `only=` (112855-112873); wildcards are expanded at conversion
-    // time into concrete room names (ParseLevelsList, 113019-113036).
+    // Room filtering: `exclude=` / `only=` (references/Celeste.exe.cs.d/Celeste/MapData.cs:580-598); wildcards are expanded at conversion
+    // time into concrete room names (ParseLevelsList, references/Celeste.exe.cs.d/Celeste/MapData.cs:744-761).
     if let Some(list) = attr_or(child, above, "exclude").and_then(BinValue::as_str) {
         backdrop.exclude_from = expand_levels_list(list, room_names);
     }
@@ -1154,7 +1154,7 @@ fn parse_backdrop(
         backdrop.only_in = expand_levels_list(list, room_names);
     }
     // Transition visibility: `instantIn=` (default true) / `instantOut=` (default false)
-    // (the field defaults at 109411-109418, overridden by the attributes at 112895-112905).
+    // (the field defaults at references/Celeste.exe.cs.d/Celeste/Backdrop.cs:77-84, overridden by the attributes at references/Celeste.exe.cs.d/Celeste/MapData.cs:620-630).
     backdrop.instant_in = attr_or(child, above, "instantIn")
         .and_then(BinValue::as_bool)
         .unwrap_or(true);
@@ -1206,7 +1206,7 @@ fn parse_backdrop(
 
 /// The room list from `only=` / `exclude=` -> a set of concrete room names.
 ///
-/// Vanilla `ParseLevelsList` (`pureCeleste.cs:113019-113036`): comma-separated;
+/// Vanilla `ParseLevelsList` (`references/Celeste.exe.cs.d/Celeste/MapData.cs:744-761`): comma-separated;
 /// entries containing `*` are matched against `Levels` one by one with a `^` + escaped + `.*` + `$` regex and
 /// collected; the rest are collected literally. Here we use an equivalent wildcard match instead of a regex
 /// (after `Regex.Escape` the only character with special meaning is the `*` we substitute), and the output is sorted

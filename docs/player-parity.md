@@ -4,11 +4,11 @@ Status: in progress. The movement core is aligned line by line; the
 world-interaction states (boost, bounce, pickup, dream dash, wind, room
 transitions) are not ported yet.
 
-Authority: `references/pureCeleste.cs` (decompiled vanilla), which is the only
+Authority: `references/Celeste.exe.cs.d` (decompiled vanilla), which is the only
 behavioural reference. Port: `crates/game/src/player.rs` for the simulation,
 `crates/game/src/session.rs` for hair and sprite drawing.
 
-Vanilla citations use the `// pureCeleste.cs:LINE` form that the audit tool
+Vanilla citations use full split-source `path.cs:LINE` references that the audit tool
 checks: `cargo run -p releste-game --example citation_audit -- --coverage`.
 
 ---
@@ -17,25 +17,25 @@ checks: `cargo run -p releste-game --example citation_audit -- --coverage`.
 
 | Mechanic | Vanilla anchor | Notes |
 |---|---|---|
-| Run / air control | 118386-118392 | `MaxRun` 90, `RunAccel` 1000, `RunReduce` 400, `AirMult` 0.65 |
-| Gravity and fall caps | 118376-118382 | 900, `MaxFall` 160, `FastMaxFall` 240, `HalfGravThreshold` 40 |
-| Jump | 120690-120730 | `Speed.Y = -105` + `Speed.X += 40 * moveX` (120704-120705); declared 118414-118418 |
-| varJump clamp | 122042-122048 | hold-to-rise, released -> timer cleared |
-| Jump buffer / coyote | 110376, 119832-119839 | 0.08s buffered press, 0.1s grace |
-| Super jump | 120738-120777 | |
-| Wall jump / super wall jump | 120779-120877 | includes the anti-re-grab `forceMoveX` window |
-| Climb | 120902-122404 | `ClimbJump` 120902, `ClimbCheck` 121815, `ClimbBegin` 122140, `ClimbUpdate` 122184, `ClimbHop` 122380, `SlipCheck` 122404 |
-| Duck / unduck | 122004-122008 | duck hitbox 8x6 at +5 (118858) |
-| Pose probes | 119281-119295, 121168-121187 | `CanUnDuck`, `CanUnDuckAt`, `DuckFreeAt` (normal vs duck hitbox) |
-| Dash | 122731-122831 | eight-way, 0.15s at 240 px/s, attack window 0.3s, cooldown 0.2s |
-| Dash refill | 119855-119863 | on the ground, then the 0.2s cooldown |
-| Dash end speed | 122824 | `DashDir * 160` |
-| Hyper / wavedash | 121577-121582 | a landed down-diagonal dash converts to a horizontal one |
-| Corner correction | 121435-121459, 121536-121556, 121625-121665 | dash corner, air-dash landing, ceiling corner, plus the varJump cut |
-| Animation ids | 10491-10492, 111375-111388 | `Sprite.Play` writes `LastAnimationID` from the new id |
-| Atlas frame lookup | 14311-14329 | index 0 may be the bare texture name, then zero padding |
-| Hair metadata and colours | 111452-111480, 120258-120271 | per-frame `hair="dx,dy[:frame]"`, `AC3232` normal |
-| Hair rendering | 111155-111205 | outline pass then fill, bangs at node 0 |
+| Run / air control | references/Celeste.exe.cs.d/Celeste/Player.cs:135-141 | `MaxRun` 90, `RunAccel` 1000, `RunReduce` 400, `AirMult` 0.65 |
+| Gravity and fall caps | references/Celeste.exe.cs.d/Celeste/Player.cs:125-131 | 900, `MaxFall` 160, `FastMaxFall` 240, `HalfGravThreshold` 40 |
+| Jump | references/Celeste.exe.cs.d/Celeste/Player.cs:2439-2479 | `Speed.Y = -105` + `Speed.X += 40 * moveX` (references/Celeste.exe.cs.d/Celeste/Player.cs:2453-2454); declared references/Celeste.exe.cs.d/Celeste/Player.cs:163-167 |
+| varJump clamp | references/Celeste.exe.cs.d/Celeste/Player.cs:3791-3797 | hold-to-rise, released -> timer cleared |
+| Jump buffer / coyote | references/Celeste.exe.cs.d/Celeste/Input.cs:153, references/Celeste.exe.cs.d/Celeste/Player.cs:1581-1588 | 0.08s buffered press, 0.1s grace |
+| Super jump | references/Celeste.exe.cs.d/Celeste/Player.cs:2487-2526 | |
+| Wall jump / super wall jump | references/Celeste.exe.cs.d/Celeste/Player.cs:2528-2626 | includes the anti-re-grab `forceMoveX` window |
+| Climb | references/Celeste.exe.cs.d/Celeste/Player.cs:2651-4153 | `ClimbJump` references/Celeste.exe.cs.d/Celeste/Player.cs:2651, `ClimbCheck` references/Celeste.exe.cs.d/Celeste/Player.cs:3564, `ClimbBegin` references/Celeste.exe.cs.d/Celeste/Player.cs:3889, `ClimbUpdate` references/Celeste.exe.cs.d/Celeste/Player.cs:3933, `ClimbHop` references/Celeste.exe.cs.d/Celeste/Player.cs:4129, `SlipCheck` references/Celeste.exe.cs.d/Celeste/Player.cs:4153 |
+| Duck / unduck | references/Celeste.exe.cs.d/Celeste/Player.cs:3753-3757 | duck hitbox 8x6 at +5 (references/Celeste.exe.cs.d/Celeste/Player.cs:607) |
+| Pose probes | references/Celeste.exe.cs.d/Celeste/Player.cs:1030-1044, references/Celeste.exe.cs.d/Celeste/Player.cs:2917-2936 | `CanUnDuck`, `CanUnDuckAt`, `DuckFreeAt` (normal vs duck hitbox) |
+| Dash | references/Celeste.exe.cs.d/Celeste/Player.cs:4480-4580 | eight-way, 0.15s at 240 px/s, attack window 0.3s, cooldown 0.2s |
+| Dash refill | references/Celeste.exe.cs.d/Celeste/Player.cs:1604-1612 | on the ground, then the 0.2s cooldown |
+| Dash end speed | references/Celeste.exe.cs.d/Celeste/Player.cs:4573 | `DashDir * 160` |
+| Hyper / wavedash | references/Celeste.exe.cs.d/Celeste/Player.cs:3326-3331 | a landed down-diagonal dash converts to a horizontal one |
+| Corner correction | references/Celeste.exe.cs.d/Celeste/Player.cs:3184-3208, references/Celeste.exe.cs.d/Celeste/Player.cs:3285-3305, references/Celeste.exe.cs.d/Celeste/Player.cs:3374-3414 | dash corner, air-dash landing, ceiling corner, plus the varJump cut |
+| Animation ids | references/Celeste.exe.cs.d/Monocle/Sprite.cs:366-367, references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:169-182 | `Sprite.Play` writes `LastAnimationID` from the new id |
+| Atlas frame lookup | references/Celeste.exe.cs.d/Monocle/Atlas.cs:353-371 | index 0 may be the bare texture name, then zero padding |
+| Hair metadata and colours | references/Celeste.exe.cs.d/Celeste/PlayerSprite.cs:246-274, references/Celeste.exe.cs.d/Celeste/Player.cs:2007-2020 | per-frame `hair="dx,dy[:frame]"`, `AC3232` normal |
+| Hair rendering | references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:101-151 | outline pass then fill, bangs at node 0 |
 
 ## 2. Not ported yet
 
@@ -49,7 +49,7 @@ Ordered by how quickly a player would notice, not by difficulty.
 4. **Dream dash** (`DreamDashBegin/Update/End`, `DreamDashCheck`,
    `DreamDashedIntoSolid`).
 5. **JumpThru** (`JumpThruBoostBlockedCheck`; the `CollideCheckOutside<JumpThru>`
-   branch of `OnGround`, 116950-116969): the tile format has no JumpThru kind.
+   branch of `OnGround`, references/Celeste.exe.cs.d/Celeste/Actor.cs:136-155): the tile format has no JumpThru kind.
 6. **Entity interactions**: `ExplodeLaunch`, `Boost`/`RedBoost`,
    `Bounce`/`BounceCheck`/`SuperBounce`/`PointBounce`/`SideBounce`,
    `Rebound`/`ReflectBounce`, `HiccupJump`, `WallBoosterCheck`,
@@ -62,7 +62,7 @@ Ordered by how quickly a player would notice, not by difficulty.
    `OnBoundsH/V`, `OnTransition`, `SceneEnd`, `Die` and the death/respawn flow.
 10. **Effects**: `CreateTrail`, `CreateSplitParticles`,
     `CreateWallSlideParticles`, `PlaySweatEffectDangerOverride`.
-11. **Whole states** (vanilla `StateMachine.SetCallbacks`, 119397-119419):
+11. **Whole states** (vanilla `StateMachine.SetCallbacks`, references/Celeste.exe.cs.d/Celeste/Player.cs:1146-1168):
     3 Swim, 4 Boost, 5 RedDash, 6 HitSquash, 7 Launch, 8 Pickup, 9 DreamDash,
     10 SummitLaunch, 11 Dummy, 12-15 intro coroutines, 16 BirdDashTutorial,
     18 ReflectionFall, 19 StarFly, 20 TempleFall. `Player::step` falls back to
@@ -75,16 +75,16 @@ Ordered by how quickly a player would notice, not by difficulty.
 - **Continuous world**: collision covers every room the hitbox touches
   (`hit_in_box`), and landings snap to world cell edges (player.rs:10-24).
 - **Anchor**: `pos` is the hitbox **top-left**; vanilla's `Position` is the
-  bottom centre (118856). The collision box is the same 8x11.
+  bottom centre (references/Celeste.exe.cs.d/Celeste/Player.cs:605). The collision box is the same 8x11.
 - **Movement step**: a fixed 1/2px advance per iteration (`STEP`) replaces
   vanilla's `MoveH`/`MoveV` integer remainder (`movementCounter`).
 - **`grounded_at`** has no JumpThru branch (section 2.5).
 - **`DashCorrectCheck`** always returns false (no `LedgeBlocker` registered).
 - **Hair**: `session::hair_nodes` is a static chain; vanilla's `PlayerHair`
-  spring (111114-111139, `StepApproach` 64) lags behind and is not simulated.
+  spring (references/Celeste.exe.cs.d/Celeste/PlayerHair.cs:60-85, `StepApproach` 64) lags behind and is not simulated.
 - **No death or chapter state**: the session never restarts, so `Die` is
   absent.
-- **`var_jump < 9`** approximates `varJumpTimer < 0.15f` (121662-121665) within
+- **`var_jump < 9`** approximates `varJumpTimer < 0.15f` (references/Celeste.exe.cs.d/Celeste/Player.cs:3411-3414) within
   one tick, because the port decrements the timer earlier in the tick.
 
 ## 4. How to re-audit

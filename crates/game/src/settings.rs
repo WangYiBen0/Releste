@@ -2,8 +2,8 @@
 //! `Settings.Instance`).
 //!
 //! Vanilla stores bindings in the settings under the user directory, and
-//! `SetDefaultKeyboardControls(reset)` (`Settings.cs:161`, called from `AfterLoad`
-//! at `Settings.cs:151`) falls back to the defaults when a binding is missing: arrow
+//! `SetDefaultKeyboardControls(reset)` (`references/Celeste.exe.cs.d/Celeste/Settings.cs:161`, called from `AfterLoad`
+//! at `references/Celeste.exe.cs.d/Celeste/Settings.cs:151`) falls back to the defaults when a binding is missing: arrow
 //! keys move, C jumps, X dashes, Z/V/LeftShift grabs, Enter pauses. This engine
 //! persists them in TOML (the stack spec forbids JSON): a missing section or an
 //! unknown key name falls back per action and warns; it never panics
@@ -37,7 +37,7 @@
 //!
 //! Key names are the `Debug` name of `winit::keyboard::KeyCode` (e.g. `"KeyC"`,
 //! `"ArrowLeft"`): physical keys (scancode semantics), matching vanilla
-//! `TranslateKeys` (101708)'s "bind by physical position".
+//! `TranslateKeys` (references/Celeste.exe.cs.d/Celeste/Settings.cs:288)'s "bind by physical position".
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -175,7 +175,7 @@ pub fn config_location(cli: Option<&Path>, root: &Path) -> ConfigLocation {
 }
 
 /// A set of key bindings: action -> physical key list (an action can bind multiple keys, vanilla
-/// `Binding.Add(Keys...)` semantics; the Grab binding at 101622 binds three keys).
+/// `Binding.Add(Keys...)` semantics; the Grab binding at references/Celeste.exe.cs.d/Celeste/Settings.cs:203-206 binds three keys).
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyBindings {
     pub left: Vec<KeyCode>,
@@ -183,9 +183,9 @@ pub struct KeyBindings {
     pub up: Vec<KeyCode>,
     pub down: Vec<KeyCode>,
     pub jump: Vec<KeyCode>,
-    /// Dash (vanilla default X, `pureCeleste.cs:101632`).
+    /// Dash (vanilla default X, `references/Celeste.exe.cs.d/Celeste/Settings.cs:212`).
     pub dash: Vec<KeyCode>,
-    /// Grab (vanilla default Z/V/LeftShift, `pureCeleste.cs:101622`).
+    /// Grab (vanilla default Z/V/LeftShift, `references/Celeste.exe.cs.d/Celeste/Settings.cs:203-206`).
     pub grab: Vec<KeyCode>,
 }
 
@@ -204,7 +204,7 @@ impl KeyBindings {
 }
 
 impl Default for KeyBindings {
-    /// The bindings shipped in `config.toml` (vanilla defaults, 101602-101651).
+    /// The bindings shipped in `config.toml` (vanilla defaults, references/Celeste.exe.cs.d/Celeste/Settings.cs:182-231).
     fn default() -> Self {
         builtin().keys.clone()
     }
@@ -222,7 +222,7 @@ pub struct Settings {
     /// Draw at fractional world positions instead of snapping to whole pixels.
     ///
     /// `false` (the default) reproduces vanilla, which floors the player's
-    /// `RenderPosition` (`Player.Render`, pureCeleste.cs:1366-1367) and truncates particle
+    /// `RenderPosition` (`Player.Render`, references/Celeste.exe.cs.d/Celeste/Player.cs:1366-1367) and truncates particle
     /// positions (`Monocle/Particle.cs` `Render`). `true` keeps the interpolated
     /// positions, which is what a smooth-motion presentation needs.
     pub smooth_motion: bool,
@@ -359,7 +359,7 @@ impl Settings {
             "# Releste configuration.\n\
              #\n\
              # Key names are winit `KeyCode` names and bind by physical position\n\
-             # (vanilla `TranslateKeys`, pureCeleste.cs:101708). An action may list\n\
+             # (vanilla `TranslateKeys`, references/Celeste.exe.cs.d/Celeste/Settings.cs:288). An action may list\n\
              # several keys; the first match wins.\n\
              #\n\
              # This file is one layer of a stack: the compiled-in default is below\n\
@@ -381,7 +381,7 @@ impl Settings {
              name = {}\n\
              \n\
              # Snap world positions to whole pixels while drawing, like vanilla\n\
-             # (Player.Render floors RenderPosition, pureCeleste.cs:1366-1367;\n\
+             # (Player.Render floors RenderPosition, references/Celeste.exe.cs.d/Celeste/Player.cs:1366-1367;\n\
              # particles truncate theirs). `true` keeps the interpolated positions.\n\
              [render]\n\
              smooth_motion = {}\n\
@@ -502,7 +502,7 @@ impl ScreenShake {
 /// Whether world positions are snapped to whole pixels while drawing.
 ///
 /// Vanilla always snaps: the player draws through a floored RenderPosition
-/// (Player.Render, pureCeleste.cs:1366-1367) and particles truncate their position
+/// (Player.Render, references/Celeste.exe.cs.d/Celeste/Player.cs:1366-1367) and particles truncate their position
 /// (Monocle/Particle.cs Render). The default false reproduces that exactly. Turning it
 /// on keeps the fractional positions, which is what an interpolated presentation needs,
 /// at the cost of no longer matching vanilla pixels.

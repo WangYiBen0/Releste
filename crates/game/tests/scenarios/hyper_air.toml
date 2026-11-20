@@ -1,7 +1,7 @@
 # Air hyper: jump, dash down-diagonal while airborne, land during the dash and jump inside
-# the window. The landing goes through the same `OnCollideV` conversion (121577-121582),
+# the window. The landing goes through the same `OnCollideV` conversion (references/Celeste.exe.cs.d/Celeste/Player.cs:3326-3331),
 # which is what makes the dash horizontal and ducking in time for the dash-state jump
-# branch (122632-122641) -> `SuperJump` (120738-120777) -> ducked branch (120753-120760):
+# branch (references/Celeste.exe.cs.d/Celeste/Player.cs:4391-4403) -> `SuperJump` (references/Celeste.exe.cs.d/Celeste/Player.cs:2487-2526) -> ducked branch (references/Celeste.exe.cs.d/Celeste/Player.cs:2502-2509):
 #
 #   Speed.X = 260 * 1.25 = 325 px/s   -> 5.4167 px/tick
 #   Speed.Y = -105 * 0.5 = -52.5 px/s -> -0.875 px/tick

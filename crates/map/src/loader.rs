@@ -281,7 +281,7 @@ mod tests {
         assert_eq!((got.loop_x, got.loop_y), (want.loop_x, want.loop_y));
         assert_eq!(got.color, want.color);
         // Fields added in v3: a v2 file has no expressiveness -> filtering empty, visibility at the vanilla default
-        // (InstantIn = true, InstantOut = false, pureCeleste.cs:109411-109418).
+        // (InstantIn = true, InstantOut = false, references/Celeste.exe.cs.d/Celeste/Backdrop.cs:77-84).
         assert!(got.only_in.is_empty());
         assert!(got.exclude_from.is_empty());
         assert!(got.instant_in);

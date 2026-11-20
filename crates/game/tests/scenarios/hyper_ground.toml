@@ -1,10 +1,10 @@
 # Ground hyper: a down-diagonal dash started on the floor converts to a duck slide in
-# `OnCollideV` (DashDir.Y = 0, Speed.X *= 1.2, Ducking = true, pureCeleste.cs:121577-121582),
-# so the dash-state jump branch (|DashDir.Y| < 0.1, 122632-122641) reaches `SuperJump`
-# (120738-120777) and its ducked branch (120753-120760) applies:
+# `OnCollideV` (DashDir.Y = 0, Speed.X *= 1.2, Ducking = true, references/Celeste.exe.cs.d/Celeste/Player.cs:3326-3331),
+# so the dash-state jump branch (|DashDir.Y| < 0.1, references/Celeste.exe.cs.d/Celeste/Player.cs:4391-4403) reaches `SuperJump`
+# (references/Celeste.exe.cs.d/Celeste/Player.cs:2487-2526) and its ducked branch (references/Celeste.exe.cs.d/Celeste/Player.cs:2502-2509) applies:
 #
-#   Speed.X = 260 * 1.25 = 325 px/s   (120748 + 120756) -> 5.4167 px/tick
-#   Speed.Y = -105 * 0.5 = -52.5 px/s (120749 + 120757) -> -0.875 px/tick
+#   Speed.X = 260 * 1.25 = 325 px/s   (references/Celeste.exe.cs.d/Celeste/Player.cs:2497 + references/Celeste.exe.cs.d/Celeste/Player.cs:2505) -> 5.4167 px/tick
+#   Speed.Y = -105 * 0.5 = -52.5 px/s (references/Celeste.exe.cs.d/Celeste/Player.cs:2498 + references/Celeste.exe.cs.d/Celeste/Player.cs:2506) -> -0.875 px/tick
 #
 # Run: cargo run --bin releste -- --root assets --script crates/game/tests/scenarios/hyper_ground.toml
 [scenario]
