@@ -60,10 +60,12 @@ impl Fx {
 
     /// Construct from a rational of two integers (`num / denom`).
     ///
-    /// Used to express values such as `1 / 60` precisely.
+    /// Used to express values such as `1 / 60` precisely. The intermediate
+    /// numerator is 64-bit so a legitimate Q16.16 result cannot overflow while
+    /// being constructed (for example `45_454_544 / 60_000_000`).
     #[inline]
     pub const fn from_ratio(num: i32, denom: i32) -> Self {
-        Fx((num << Self::FRACTIONAL_BITS) / denom)
+        Fx((((num as i64) << Self::FRACTIONAL_BITS) / denom as i64) as i32)
     }
 
     /// Convert to `f32` (rendering / display only; forbidden inside the
@@ -263,6 +265,18 @@ mod tests {
         let diff = (acc - Fx::one()).abs();
         // Truncation error = 16 fixed-point least-significant units.
         assert!(diff <= Fx::from_bits(16));
+    }
+
+    #[test]
+    fn ratio_with_a_large_numerator_does_not_overflow() {
+        assert_eq!(
+            Fx::from_ratio(45_454_544, 60_000_000),
+            Fx::from_bits(49_648)
+        );
+        assert_eq!(
+            Fx::from_ratio(-45_454_544, 60_000_000),
+            Fx::from_bits(-49_648)
+        );
     }
 
     #[test]

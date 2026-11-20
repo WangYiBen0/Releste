@@ -217,6 +217,9 @@ const CLIMB_UP_DRAIN_PER_TICK: Fx = Fx::from_ratio(45454544, 60000000);
 const CLIMB_IDLE_DRAIN_PER_TICK: Fx = Fx::from_ratio(1, 6);
 /// Stamina drain for a climb jump (without leaving the ground) 27.5 (120904-120906).
 const CLIMBJUMP_DRAIN: Fx = Fx::from_ratio(55, 2);
+/// Below 20 effective stamina the player is too tired to grab a wall
+/// (`pureCeleste.cs:119299` `private bool IsTired => CheckStamina < 20f`).
+const CLIMB_TIRED_THRESHOLD: Fx = Fx::from_int(20);
 /// Upward climb speed -45 px/s (-3/4 px/tick, 122220-122222).
 const CLIMB_UP_SPEED: Fx = Fx::from_ratio(-3, 4);
 /// Downward climb speed 80 px/s (4/3 px/tick, 122228-122230).
@@ -1113,6 +1116,9 @@ impl Player {
         self.vel.y *= Fx::from_ratio(1, 5); // Speed.Y *= 0.2f (122146)
         self.wall_slide_ticks = WALLSLIDE_TICKS;
         self.climb_no_move_ticks = CLIMB_NO_MOVE_TICKS;
+        // `pureCeleste.cs:122147` `wallBoostTimer = 0f`: re-grabbing cancels an
+        // unused climb-jump boost, including its effective-stamina refund.
+        self.wall_boost_ticks = 0;
         self.last_climb_move = 0;
         for _ in 0..2 {
             if self.hits(rooms, self.pos.x + Fx::from_int(self.facing), self.pos.y) {
@@ -1120,6 +1126,22 @@ impl Player {
             }
             self.pos.x += Fx::from_int(self.facing); // 122153-122160 snap to the wall
         }
+    }
+
+    /// Effective stamina for grabbing. During the post-climb-jump boost vanilla refunds
+    /// the jump's 27.5 cost for this check only (`pureCeleste.cs:119301-119310`
+    /// `if (wallBoostTimer > 0f) { return Stamina + 27.5f; }`).
+    fn check_stamina(&self) -> Fx {
+        if self.wall_boost_ticks > 0 {
+            self.stamina + CLIMBJUMP_DRAIN
+        } else {
+            self.stamina
+        }
+    }
+
+    /// `pureCeleste.cs:119299` `private bool IsTired => CheckStamina < 20f`.
+    fn is_tired(&self) -> bool {
+        self.check_stamina() < CLIMB_TIRED_THRESHOLD
     }
 
     /// Whether a jump against a wall becomes a `ClimbJump` instead of a wall jump.
@@ -1205,6 +1227,9 @@ impl Player {
         self.var_jump = VAR_JUMP_TICKS;
         self.auto_jump = 0;
         self.dash_attack = 0;
+        // `pureCeleste.cs:120703` `wallBoostTimer = 0f`. ClimbJump calls this
+        // helper first and then deliberately arms its own fresh boost window.
+        self.wall_boost_ticks = 0;
         self.vel.x += move_x * JUMP_H_BOOST;
         self.vel.y = JUMP_SPEED;
         self.var_jump_speed = JUMP_SPEED;
@@ -1240,6 +1265,8 @@ impl Player {
         self.var_jump = VAR_JUMP_TICKS;
         self.auto_jump = 0;
         self.dash_attack = 0;
+        // `pureCeleste.cs:120816` `wallBoostTimer = 0f`.
+        self.wall_boost_ticks = 0;
         if self.move_x != Fx::zero() {
             // 120828-120838: force moveX while a direction is held, preventing an
             // immediate re-grab.
@@ -1282,6 +1309,9 @@ impl Player {
         self.dash_cooldown = DASH_COOLDOWN_TICKS;
         self.dash_refill_cooldown = DASH_REFILL_COOLDOWN_TICKS;
         self.dash_attack = DASH_ATTACK_TICKS;
+        // Leaving Normal runs `NormalEnd` (`pureCeleste.cs:121794-121797`,
+        // `wallBoostTimer = 0f`), so a dash cannot preserve a stale boost.
+        self.wall_boost_ticks = 0;
         // DashBegin (122537): the flag drives the air-dash landing correction.
         self.dash_started_on_ground = self.on_ground;
         self.before_dash_speed = self.vel;
@@ -1446,6 +1476,8 @@ impl Player {
         self.var_jump = VAR_JUMP_TICKS;
         self.auto_jump = 0;
         self.dash_attack = 0;
+        // `pureCeleste.cs:120747` `wallBoostTimer = 0f`.
+        self.wall_boost_ticks = 0;
         self.vel.x = SUPER_JUMP_X * Fx::from_int(self.facing);
         self.vel.y = JUMP_SPEED;
         // 120753-120760: ducked super jump -- horizontal speed x1.25, vertical speed x0.5.
@@ -1480,6 +1512,8 @@ impl Player {
         self.var_jump = 15; // varJumpTimer = 0.25f (120870)
         self.auto_jump = 0; // AutoJump = false (120871)
         self.dash_attack = 0;
+        // `pureCeleste.cs:120876` `wallBoostTimer = 0f`.
+        self.wall_boost_ticks = 0;
         self.vel.x = SUPER_WALLJUMP_X * Fx::from_int(dir);
         self.vel.y = SUPER_WALLJUMP_Y;
         self.var_jump_speed = SUPER_WALLJUMP_Y;
@@ -1510,7 +1544,24 @@ impl Player {
     /// climb (up -45, down 80, slip 30 when SlipCheck at the top) -> stamina drain (up
     /// 45.45/s, still 10/s) -> let go when exhausted. WallBooster / sprite sweat effect
     /// are not ported (declared).
+    ///
+    /// Vanilla's state function only chooses the next state; the outer `Player.Update`
+    /// still runs `MoveH`/`MoveV` afterward (`pureCeleste.cs:120049-120056`). Keeping
+    /// that outer movement here means jump, release, dash, hop and exhaustion returns
+    /// all move on their activation tick instead of one tick later.
     fn climb_update(&mut self, input: &Input, rooms: &[Room]) {
+        self.climb_update_logic(input, rooms);
+        self.slide_x(rooms);
+        self.on_ground = false;
+        self.slide_y(rooms);
+        if !self.on_ground {
+            self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
+        }
+    }
+
+    /// The state-specific part of `ClimbUpdate`; early returns still pass through the
+    /// outer movement in [`Player::climb_update`].
+    fn climb_update_logic(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
         self.climb_no_move_ticks = self.climb_no_move_ticks.saturating_sub(1);
         if self.on_ground {
@@ -1611,13 +1662,6 @@ impl Player {
         }
         if self.stamina <= Fx::zero() {
             self.state = 0; // 122302-122306
-            return;
-        }
-        self.slide_x(rooms);
-        self.on_ground = false;
-        self.slide_y(rooms);
-        if !self.on_ground {
-            self.on_ground = self.hits(rooms, self.pos.x, self.pos.y + Fx::one());
         }
     }
 
@@ -1930,16 +1974,26 @@ impl Player {
     /// deviation declaration) -> dash trigger (121841-121843 `if (CanDash)`) -> running
     /// (121965-121975) -> maxFall (121977-121987) -> gravity (122027-122040, airborne
     /// only) -> varJump clamp (122042-122048) -> jump decision (122053-122100, including
-    /// the wall jump) -> movement solve -> coyote/buffer decay.
+    /// the wall jump) -> movement solve -> coyote/buffer decay. As in vanilla, the outer
+    /// movement still runs when NormalUpdate returns a different state
+    /// (`pureCeleste.cs:120049-120056`).
     fn normal_update(&mut self, input: &Input, rooms: &[Room]) {
+        self.normal_update_logic(input, rooms);
+        self.normal_movement_tail(rooms);
+    }
+
+    /// The state-specific part of NormalUpdate; early state returns still pass through
+    /// [`Player::normal_movement_tail`].
+    fn normal_update_logic(&mut self, input: &Input, rooms: &[Room]) {
         self.prev_pos = self.pos;
 
-        // Wall grab (the GrabCheck branch at 121832-121864, no pickups): probe when the
+        // Wall grab (`pureCeleste.cs:121832-121864`, no pickups): probe when the
         // horizontal speed is not away from the wall and vertical speed >= 0; when it is
         // 1-2px short, vanilla lifts the player with MoveVExact. `ClimbTrigger` is a
         // write-only field in vanilla (118714/119688/121267, with no consumer), skipped.
-        // No grab while ducking (121832 `!Ducking`).
-        if input.grab && !self.ducking && self.vel.y >= Fx::zero() {
+        // `pureCeleste.cs:121832`
+        // `Input.GrabCheck && !IsTired && !Ducking`: an exhausted player cannot re-grab.
+        if input.grab && !self.is_tired() && !self.ducking && self.vel.y >= Fx::zero() {
             let behind = self.vel.x.signum() == -self.facing && self.vel.x != Fx::zero();
             if !behind {
                 if self.climb_check(rooms, self.facing, 0) {
@@ -1947,15 +2001,19 @@ impl Player {
                     self.enter_climb(rooms);
                     return;
                 }
-                for i in 1..=2i32 {
-                    // 121854-121862: when 1-2px short, lift, then grab.
-                    if !self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(i))
-                        && self.climb_check(rooms, self.facing, -i)
-                    {
-                        self.pos.y -= Fx::from_int(i);
-                        self.ducking = false;
-                        self.enter_climb(rooms);
-                        return;
+                // `pureCeleste.cs:121852` `(float)Input.MoveY < 1f`: holding down
+                // deliberately skips only the upward 1-2px snap, not a direct wall grab.
+                if input.axis_y() < Fx::one() {
+                    for i in 1..=2i32 {
+                        // 121854-121862: when 1-2px short, lift, then grab.
+                        if !self.hits(rooms, self.pos.x, self.pos.y - Fx::from_int(i))
+                            && self.climb_check(rooms, self.facing, -i)
+                        {
+                            self.pos.y -= Fx::from_int(i);
+                            self.ducking = false;
+                            self.enter_climb(rooms);
+                            return;
+                        }
                     }
                 }
             }
@@ -2105,7 +2163,10 @@ impl Player {
                 }
             }
         }
+    }
 
+    /// Shared post-state movement and grounded/coyote bookkeeping for NormalUpdate.
+    fn normal_movement_tail(&mut self, rooms: &[Room]) {
         self.slide_x(rooms);
         self.on_ground = false;
         self.slide_y(rooms);
@@ -4124,6 +4185,205 @@ mod tests {
         p.step(&Input::default(), std::slice::from_ref(&room));
         assert_eq!(p.stamina, CLIMB_MAX_STAMINA, "ground refills stamina");
         assert_eq!(p.state, 0, "releasing grab leaves Climb (122211-122216)");
+    }
+
+    /// NormalUpdate returning state 1 still runs the outer movement after ClimbBegin
+    /// (`pureCeleste.cs:121843-121849` and `pureCeleste.cs:120049-120056`).
+    #[test]
+    fn grabbing_applies_the_scaled_fall_speed_immediately() {
+        let room = wall_room(true);
+        let mut p = settled(&room, 56.0);
+        p.facing = 1;
+        p.pos.y -= Fx::from_int(16);
+        p.on_ground = false;
+        p.vel.y = Fx::from_int(60);
+        let before = p.pos.y;
+        let grab = Input {
+            grab: true,
+            ..Input::default()
+        };
+        p.step(&grab, std::slice::from_ref(&room));
+        assert_eq!(p.state, 1);
+        assert_eq!(
+            p.vel.y,
+            Fx::from_int(60) * Fx::from_ratio(1, 5),
+            "ClimbBegin scales Y by 0.2"
+        );
+        assert!(
+            p.pos.y > before,
+            "the scaled fall speed is applied on the grab tick"
+        );
+    }
+
+    /// The outer `Player.Update` applies `MoveV(Speed.Y * dt)` after `ClimbUpdate`
+    /// returns (`pureCeleste.cs:120053-120056`), including the tick that ClimbJump
+    /// selects state 0 (`pureCeleste.cs:122193-122205`).
+    #[test]
+    fn climb_jump_moves_on_its_activation_tick() {
+        let room = wall_room(true);
+        let mut p = settled(&room, 56.0);
+        p.facing = 1;
+        p.pos.y -= Fx::from_int(32);
+        p.on_ground = false;
+        p.state = 1;
+        p.vel = Vec2::ZERO;
+        p.climb_no_move_ticks = 0;
+        let before = p.pos.y;
+        let jump = Input {
+            jump: true,
+            grab: true,
+            ..Input::default()
+        };
+        p.step(&jump, std::slice::from_ref(&room));
+        assert_eq!(p.state, 0);
+        assert_eq!(p.vel.y, JUMP_SPEED);
+        assert!(
+            p.pos.y < before,
+            "the -105 px/s jump must displace the player immediately"
+        );
+        assert_eq!(p.stamina, CLIMB_MAX_STAMINA - CLIMBJUMP_DRAIN);
+    }
+
+    /// Exhaustion also returns to state 0 before the outer movement
+    /// (`pureCeleste.cs:122354-122358` and `pureCeleste.cs:120049-120056`).
+    #[test]
+    fn climb_exhaustion_still_applies_the_last_climb_velocity() {
+        let room = wall_room(true);
+        let mut p = settled(&room, 56.0);
+        p.facing = 1;
+        p.pos.y -= Fx::from_int(32);
+        p.on_ground = false;
+        p.state = 1;
+        p.vel.y = CLIMB_UP_SPEED;
+        p.climb_no_move_ticks = 0;
+        // One fixed-point unit short of this tick's upward drain.
+        p.stamina = CLIMB_UP_DRAIN_PER_TICK - Fx::from_bits(1);
+        let before = p.pos.y;
+        let up = Input {
+            up: true,
+            grab: true,
+            ..Input::default()
+        };
+        p.step(&up, std::slice::from_ref(&room));
+        assert_eq!(p.state, 0, "Stamina <= 0 leaves Climb");
+        assert_eq!(
+            p.stamina,
+            Fx::from_bits(-1),
+            "upward climbing drains exactly 45.454544 / 60 stamina"
+        );
+        assert!(p.pos.y < before, "the final climb velocity is not lost");
+    }
+
+    /// ClimbBegin and the jump/dash transitions clear a stale wall boost
+    /// (`pureCeleste.cs:122147`, `120703`, `120747`, `120816`, `120876`,
+    /// `121794-121797`, each `wallBoostTimer = 0f`).
+    #[test]
+    fn transitions_cancel_an_unused_wall_boost() {
+        let room = wall_room(true);
+        let rooms = std::slice::from_ref(&room);
+        let mut p = settled(&room, 56.0);
+        let arm = |p: &mut Player| {
+            p.wall_boost_dir = -1;
+            p.wall_boost_ticks = WALL_BOOST_TICKS;
+        };
+
+        arm(&mut p);
+        p.enter_climb(rooms);
+        assert_eq!(p.wall_boost_ticks, 0, "ClimbBegin");
+        arm(&mut p);
+        p.jump(Fx::zero(), false);
+        assert_eq!(p.wall_boost_ticks, 0, "Jump");
+        arm(&mut p);
+        p.wall_jump(rooms, -1);
+        assert_eq!(p.wall_boost_ticks, 0, "WallJump");
+        arm(&mut p);
+        p.super_jump(rooms);
+        assert_eq!(p.wall_boost_ticks, 0, "SuperJump");
+        arm(&mut p);
+        p.super_wall_jump(-1);
+        assert_eq!(p.wall_boost_ticks, 0, "SuperWallJump");
+        arm(&mut p);
+        p.start_dash(&Input::default(), rooms);
+        assert_eq!(p.wall_boost_ticks, 0, "NormalEnd on a dash");
+    }
+
+    /// `pureCeleste.cs:121832` `Input.GrabCheck && !IsTired && !Ducking` prevents an
+    /// exhausted player from grabbing again. The check uses `CheckStamina`, so the climb
+    /// jump's temporary boost adds its 27.5 cost back (`pureCeleste.cs:119305-119307`).
+    #[test]
+    fn tired_grabbing_uses_effective_stamina() {
+        let room = wall_room(true);
+        let grab = Input {
+            grab: true,
+            ..Input::default()
+        };
+        let mut tired = settled(&room, 56.0);
+        tired.facing = 1;
+        tired.pos.y -= Fx::from_int(16);
+        tired.on_ground = false;
+        tired.stamina = Fx::from_int(19);
+        tired.step(&grab, std::slice::from_ref(&room));
+        assert_eq!(
+            tired.state, 0,
+            "CheckStamina < 20 cannot grab (pureCeleste.cs:119299)"
+        );
+
+        let mut boosted = settled(&room, 56.0);
+        boosted.facing = 1;
+        boosted.pos.y -= Fx::from_int(16);
+        boosted.on_ground = false;
+        boosted.stamina = Fx::from_int(19);
+        boosted.wall_boost_ticks = WALL_BOOST_TICKS;
+        boosted.step(&grab, std::slice::from_ref(&room));
+        assert_eq!(
+            boosted.state, 1,
+            "wallBoostTimer adds 27.5 for this check (pureCeleste.cs:119305-119307)"
+        );
+
+        boosted.stamina = CLIMB_TIRED_THRESHOLD;
+        boosted.wall_boost_ticks = 0;
+        assert!(
+            !boosted.is_tired(),
+            "the threshold is strictly below 20, not less-than-or-equal"
+        );
+    }
+
+    /// The 1-2px upward grab correction is gated on not holding down
+    /// (`pureCeleste.cs:121852` `(float)Input.MoveY < 1f`). A direct wall grab is still
+    /// allowed with down held; only the vertical snap is skipped.
+    #[test]
+    fn holding_down_skips_the_two_pixel_grab_snap() {
+        let mut room = wall_room(false);
+        for y in 0..8 {
+            room.tiles.set(8, y, 1);
+        }
+        let down_grab = Input {
+            down: true,
+            grab: true,
+            ..Input::default()
+        };
+        let grab = Input {
+            grab: true,
+            ..Input::default()
+        };
+        let mut down = Player::new(Vec2::from_f32s(56.0, 64.0));
+        down.facing = 1;
+        down.on_ground = false;
+        let rooms = std::slice::from_ref(&room);
+        assert!(!down.climb_check(rooms, 1, 0), "fixture: below the wall");
+        assert!(
+            down.climb_check(rooms, 1, -1),
+            "fixture: one pixel up reaches the wall"
+        );
+        down.step(&down_grab, rooms);
+        assert_eq!(down.state, 0, "down suppresses the upward grab snap");
+
+        let mut neutral = Player::new(Vec2::from_f32s(56.0, 64.0));
+        neutral.facing = 1;
+        neutral.on_ground = false;
+        neutral.step(&grab, rooms);
+        assert_eq!(neutral.state, 1, "neutral input performs the snap");
+        assert_eq!(neutral.pos.y, Fx::from_int(63), "MoveVExact(-1)");
     }
 
     /// A jump while grabbing the wall the player faces is a `ClimbJump`, not a wall jump.
